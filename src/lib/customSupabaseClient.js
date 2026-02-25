@@ -1,7 +1,27 @@
 const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
+const demoEmailStorageKey = 'mysql_backend_demo_email';
 
 const authSubscribers = new Set();
+let ensureSessionPromise = null;
+
+function getDemoCredentials() {
+  const configuredEmail = import.meta.env.VITE_DEMO_EMAIL;
+  const configuredPassword = import.meta.env.VITE_DEMO_PASSWORD || 'demo123456';
+
+  if (configuredEmail) {
+    return { email: configuredEmail, password: configuredPassword };
+  }
+
+  const cachedEmail = localStorage.getItem(demoEmailStorageKey);
+  if (cachedEmail) {
+    return { email: cachedEmail, password: configuredPassword };
+  }
+
+  const generatedEmail = `demo-${crypto.randomUUID()}@local.entre`;
+  localStorage.setItem(demoEmailStorageKey, generatedEmail);
+  return { email: generatedEmail, password: configuredPassword };
+}
 
 function parseRelations(selectText = '') {
   const normalized = String(selectText).replace(/\s+/g, ' ');
@@ -160,11 +180,63 @@ function createQueryBuilder(table) {
   return builder;
 }
 
+async function ensureSession() {
+  const existingSession = getStoredSession();
+  if (existingSession?.access_token) return existingSession;
+
+  if (!ensureSessionPromise) {
+    ensureSessionPromise = (async () => {
+      const credentials = getDemoCredentials();
+
+      try {
+        const signin = await fetch(`${apiBaseUrl}/api/auth/signin`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(credentials),
+        });
+
+        if (signin.ok) {
+          const json = await signin.json();
+          setStoredSession(json.session);
+          return json.session;
+        }
+      } catch {
+        // Keep fallback to signup.
+      }
+
+      const signup = await fetch(`${apiBaseUrl}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials),
+      });
+
+      if (!signup.ok) {
+        const payload = await signup.json().catch(() => ({}));
+        throw new Error(payload.error || 'Unable to create demo session');
+      }
+
+      const signupJson = await signup.json();
+      setStoredSession(signupJson.session);
+      return signupJson.session;
+    })().finally(() => {
+      ensureSessionPromise = null;
+    });
+  }
+
+  return ensureSessionPromise;
+}
+
 export const supabase = {
   auth: {
     async getSession() {
-      const session = getStoredSession();
-      if (!session?.access_token) return { data: { session: null }, error: null };
+      let session = getStoredSession();
+      if (!session?.access_token) {
+        try {
+          session = await ensureSession();
+        } catch {
+          return { data: { session: null }, error: null };
+        }
+      }
       try {
         const { user } = await request('/api/auth/me', { method: 'GET' });
         return { data: { session: { ...session, user } }, error: null };

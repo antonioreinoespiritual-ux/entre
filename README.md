@@ -31,3 +31,5 @@ npm run dev
 ```
 
 El frontend ahora usa `VITE_BACKEND_URL` y un cliente compatible con la API usada antes de Supabase (`auth`, `from(...).select/insert/update/delete.eq().order().single()`).
+
+Si no haces login manual, el frontend crea/inicia automáticamente una sesión demo para que puedas crear proyectos/campañas de inmediato. Puedes fijar esas credenciales con `VITE_DEMO_EMAIL` y `VITE_DEMO_PASSWORD`.
