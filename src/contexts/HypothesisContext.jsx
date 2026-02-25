@@ -1,7 +1,8 @@
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
+import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const HypothesisContext = createContext();
 
@@ -16,32 +17,8 @@ export const useHypotheses = () => {
 export const HypothesisProvider = ({ children }) => {
   const [hypotheses, setHypotheses] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
   const { toast } = useToast();
-
-  useEffect(() => {
-    let active = true;
-
-    const getCurrentUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!active) return;
-      if (user) {
-        setCurrentUser(user);
-      }
-    };
-
-    getCurrentUser();
-    const retryTimer = setInterval(() => {
-      if (!currentUser) {
-        getCurrentUser();
-      }
-    }, 1000);
-
-    return () => {
-      active = false;
-      clearInterval(retryTimer);
-    };
-  }, [currentUser]);
+  const { currentUser } = useAuth();
 
   const validateHypothesis = useCallback((hypothesis, videoMetrics) => {
     try {
