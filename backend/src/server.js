@@ -518,6 +518,26 @@ function resolveCorsOrigin(req) {
   if (!requestOrigin) return corsOrigins[0] || '*';
   if (corsOrigins.includes('*')) return requestOrigin;
   if (corsOrigins.includes(requestOrigin)) return requestOrigin;
+
+  // DX fallback: allow common local network dev origins (e.g. http://192.168.x.x:3000)
+  // when CORS_ORIGIN was not explicitly configured for the LAN IP.
+  try {
+    const parsed = new URL(requestOrigin);
+    const hostname = parsed.hostname || '';
+    const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+    const isPrivateLan = /^10\./.test(hostname)
+      || /^192\.168\./.test(hostname)
+      || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname);
+    const isDevPort = ['3000', '5173'].includes(port);
+
+    if ((isLocalhost || isPrivateLan) && isDevPort) {
+      return requestOrigin;
+    }
+  } catch {
+    // Ignore malformed origin and fall back to configured default.
+  }
+
   return corsOrigins[0] || 'http://localhost:3000';
 }
 
