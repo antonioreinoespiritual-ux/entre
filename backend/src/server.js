@@ -602,8 +602,10 @@ async function ensureVideoHierarchyMigration() {
     ['duracion_seg', 'REAL DEFAULT 0'],
     ['campaign_id_ref', 'TEXT'],
     ['ad_set_id', 'TEXT'],
+    ['ad_id', 'TEXT'],
     ['ctr', 'REAL DEFAULT 0'],
     ['duracion_del_video_seg', 'REAL DEFAULT 0'],
+    ['metrics_json', 'TEXT'],
   ];
 
   for (const [columnName, columnType] of optionalVideoColumns) {
@@ -685,6 +687,131 @@ async function runMigrations() {
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const bulkVideoAllowedFields = new Map([
+  ['campaign_id', { column: 'campaign_id_ref', type: 'text' }],
+  ['campaign_id_ref', { column: 'campaign_id_ref', type: 'text' }],
+  ['adset_id', { column: 'ad_set_id', type: 'text' }],
+  ['ad_set_id', { column: 'ad_set_id', type: 'text' }],
+  ['ad_id', { column: 'ad_id', type: 'text' }],
+  ['creative_id', { column: 'creative_id', type: 'text' }],
+  ['session_id', { column: 'external_id', type: 'text' }],
+  ['url', { column: 'url', type: 'text' }],
+  ['clicks', { column: 'clicks', type: 'int' }],
+  ['views', { column: 'views', type: 'int' }],
+  ['views_profile', { column: 'views_profile', type: 'int' }],
+  ['ctr', { column: 'ctr', type: 'float' }],
+  ['cpc', { column: 'cpc', type: 'float' }],
+  ['new_followers', { column: 'nuevos_seguidores', type: 'int' }],
+  ['nuevos_seguidores', { column: 'nuevos_seguidores', type: 'int' }],
+  ['initiate_checkouts', { column: 'initiate_checkouts', type: 'int' }],
+  ['view_content', { column: 'view_content', type: 'int' }],
+  ['lead_form', { column: 'formulario_lead', type: 'int' }],
+  ['leads', { column: 'formulario_lead', type: 'int' }],
+  ['formulario_lead', { column: 'formulario_lead', type: 'int' }],
+  ['purchase', { column: 'purchase', type: 'int' }],
+  ['likes', { column: 'likes', type: 'int' }],
+  ['comments', { column: 'comments', type: 'int' }],
+  ['shares', { column: 'shares', type: 'int' }],
+  ['saves', { column: 'saves', type: 'int' }],
+  ['avg_viewers', { column: 'viewers_prom', type: 'float' }],
+  ['viewers_prom', { column: 'viewers_prom', type: 'float' }],
+  ['peak_viewers', { column: 'pico_viewers', type: 'int' }],
+  ['pico_viewers', { column: 'pico_viewers', type: 'int' }],
+  ['duration_min', { column: 'duracion_min', type: 'float' }],
+  ['duration_sec', { column: 'duracion_seg', type: 'float' }],
+  ['duracion_sec', { column: 'duracion_seg', type: 'float' }],
+  ['duracion_seg', { column: 'duracion_seg', type: 'float' }],
+  ['retention_pct', { column: 'retencion_pct', type: 'float' }],
+  ['retencion_pct', { column: 'retencion_pct', type: 'float' }],
+  ['views_finish_pct', { column: 'views_finish_pct', type: 'float' }],
+  ['avg_watch_time_sec', { column: 'tiempo_prom_seg', type: 'float' }],
+  ['tiempo_prom_sec', { column: 'tiempo_prom_seg', type: 'float' }],
+  ['tiempo_prom_seg', { column: 'tiempo_prom_seg', type: 'float' }],
+  ['hook_text', { column: 'hook_texto', type: 'text' }],
+  ['hook_texto', { column: 'hook_texto', type: 'text' }],
+  ['hook_type', { column: 'hook_tipo', type: 'text' }],
+  ['hook_tipo', { column: 'hook_tipo', type: 'text' }],
+  ['cta_text', { column: 'cta_texto', type: 'text' }],
+  ['cta_texto', { column: 'cta_texto', type: 'text' }],
+  ['cta_type', { column: 'cta_tipo', type: 'text' }],
+  ['cta_tipo', { column: 'cta_tipo', type: 'text' }],
+  ['context', { column: 'contexto_cualitativo', type: 'text' }],
+  ['contexto_cualitativo', { column: 'contexto_cualitativo', type: 'text' }],
+]);
+
+function parseTypedValue(value, type) {
+  if (value == null || value === '') return null;
+  if (type === 'text') return String(value);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (type === 'int') return Math.trunc(parsed);
+  return parsed;
+}
+
+function normalizeBulkUpdateFields(fields) {
+  const normalizedFields = {};
+  const extras = {};
+  const invalidKeys = [];
+
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+    return { normalizedFields, extras, invalidKeys: ['fields_must_be_object'] };
+  }
+
+  for (const [rawKey, rawValue] of Object.entries(fields)) {
+    const key = String(rawKey || '').trim().toLowerCase();
+    if (!key) continue;
+    const config = bulkVideoAllowedFields.get(key);
+    if (!config) {
+      invalidKeys.push(rawKey);
+      extras[rawKey] = rawValue;
+      continue;
+    }
+    const typed = parseTypedValue(rawValue, config.type);
+    if (typed == null && rawValue !== null && rawValue !== '') {
+      invalidKeys.push(rawKey);
+      continue;
+    }
+    normalizedFields[config.column] = typed;
+  }
+
+  return { normalizedFields, extras, invalidKeys };
+}
+
+function buildVideoLookupMaps(videos) {
+  const byId = new Map();
+  const bySession = new Map();
+  const byName = new Map();
+
+  for (const video of videos) {
+    byId.set(String(video.id), video);
+    if (video.external_id) bySession.set(String(video.external_id).toLowerCase(), video);
+    const title = video.title || video.name;
+    if (title) byName.set(String(title).trim().toLowerCase(), video);
+  }
+
+  return { byId, bySession, byName };
+}
+
+function resolveBulkVideo(videoMaps, update) {
+  const directId = update.video_id || update.record_id;
+  if (directId) {
+    return videoMaps.byId.get(String(directId)) || null;
+  }
+
+  const sessionId = update.session_id;
+  if (sessionId) {
+    const bySession = videoMaps.bySession.get(String(sessionId).toLowerCase());
+    if (bySession) return bySession;
+  }
+
+  const name = update.video_name || update.record_name || update.name;
+  if (name) {
+    return videoMaps.byName.get(String(name).trim().toLowerCase()) || null;
+  }
+
+  return null;
 }
 
 function normalizeVolumeUnit(unit) {
@@ -1607,6 +1734,115 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(req, res, 200, { nodeId: node.id, parentId: node.parent_id, type: node.type });
+      return;
+    }
+
+    if (url.pathname === '/api/videos/bulk-update' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const updates = Array.isArray(body?.updates) ? body.updates : null;
+      if (!updates) {
+        sendJson(req, res, 400, { error: 'Body must include updates array' });
+        return;
+      }
+
+      const [videos] = await pool.query('SELECT id, external_id, title FROM videos WHERE user_id = ?', [user.id]);
+      const maps = buildVideoLookupMaps(videos);
+      const mergedByVideoId = new Map();
+      const duplicateWarnings = [];
+      const preResults = [];
+      let validCount = 0;
+
+      for (let index = 0; index < updates.length; index += 1) {
+        const rawUpdate = updates[index] || {};
+        const normalizedUpdate = {
+          ...rawUpdate,
+          video_id: rawUpdate.video_id || rawUpdate.record_id || null,
+          video_name: rawUpdate.video_name || rawUpdate.record_name || rawUpdate.name || null,
+        };
+        const { normalizedFields, extras, invalidKeys } = normalizeBulkUpdateFields(normalizedUpdate.fields);
+        const fieldEntries = Object.entries(normalizedFields);
+        if (!fieldEntries.length || invalidKeys.length) {
+          preResults.push({
+            inputIndex: index,
+            status: 'skipped',
+            reason: !fieldEntries.length ? 'empty_fields' : 'invalid_fields',
+            invalidKeys,
+          });
+          continue;
+        }
+
+        const video = resolveBulkVideo(maps, normalizedUpdate);
+        if (!video) {
+          preResults.push({ inputIndex: index, status: 'skipped', reason: 'not_found' });
+          continue;
+        }
+
+        validCount += 1;
+        const previous = mergedByVideoId.get(video.id);
+        if (previous) {
+          duplicateWarnings.push({
+            inputIndex: index,
+            reason: 'duplicate_target',
+            videoId: video.id,
+            replacedInputIndex: previous.inputIndex,
+          });
+        }
+        mergedByVideoId.set(video.id, {
+          inputIndex: index,
+          videoId: video.id,
+          fields: Object.assign(previous?.fields || {}, normalizedFields),
+          extras: Object.assign(previous?.extras || {}, extras),
+        });
+      }
+
+      const mergedUpdates = [...mergedByVideoId.values()];
+      const summary = {
+        received: updates.length,
+        valid: validCount,
+        matched: mergedUpdates.length,
+        updated: 0,
+        skipped: preResults.length,
+      };
+
+      try {
+        await pool.query('BEGIN');
+        for (const entry of mergedUpdates) {
+          const payload = { ...entry.fields };
+          if (Object.keys(entry.extras || {}).length) {
+            payload.metrics_json = JSON.stringify(entry.extras);
+          }
+          const setEntries = Object.entries(payload);
+          const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+          const values = setEntries.map(([, value]) => value);
+          await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.videoId, user.id]);
+          summary.updated += 1;
+        }
+        await pool.query('COMMIT');
+      } catch (error) {
+        await pool.query('ROLLBACK');
+        throw error;
+      }
+
+      const results = [
+        ...preResults,
+        ...mergedUpdates.map((entry) => ({ inputIndex: entry.inputIndex, status: 'updated', videoId: entry.videoId })),
+      ].sort((a, b) => a.inputIndex - b.inputIndex);
+
+      sendJson(req, res, 200, {
+        ok: true,
+        summary: {
+          ...summary,
+          skipped: summary.received - summary.updated,
+        },
+        warnings: duplicateWarnings,
+        results,
+      });
       return;
     }
 

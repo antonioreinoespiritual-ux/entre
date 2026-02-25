@@ -1,12 +1,14 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Activity, ArrowLeft, Plus, Trash2, Video } from 'lucide-react';
+import { Activity, ArrowLeft, Plus, Trash2, Video, Upload, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
 import { useAudiences } from '@/contexts/AudienceContext';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
+import { useToast } from '@/components/ui/use-toast';
+import { validateBulkVideoUpdates } from '@/lib/bulkVideoUpdates';
 
 const tabs = ['paid', 'organic', 'live'];
 const baseVideo = {
@@ -35,12 +37,17 @@ const labels = {
 const HypothesisDetailPage = () => {
   const { projectId, campaignId, hypothesisId } = useParams();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { hypotheses, fetchHypotheses } = useHypotheses();
   const { videos, fetchVideos, createVideo, deleteVideo } = useVideos();
   const { audiences, fetchAudiences } = useAudiences();
 
   const [activeTab, setActiveTab] = useState('paid');
   const [showForm, setShowForm] = useState(false);
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkInput, setBulkInput] = useState('');
+  const [bulkPreview, setBulkPreview] = useState(null);
+  const [bulkApplying, setBulkApplying] = useState(false);
   const [form, setForm] = useState(baseVideo);
   const [editingVideo, setEditingVideo] = useState(null);
   const [editForm, setEditForm] = useState(baseVideo);
@@ -131,6 +138,43 @@ const HypothesisDetailPage = () => {
     }
   };
 
+  const runBulkValidation = () => {
+    const preview = validateBulkVideoUpdates(bulkInput, videos);
+    setBulkPreview(preview);
+    if (!preview.ok) {
+      toast({ title: 'Validación fallida', description: preview.errors[0] || 'Corrige el JSON para continuar', variant: 'destructive' });
+      return;
+    }
+    toast({ title: 'Validación OK', description: `Listo para actualizar ${preview.summary.willUpdate} videos` });
+  };
+
+  const applyBulkUpdate = async () => {
+    if (!bulkPreview?.ok || !bulkPreview?.payload) return;
+    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+    setBulkApplying(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/videos/bulk-update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token || ''}`,
+        },
+        body: JSON.stringify(bulkPreview.payload),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || 'No se pudo aplicar actualización masiva');
+      toast({ title: 'Actualización masiva completada', description: `Actualizados ${json.summary?.updated || 0}/${json.summary?.received || 0}` });
+      await fetchVideos(hypothesisId);
+      setShowBulkModal(false);
+      setBulkInput('');
+      setBulkPreview(null);
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } finally {
+      setBulkApplying(false);
+    }
+  };
+
   if (!hypothesis) return <div className="min-h-screen flex items-center justify-center">Cargando hipótesis...</div>;
 
   return (
@@ -163,7 +207,7 @@ const HypothesisDetailPage = () => {
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-6">
-          <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-semibold flex items-center gap-2"><Video className="w-5 h-5 text-purple-600" />Videos</h2><Button className="bg-purple-600 text-white" onClick={() => setShowForm((v) => !v)}><Plus className="w-4 h-4 mr-2" />Crear video {activeTab}</Button></div>
+          <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-semibold flex items-center gap-2"><Video className="w-5 h-5 text-purple-600" />Videos</h2><div className="flex items-center gap-2"><Button className="bg-slate-900 text-cyan-300 border border-cyan-600 hover:bg-slate-800" onClick={() => setShowBulkModal(true)}><Upload className="w-4 h-4 mr-2" />Actualización masiva</Button><Button className="bg-purple-600 text-white" onClick={() => setShowForm((v) => !v)}><Plus className="w-4 h-4 mr-2" />Crear video {activeTab}</Button></div></div>
 
           <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab===tab? 'bg-purple-600 text-white':'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
 
@@ -214,6 +258,77 @@ const HypothesisDetailPage = () => {
           )}
         </div>
       </div>
+
+      {showBulkModal && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-6xl rounded-2xl border border-cyan-700/60 bg-slate-950/95 shadow-[0_0_50px_rgba(34,211,238,0.25)] p-6 text-slate-100">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <h3 className="text-2xl font-semibold text-cyan-300">Actualización masiva</h3>
+                <p className="text-sm text-slate-300">Pega el JSON de updates y valida antes de aplicar.</p>
+              </div>
+              <Button className="bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => setShowBulkModal(false)}><X className="w-4 h-4" /></Button>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="rounded-xl border border-slate-700 bg-slate-900/80 p-3">
+                <label className="block text-sm font-medium text-cyan-200 mb-2">JSON DE UPDATES</label>
+                <textarea
+                  className="w-full min-h-[320px] rounded-lg border border-slate-700 bg-slate-950 text-slate-100 p-3 font-mono text-sm"
+                  value={bulkInput}
+                  onChange={(event) => setBulkInput(event.target.value)}
+                  placeholder='{"updates":[{"video_id":"...","fields":{"views":1200,"clicks":"45"}}]}'
+                />
+              </div>
+
+              <div className="rounded-xl border border-slate-700 bg-slate-900/80 p-3">
+                <h4 className="text-sm font-medium text-cyan-200 mb-2">Previsualización</h4>
+                {!bulkPreview ? (
+                  <p className="text-sm text-slate-400">Aún no validado.</p>
+                ) : (
+                  <div className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg border border-slate-700 p-2">Recibidos: <b>{bulkPreview.summary?.received || 0}</b></div>
+                      <div className="rounded-lg border border-slate-700 p-2">Aplicables: <b>{bulkPreview.summary?.willUpdate || 0}</b></div>
+                      <div className="rounded-lg border border-slate-700 p-2">Inválidos: <b>{bulkPreview.summary?.invalid || 0}</b></div>
+                      <div className="rounded-lg border border-slate-700 p-2">No encontrados: <b>{bulkPreview.summary?.notFound || 0}</b></div>
+                    </div>
+
+                    {bulkPreview.warnings?.length ? <div className="rounded-lg border border-yellow-600/60 bg-yellow-500/10 p-2 text-yellow-200">{bulkPreview.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div> : null}
+                    {bulkPreview.errors?.length ? <div className="rounded-lg border border-red-600/60 bg-red-500/10 p-2 text-red-200">{bulkPreview.errors.map((error) => <p key={error}>{error}</p>)}</div> : null}
+
+                    <div className="max-h-[200px] overflow-auto rounded-lg border border-slate-700">
+                      <table className="w-full text-xs">
+                        <thead className="bg-slate-800 sticky top-0">
+                          <tr><th className="text-left p-2">inputIndex</th><th className="text-left p-2">Identificador</th><th className="text-left p-2">Estado</th><th className="text-left p-2">Fields</th></tr>
+                        </thead>
+                        <tbody>
+                          {bulkPreview.previewRows.map((row) => (
+                            <tr key={`${row.inputIndex}-${row.identifier}`} className="border-t border-slate-800">
+                              <td className="p-2">{row.inputIndex}</td>
+                              <td className="p-2">{row.identifier}</td>
+                              <td className="p-2">{row.status}</td>
+                              <td className="p-2">{row.fieldKeys.join(', ') || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <p className="text-xs text-slate-400">Identificador prioritario: video_id -&gt; session_id -&gt; video_name.</p>
+              <div className="flex items-center gap-2">
+                <Button className="bg-cyan-700 hover:bg-cyan-600 text-white" onClick={runBulkValidation}>Validar</Button>
+                <Button className="bg-emerald-600 hover:bg-emerald-500 text-white" disabled={!bulkPreview?.ok || bulkApplying} onClick={applyBulkUpdate}>{bulkApplying ? 'Aplicando...' : 'Aplicar'}</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
