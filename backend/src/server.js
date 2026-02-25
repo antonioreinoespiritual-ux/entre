@@ -216,6 +216,7 @@ const schemaSql = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_parent ON cloud_nodes(user_id, parent_id)',
   'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_target ON cloud_nodes(user_id, target_type, target_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_target_type ON cloud_nodes(user_id, target_type, target_id, type)',
 ];
 
 const textEncoder = new TextEncoder();
@@ -280,6 +281,67 @@ async function ensureFolder(userId, parentId, name) {
   return createCloudNode({ userId, parentId, name, type: 'folder' });
 }
 
+async function ensureTargetFolder(userId, parentId, name, targetType, targetId) {
+  const sql = parentId == null
+    ? 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id IS NULL AND type = ? AND target_type = ? AND target_id = ? LIMIT 1'
+    : 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id = ? AND type = ? AND target_type = ? AND target_id = ? LIMIT 1';
+  const params = parentId == null
+    ? [userId, 'folder', targetType, targetId]
+    : [userId, parentId, 'folder', targetType, targetId];
+  const [rows] = await pool.query(sql, params);
+  const existing = rows[0];
+  if (existing) {
+    if (existing.name !== name) {
+      await pool.query('UPDATE cloud_nodes SET name = ?, updated_at = ? WHERE id = ?', [name, nowIso(), existing.id]);
+      existing.name = name;
+    }
+    return existing;
+  }
+  return createCloudNode({ userId, parentId, name, type: 'folder', targetType, targetId });
+}
+
+const VIDEO_FOLDER_TEMPLATES = ['Raw', 'Audio', 'Guion', 'Thumbnails', 'Capturas', 'Export'];
+
+async function ensureVideoCloudFolderStructure(userId, parentId, video) {
+  const videoName = (video.title || video.record_name || `Video ${video.id}`).slice(0, 80);
+  const videoFolder = await ensureTargetFolder(userId, parentId, videoName, 'video', video.id);
+  for (const subfolderName of VIDEO_FOLDER_TEMPLATES) {
+    await ensureFolder(userId, videoFolder.id, subfolderName);
+  }
+  await ensureShortcut(userId, videoFolder.id, 'Abrir dashboard', 'video', video.id);
+  return videoFolder;
+}
+
+async function migrateVideoShortcutsToFolders(userId) {
+  const [legacyShortcuts] = await pool.query(
+    `SELECT s.*
+     FROM cloud_nodes s
+     LEFT JOIN cloud_nodes p ON p.id = s.parent_id AND p.user_id = s.user_id
+     WHERE s.user_id = ?
+       AND s.type = 'shortcut'
+       AND s.target_type = 'video'
+       AND (p.id IS NULL OR p.target_type != 'video' OR p.type != 'folder')`,
+    [userId],
+  );
+
+  for (const shortcut of legacyShortcuts) {
+    const folder = await ensureTargetFolder(
+      userId,
+      shortcut.parent_id,
+      (shortcut.name || `Video ${shortcut.target_id}`).slice(0, 80),
+      'video',
+      shortcut.target_id,
+    );
+
+    await pool.query('UPDATE cloud_nodes SET parent_id = ?, updated_at = ? WHERE parent_id = ? AND user_id = ?', [folder.id, nowIso(), shortcut.id, userId]);
+    for (const subfolderName of VIDEO_FOLDER_TEMPLATES) {
+      await ensureFolder(userId, folder.id, subfolderName);
+    }
+    await ensureShortcut(userId, folder.id, 'Abrir dashboard', 'video', shortcut.target_id);
+    await pool.query('DELETE FROM cloud_nodes WHERE id = ? AND user_id = ?', [shortcut.id, userId]);
+  }
+}
+
 async function findCloudShortcut(userId, parentId, targetType, targetId) {
   const sql = parentId == null
     ? 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id IS NULL AND type = ? AND target_type = ? AND target_id = ? LIMIT 1'
@@ -304,6 +366,8 @@ async function ensureShortcut(userId, parentId, name, targetType, targetId) {
 }
 
 async function syncCloudForUser(userId) {
+  await migrateVideoShortcutsToFolders(userId);
+
   const root = await ensureFolder(userId, null, 'Cloud');
   const projectsFolder = await ensureFolder(userId, root.id, 'Proyectos');
 
@@ -343,9 +407,9 @@ async function syncCloudForUser(userId) {
 
         const hypothesisVideos = videos.filter((video) => video.hypothesis_id === hypothesis.id);
         for (const video of hypothesisVideos) {
-          await ensureShortcut(userId, videosFolder.id, video.title || `Video ${video.id}`, 'video', video.id);
+          const videoFolder = await ensureVideoCloudFolderStructure(userId, videosFolder.id, video);
           if (video.audience_id && audienceVideosMap.has(video.audience_id)) {
-            await ensureShortcut(userId, audienceVideosMap.get(video.audience_id).id, video.title || `Video ${video.id}`, 'video', video.id);
+            await ensureShortcut(userId, audienceVideosMap.get(video.audience_id).id, videoFolder.name, 'video', video.id);
           }
         }
       }
@@ -357,8 +421,11 @@ async function syncCloudForUser(userId) {
 
 async function locateCloudNodeForTarget(userId, targetType, targetId) {
   const [rows] = await pool.query(
-    'SELECT * FROM cloud_nodes WHERE user_id = ? AND target_type = ? AND target_id = ? ORDER BY updated_at DESC LIMIT 1',
-    [userId, targetType, targetId],
+    `SELECT * FROM cloud_nodes
+     WHERE user_id = ? AND target_type = ? AND target_id = ?
+     ORDER BY CASE WHEN ? = 'video' AND type = 'folder' THEN 0 ELSE 1 END, updated_at DESC
+     LIMIT 1`,
+    [userId, targetType, targetId, targetType],
   );
   return rows[0] || null;
 }
