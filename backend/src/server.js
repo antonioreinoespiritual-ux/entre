@@ -790,6 +790,8 @@ function stringifyIdentifierValue(value) {
 
 async function resolveVideoIdentifier(updateItem, authUserId) {
   const normalized = normalizeIdentifierPayload(updateItem);
+  const notFoundReasons = [];
+
   const videoIdRaw = stringifyIdentifierValue(normalized.video_id);
   if (videoIdRaw) {
     const [rows] = await pool.query(
@@ -799,7 +801,17 @@ async function resolveVideoIdentifier(updateItem, authUserId) {
     if (rows[0]) {
       return { matched: true, matchedVideoId: String(rows[0].id), identifierUsed: 'video_id', reasonIfNotFound: null };
     }
-    return { matched: false, matchedVideoId: null, identifierUsed: 'video_id', reasonIfNotFound: `video_id_not_found:${videoIdRaw}` };
+
+    // Compatibilidad: en algunos flujos antiguos "record_id" llegaba en external_id/session_id.
+    const [legacyRows] = await pool.query(
+      'SELECT id FROM videos WHERE user_id = ? AND lower(external_id) = lower(?) LIMIT 1',
+      [authUserId, videoIdRaw],
+    );
+    if (legacyRows[0]) {
+      return { matched: true, matchedVideoId: String(legacyRows[0].id), identifierUsed: 'video_id(external_id)', reasonIfNotFound: null };
+    }
+
+    notFoundReasons.push(`video_id_not_found:${videoIdRaw}`);
   }
 
   const sessionIdRaw = stringifyIdentifierValue(normalized.session_id);
@@ -808,7 +820,7 @@ async function resolveVideoIdentifier(updateItem, authUserId) {
     if (rows[0]) {
       return { matched: true, matchedVideoId: String(rows[0].id), identifierUsed: 'session_id', reasonIfNotFound: null };
     }
-    return { matched: false, matchedVideoId: null, identifierUsed: 'session_id', reasonIfNotFound: `session_id_not_found:${sessionIdRaw}` };
+    notFoundReasons.push(`session_id_not_found:${sessionIdRaw}`);
   }
 
   const videoNameRaw = stringifyIdentifierValue(normalized.video_name);
@@ -817,10 +829,20 @@ async function resolveVideoIdentifier(updateItem, authUserId) {
     if (rows[0]) {
       return { matched: true, matchedVideoId: String(rows[0].id), identifierUsed: 'video_name', reasonIfNotFound: null };
     }
-    return { matched: false, matchedVideoId: null, identifierUsed: 'video_name', reasonIfNotFound: `video_name_not_found:${videoNameRaw}` };
+    notFoundReasons.push(`video_name_not_found:${videoNameRaw}`);
   }
 
-  return { matched: false, matchedVideoId: null, identifierUsed: null, reasonIfNotFound: 'missing_identifier' };
+  if (!videoIdRaw && !sessionIdRaw && !videoNameRaw) {
+    return { matched: false, matchedVideoId: null, identifierUsed: null, reasonIfNotFound: 'missing_identifier' };
+  }
+
+  const attempted = [videoIdRaw ? 'video_id' : null, sessionIdRaw ? 'session_id' : null, videoNameRaw ? 'video_name' : null].filter(Boolean);
+  return {
+    matched: false,
+    matchedVideoId: null,
+    identifierUsed: attempted.join('->') || null,
+    reasonIfNotFound: notFoundReasons.join('|') || 'not_found',
+  };
 }
 
 function normalizeVolumeUnit(unit) {
