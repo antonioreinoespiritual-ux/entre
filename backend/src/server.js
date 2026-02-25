@@ -156,6 +156,16 @@ const schemaSql = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)',
   'CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)',
+  `CREATE TABLE IF NOT EXISTS hypothesis_analysis_runs (
+    id TEXT PRIMARY KEY,
+    hypothesis_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    config_json TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    dataset_hash TEXT NOT NULL,
+    FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_analysis_runs_hypothesis_id ON hypothesis_analysis_runs(hypothesis_id)',
 ];
 
 const textEncoder = new TextEncoder();
@@ -340,6 +350,265 @@ async function runMigrations() {
   await ensureVideoHierarchyMigration();
 }
 
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function stdDev(values) {
+  if (!values.length) return 0;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(values.length - 1, 1);
+  return Math.sqrt(Math.max(variance, 0));
+}
+
+function normCdf(z) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const d = 0.3989423 * Math.exp((-z * z) / 2);
+  let prob = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  if (z > 0) prob = 1 - prob;
+  return prob;
+}
+
+function bootstrapProbability(values, predicate, iterations = 500) {
+  if (!values.length) return 0;
+  let hits = 0;
+  for (let i = 0; i < iterations; i += 1) {
+    const sample = [];
+    for (let j = 0; j < values.length; j += 1) {
+      sample.push(values[Math.floor(Math.random() * values.length)]);
+    }
+    if (predicate(sample)) hits += 1;
+  }
+  return hits / iterations;
+}
+
+function percentile(sortedValues, q) {
+  if (!sortedValues.length) return 0;
+  const pos = (sortedValues.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  if (sortedValues[base + 1] !== undefined) {
+    return sortedValues[base] + rest * (sortedValues[base + 1] - sortedValues[base]);
+  }
+  return sortedValues[base];
+}
+
+function metricFromVideo(video, metric) {
+  if (metric === 'ctr') {
+    if (toNumber(video.views) > 0) return toNumber(video.clicks) / toNumber(video.views);
+    return toNumber(video.ctr, 0);
+  }
+  if (metric === 'purchase_rate') {
+    if (toNumber(video.view_content) > 0) return toNumber(video.purchase) / toNumber(video.view_content);
+    return 0;
+  }
+  return toNumber(video[metric], 0);
+}
+
+function runFrequentistAnalysis(videos, config) {
+  const metric = config.primary_metric || 'ctr';
+  const alpha = Number(config.alpha || 0.05);
+  const threshold = Number(config.threshold_value ?? 0);
+  const operator = config.threshold_operator || '>=';
+  const baseline = videos.filter((video) => String(video.variant || '').toUpperCase() === 'A');
+  const treatment = videos.filter((video) => String(video.variant || '').toUpperCase() === 'B');
+
+  const baselineValues = baseline.map((video) => metricFromVideo(video, metric));
+  const treatmentValues = treatment.map((video) => metricFromVideo(video, metric));
+  const allValues = videos.map((video) => metricFromVideo(video, metric));
+  const baselineMean = baselineValues.length ? baselineValues.reduce((a, b) => a + b, 0) / baselineValues.length : 0;
+  const treatmentMean = treatmentValues.length ? treatmentValues.reduce((a, b) => a + b, 0) / treatmentValues.length : 0;
+  const observedMean = allValues.length ? allValues.reduce((a, b) => a + b, 0) / allValues.length : 0;
+
+  if (baselineValues.length >= 2 && treatmentValues.length >= 2) {
+    const baselineStd = stdDev(baselineValues);
+    const treatmentStd = stdDev(treatmentValues);
+    const delta = treatmentMean - baselineMean;
+    const se = Math.sqrt((baselineStd ** 2) / baselineValues.length + (treatmentStd ** 2) / treatmentValues.length) || 1;
+    const z = delta / se;
+    const pValue = 2 * (1 - normCdf(Math.abs(z)));
+    const ciLow = delta - 1.96 * se;
+    const ciHigh = delta + 1.96 * se;
+    return {
+      mode: 'ab_test',
+      metric,
+      delta_absolute: delta,
+      delta_relative: baselineMean ? delta / baselineMean : null,
+      ci_95: [ciLow, ciHigh],
+      p_value: pValue,
+      effect_size: (baselineStd || treatmentStd) ? delta / (((baselineStd + treatmentStd) / 2) || 1) : 0,
+      passes: pValue < alpha && delta > 0,
+    };
+  }
+
+  const std = stdDev(allValues);
+  const se = std / Math.sqrt(Math.max(allValues.length, 1)) || 1;
+  const delta = observedMean - threshold;
+  const z = delta / se;
+  const pValue = operator.includes('>') ? (1 - normCdf(z)) : normCdf(z);
+  return {
+    mode: 'threshold_test',
+    metric,
+    observed_mean: observedMean,
+    threshold,
+    delta_absolute: delta,
+    ci_95: [observedMean - 1.96 * se, observedMean + 1.96 * se],
+    p_value: pValue,
+    effect_size: std ? delta / std : 0,
+    passes: operator.includes('>') ? observedMean >= threshold && pValue < alpha : observedMean <= threshold && pValue < alpha,
+  };
+}
+
+function runBayesianAnalysis(videos, config) {
+  const metric = config.primary_metric || 'ctr';
+  const threshold = Number(config.threshold_value ?? 0);
+  if (metric === 'ctr') {
+    const successes = videos.reduce((sum, video) => sum + toNumber(video.clicks), 0);
+    const failures = Math.max(videos.reduce((sum, video) => sum + toNumber(video.views), 0) - successes, 0);
+    const alphaPost = 1 + successes;
+    const betaPost = 1 + failures;
+    const mean = alphaPost / (alphaPost + betaPost);
+    const variance = (alphaPost * betaPost) / (((alphaPost + betaPost) ** 2) * (alphaPost + betaPost + 1));
+    const sd = Math.sqrt(Math.max(variance, 0));
+    const probabilityAboveThreshold = 1 - normCdf((threshold - mean) / (sd || 1));
+    return {
+      model: 'beta_binomial',
+      posterior_mean: mean,
+      credible_interval_95: [Math.max(mean - 1.96 * sd, 0), Math.min(mean + 1.96 * sd, 1)],
+      p_improvement_gt_0: 1 - normCdf((0 - mean) / (sd || 1)),
+      p_improvement_gt_threshold: probabilityAboveThreshold,
+      recommendation: probabilityAboveThreshold > 0.95 ? 'alto chance de éxito' : probabilityAboveThreshold < 0.3 ? 'improbable' : 'incierto',
+    };
+  }
+
+  const values = videos.map((video) => metricFromVideo(video, metric));
+  const sorted = [...values].sort((a, b) => a - b);
+  const pAbove0 = bootstrapProbability(values, (sample) => (sample.reduce((a, b) => a + b, 0) / sample.length) > 0);
+  const pAboveThreshold = bootstrapProbability(values, (sample) => (sample.reduce((a, b) => a + b, 0) / sample.length) > threshold);
+  return {
+    model: 'bootstrap_posterior',
+    posterior_mean: values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0,
+    credible_interval_95: [percentile(sorted, 0.025), percentile(sorted, 0.975)],
+    p_improvement_gt_0: pAbove0,
+    p_improvement_gt_threshold: pAboveThreshold,
+    recommendation: pAboveThreshold > 0.95 ? 'alto chance de éxito' : pAboveThreshold < 0.3 ? 'improbable' : 'incierto',
+  };
+}
+
+function runDataDiagnostics(videos, hypothesis, config) {
+  const metric = config.primary_metric || hypothesis.metrica_objetivo_y || 'ctr';
+  const missingTitle = videos.filter((video) => !video.title).length;
+  const duplicateCreative = new Set();
+  const seenCreative = new Set();
+  for (const video of videos) {
+    if (!video.creative_id) continue;
+    if (seenCreative.has(video.creative_id)) duplicateCreative.add(video.creative_id);
+    seenCreative.add(video.creative_id);
+  }
+  const values = videos.map((video) => metricFromVideo(video, metric));
+  const mean = values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+  const std = stdDev(values);
+  const outliers = values.filter((value) => std > 0 && Math.abs((value - mean) / std) > 3).length;
+  const channels = new Set(videos.map((video) => video.video_type).filter(Boolean));
+  const minVolume = Number(hypothesis.volumen_minimo || 0);
+  const sampleInsufficient = videos.length < minVolume;
+  const ctrInconsistencies = videos.filter((video) => toNumber(video.views) > 0 && Math.abs((toNumber(video.clicks) / toNumber(video.views)) - toNumber(video.ctr || 0)) > 0.2).length;
+
+  return {
+    checks: [
+      { check: 'missing_title', status: missingTitle ? 'warning' : 'ok', detail: `${missingTitle} registros sin title` },
+      { check: 'outliers', status: outliers ? 'warning' : 'ok', detail: `${outliers} outliers (>3σ)` },
+      { check: 'duplicates_creative_id', status: duplicateCreative.size ? 'warning' : 'ok', detail: `${duplicateCreative.size} creative_id duplicados` },
+      { check: 'mixed_channels', status: channels.size > 1 ? 'warning' : 'ok', detail: `${channels.size} tipos de canal en muestra` },
+      { check: 'sample_size', status: sampleInsufficient ? 'warning' : 'ok', detail: `n=${videos.length}, volumen mínimo=${minVolume}` },
+      { check: 'ctr_consistency', status: ctrInconsistencies ? 'warning' : 'ok', detail: `${ctrInconsistencies} inconsistencias clicks/views vs ctr` },
+    ],
+    histogram: {
+      metric,
+      min: values.length ? Math.min(...values) : 0,
+      max: values.length ? Math.max(...values) : 0,
+      mean,
+      std,
+    },
+    warnings_count: [missingTitle, outliers, duplicateCreative.size, channels.size > 1 ? 1 : 0, sampleInsufficient ? 1 : 0, ctrInconsistencies].filter(Boolean).length,
+  };
+}
+
+function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos }) {
+  const minVolume = Number(hypothesis.volumen_minimo || 0);
+  const volumeOk = videos.length >= minVolume;
+  const passesFrequentist = Boolean(frequentist?.passes);
+  const bayesStrong = Number(bayesian?.p_improvement_gt_threshold || 0) >= 0.95;
+  const cleanEnough = diagnostics.warnings_count <= 2;
+  const validated = volumeOk && cleanEnough && (passesFrequentist || bayesStrong);
+  const inconclusive = !validated && (videos.length > 0);
+  return {
+    status: validated ? 'Validada' : inconclusive ? 'Inconclusa' : 'No validada',
+    summary: validated
+      ? 'La hipótesis supera umbral con evidencia estadística y calidad aceptable.'
+      : inconclusive
+        ? 'La hipótesis aún no alcanza evidencia suficiente o calidad de datos adecuada.'
+        : 'No hay evidencia para validar la hipótesis.',
+    confidence: {
+      frequentist_pass: passesFrequentist,
+      bayesian_probability: Number(bayesian?.p_improvement_gt_threshold || 0),
+      volume_ok: volumeOk,
+      warnings: diagnostics.warnings_count,
+    },
+    recommendation: validated
+      ? 'Escalar'
+      : volumeOk
+        ? 'Iterar creativos / cambiar variable X'
+        : 'Recolectar más muestra',
+  };
+}
+
+async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
+  const [hypothesisRows] = await pool.query(
+    `SELECT h.*
+     FROM hypotheses h
+     JOIN campaigns c ON c.id = h.campaign_id
+     JOIN projects p ON p.id = c.project_id
+     WHERE h.id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+     LIMIT 1`,
+    [hypothesisId, userId, userId, userId],
+  );
+  const hypothesis = hypothesisRows[0];
+  if (!hypothesis) throw new Error('Hypothesis not found');
+
+  const filters = ['hypothesis_id = ?', 'user_id = ?'];
+  const values = [hypothesisId, userId];
+  if (config.video_type) {
+    filters.push('video_type = ?');
+    values.push(config.video_type);
+  }
+  if (config.date_from) {
+    filters.push('created_at >= ?');
+    values.push(config.date_from);
+  }
+  if (config.date_to) {
+    filters.push('created_at <= ?');
+    values.push(config.date_to);
+  }
+
+  const [videos] = await pool.query(`SELECT * FROM videos WHERE ${filters.join(' AND ')} ORDER BY created_at DESC`, values);
+  return { hypothesis, videos };
+}
+
+async function runHypothesisAnalysis(hypothesis, videos, config) {
+  const frequentist = runFrequentistAnalysis(videos, config);
+  const bayesian = runBayesianAnalysis(videos, config);
+  const diagnostics = runDataDiagnostics(videos, hypothesis, config);
+  const sequential = {
+    stopping_rule: 'bayesian_probability_threshold',
+    can_stop: bayesian.p_improvement_gt_threshold > 0.95 || bayesian.p_improvement_gt_threshold < 0.10,
+    risk_note: 'Riesgo de falso positivo controlado por regla bayesiana de stopping.',
+  };
+  const verdict = buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos });
+  return { frequentist, bayesian, sequential, diagnostics, verdict };
+}
+
 async function executeCrudQuery(body, currentUserId) {
   const table = body.table;
   const operation = body.operation || 'select';
@@ -439,6 +708,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
     if (req.url === '/api/health' && req.method === 'GET') {
       await pool.query('SELECT 1 AS ok');
       sendJson(req, res, 200, { ok: true, error: null });
@@ -498,6 +769,78 @@ const server = http.createServer(async (req, res) => {
       const token = (req.headers.authorization || '').replace('Bearer ', '');
       sessions.delete(token);
       sendJson(req, res, 200, { ok: true });
+      return;
+    }
+
+    const analysisDataMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/analysis-data$/);
+    if (analysisDataMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const hypothesisId = analysisDataMatch[1];
+      const config = {
+        video_type: url.searchParams.get('video_type') || '',
+        date_from: url.searchParams.get('date_from') || '',
+        date_to: url.searchParams.get('date_to') || '',
+      };
+
+      const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
+      const [runs] = await pool.query(
+        'SELECT id, hypothesis_id, created_at, config_json, results_json, dataset_hash FROM hypothesis_analysis_runs WHERE hypothesis_id = ? ORDER BY created_at DESC LIMIT 15',
+        [hypothesisId],
+      );
+      sendJson(req, res, 200, { hypothesis, videos, runs });
+      return;
+    }
+
+    const analyzeMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/analyze$/);
+    if (analyzeMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const hypothesisId = analyzeMatch[1];
+      const body = await readBody(req);
+      const config = {
+        primary_metric: body.primary_metric || 'ctr',
+        secondary_metrics: Array.isArray(body.secondary_metrics) ? body.secondary_metrics : [],
+        analysis_unit: body.analysis_unit || 'video',
+        comparison_mode: body.comparison_mode || 'threshold',
+        method: body.method || 'hybrid',
+        correction: body.correction || 'none',
+        alpha: Number(body.alpha || 0.05),
+        power: Number(body.power || 0.8),
+        mde: Number(body.mde || 0.1),
+        threshold_operator: body.threshold_operator || '>=',
+        threshold_value: Number(body.threshold_value ?? 0),
+        video_type: body.video_type || '',
+        date_from: body.date_from || '',
+        date_to: body.date_to || '',
+      };
+
+      const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
+      const results = await runHypothesisAnalysis(hypothesis, videos, config);
+      const datasetHash = crypto.createHash('sha256').update(videos.map((video) => video.id).sort().join('|')).digest('hex');
+      const runId = uuid();
+      await pool.query(
+        'INSERT INTO hypothesis_analysis_runs (id, hypothesis_id, config_json, results_json, dataset_hash) VALUES (?, ?, ?, ?, ?)',
+        [runId, hypothesisId, JSON.stringify(config), JSON.stringify(results), datasetHash],
+      );
+
+      await pool.query('UPDATE hypotheses SET validation_status = ? WHERE id = ?', [results.verdict.status, hypothesisId]);
+
+      sendJson(req, res, 200, {
+        hypothesis,
+        dataset_hash: datasetHash,
+        run_id: runId,
+        config,
+        results,
+      });
       return;
     }
 

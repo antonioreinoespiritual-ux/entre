@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Video } from 'lucide-react';
+import { Activity, ArrowLeft, Plus, Trash2, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
@@ -89,7 +89,16 @@ const HypothesisDetailPage = () => {
         <Button onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses`)} className="bg-white border text-gray-700 mb-4"><ArrowLeft className="w-4 h-4 mr-2" />Volver a hipótesis</Button>
 
         <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
-          <h1 className="text-2xl font-bold">Hypothesis Detail Dashboard</h1>
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="text-2xl font-bold">Hypothesis Detail Dashboard</h1>
+            <Button
+              onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesisId}/analysis`)}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white"
+            >
+              <Activity className="w-4 h-4 mr-2" />
+              Análisis avanzado
+            </Button>
+          </div>
           <p className="text-sm text-gray-600 mt-2">Tipo: {hypothesis.type} · Canal: {hypothesis.canal_principal || '-'}</p>
           <p className="mt-2">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
           <p className="text-sm text-gray-500 mt-2">X: {hypothesis.variable_x || '-'} · Y: {hypothesis.metrica_objetivo_y || '-'} · Umbral: {hypothesis.umbral_operador || ''} {hypothesis.umbral_valor ?? ''}</p>
