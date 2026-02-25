@@ -4,6 +4,7 @@ import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
 import { createPool, validateDbEnv } from './config/db.js';
 import { loadBackendEnv } from './config/env.js';
+import { ensureVideoBulkColumns, executeVideoBulkUpdate } from './services/videoBulkUpdate.js';
 
 
 const envSource = loadBackendEnv();
@@ -150,6 +151,8 @@ async function runMigrations() {
   for (const statement of schemaSql) {
     await pool.query(statement);
   }
+
+  await ensureVideoBulkColumns(pool);
 }
 
 async function executeCrudQuery(body, currentUserId) {
@@ -287,6 +290,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const rows = await executeCrudQuery(body, user.id);
       sendJson(res, 200, { data: rows, error: null });
+      return;
+    }
+
+    if (req.url === '/api/videos/bulk-update' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const response = await executeVideoBulkUpdate(pool, user.id, body);
+      sendJson(res, 200, response);
       return;
     }
 
