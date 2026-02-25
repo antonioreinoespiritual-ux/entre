@@ -1,17 +1,12 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-
-function App() {
-  return (
-    <main style={{ fontFamily: 'system-ui, sans-serif', padding: '2rem' }}>
-      <h1>Entre</h1>
-      <p>Frontend inicial cargado correctamente.</p>
-    </main>
-  );
-}
+import { BrowserRouter } from 'react-router-dom';
+import { App } from './App.jsx';
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
   </StrictMode>
 );
