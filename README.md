@@ -8,7 +8,7 @@ Aplicación migrada para usar **backend propio con MySQL** en lugar de Supabase.
 cp .env.example .env
 ```
 
-Ajusta credenciales de MySQL en `.env`.
+Ajusta credenciales de MySQL en `.env`. El backend carga `.env` automáticamente al arrancar.
 
 ## 2) Ejecutar backend
 

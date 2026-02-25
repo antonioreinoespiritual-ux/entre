@@ -2,10 +2,24 @@ import process from 'node:process';
 import http from 'node:http';
 import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
-import { createPool } from './config/db.js';
+import { createPool, validateDbEnv } from './config/db.js';
+import { loadBackendEnv } from './config/env.js';
+
+
+const envSource = loadBackendEnv();
+
+try {
+  validateDbEnv(process.env);
+} catch (error) {
+  const sourceHint = envSource.loaded
+    ? `Loaded env from ${envSource.path}`
+    : 'No .env file found in project root (or .env.example).';
+  console.error(`${error.message}. ${sourceHint} Copy .env.example to .env and adjust MySQL credentials.`);
+  process.exit(1);
+}
 
 const port = Number(process.env.BACKEND_PORT || 4000);
-const pool = createPool();
+const pool = createPool(process.env);
 const sessions = new Map();
 const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'users']);
 
