@@ -1,4 +1,4 @@
-const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const configuredApiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
 
 const authSubscribers = new Set();
@@ -36,6 +36,20 @@ function setStoredSession(session) {
   }
 }
 
+function candidateApiBaseUrls() {
+  const candidates = [configuredApiBaseUrl];
+
+  if (typeof window !== 'undefined') {
+    const { protocol, hostname } = window.location;
+    const fallbackProtocol = protocol === 'https:' ? 'https:' : 'http:';
+    candidates.push(`${fallbackProtocol}//${hostname}:4000`);
+    candidates.push('http://127.0.0.1:4000');
+    candidates.push('http://localhost:4000');
+  }
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 async function request(path, options = {}) {
   const session = getStoredSession();
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
@@ -43,16 +57,25 @@ async function request(path, options = {}) {
     headers.Authorization = `Bearer ${session.access_token}`;
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...options,
-    headers,
-  });
+  let lastError = null;
+  for (const baseUrl of candidateApiBaseUrls()) {
+    try {
+      const response = await fetch(`${baseUrl}${path}`, {
+        ...options,
+        headers,
+      });
 
-  const json = await response.json();
-  if (!response.ok) {
-    throw new Error(json.error || 'Request failed');
+      const json = await response.json();
+      if (!response.ok) {
+        throw new Error(json.error || `Request failed (${response.status})`);
+      }
+      return json;
+    } catch (error) {
+      lastError = error;
+    }
   }
-  return json;
+
+  throw new Error(lastError?.message || 'No se pudo conectar al backend. Verifica VITE_BACKEND_URL y backend:dev en puerto 4000.');
 }
 
 async function enrichWithRelations(rows, relations) {
