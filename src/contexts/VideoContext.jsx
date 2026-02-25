@@ -20,14 +20,28 @@ export const VideoProvider = ({ children }) => {
   const { toast } = useToast();
 
   useEffect(() => {
+    let active = true;
+
     const getCurrentUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
+      if (!active) return;
       if (user) {
         setCurrentUser(user);
       }
     };
+
     getCurrentUser();
-  }, []);
+    const retryTimer = setInterval(() => {
+      if (!currentUser) {
+        getCurrentUser();
+      }
+    }, 1000);
+
+    return () => {
+      active = false;
+      clearInterval(retryTimer);
+    };
+  }, [currentUser]);
 
   const validateHypothesesForVideo = useCallback(async (audienceId, videoMetrics) => {
     if (!currentUser) return;
