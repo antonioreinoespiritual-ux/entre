@@ -8,7 +8,7 @@ Aplicación migrada para usar **backend propio con SQLite (mysqlite)** en lugar 
 cp .env.example .env
 ```
 
-Ajusta la ruta de SQLite en `.env` (`SQLITE_PATH` o `MYSQLITE_PATH`) y `CORS_ORIGIN` (por defecto `http://localhost:3000`). El backend carga `.env` automáticamente al arrancar.
+Ajusta la ruta de SQLite en `.env` (`SQLITE_PATH` o `MYSQLITE_PATH`) y `CORS_ORIGIN` (lista separada por comas para tus orígenes locales). El backend carga `.env` automáticamente al arrancar.
 
 ## 2) Ejecutar backend
 

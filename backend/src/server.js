@@ -20,7 +20,18 @@ try {
 
 const port = Number(process.env.BACKEND_PORT || 4000);
 const pool = createPool(process.env);
-const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
+const defaultCorsOrigins = [
+  'http://localhost',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://127.0.0.1',
+  'http://127.0.0.1:3000',
+  'http://127.0.0.1:5173',
+];
+const corsOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigins.join(','))
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
 const sessions = new Map();
 const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'users']);
 
@@ -116,15 +127,23 @@ function normalizeIdentifier(value) {
   return `\`${value}\``;
 }
 
-function setCorsHeaders(res) {
-  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+function resolveCorsOrigin(req) {
+  const requestOrigin = req.headers.origin;
+  if (!requestOrigin) return corsOrigins[0] || '*';
+  if (corsOrigins.includes('*')) return requestOrigin;
+  if (corsOrigins.includes(requestOrigin)) return requestOrigin;
+  return corsOrigins[0] || 'http://localhost:3000';
+}
+
+function setCorsHeaders(req, res) {
+  res.setHeader('Access-Control-Allow-Origin', resolveCorsOrigin(req));
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 }
 
-function sendJson(res, statusCode, payload) {
-  setCorsHeaders(res);
+function sendJson(req, res, statusCode, payload) {
+  setCorsHeaders(req, res);
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(payload));
 }
@@ -230,7 +249,7 @@ async function executeCrudQuery(body, currentUserId) {
 
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
-    setCorsHeaders(res);
+    setCorsHeaders(req, res);
     res.writeHead(204);
     res.end();
     return;
@@ -239,20 +258,20 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.url === '/api/health' && req.method === 'GET') {
       await pool.query('SELECT 1 AS ok');
-      sendJson(res, 200, { ok: true, error: null });
+      sendJson(req, res, 200, { ok: true, error: null });
       return;
     }
 
     if (req.url === '/api/auth/signup' && req.method === 'POST') {
       const body = await readBody(req);
       if (!body.email || !body.password) {
-        sendJson(res, 400, { error: 'Email and password are required' });
+        sendJson(req, res, 400, { error: 'Email and password are required' });
         return;
       }
 
       const [existing] = await pool.query('SELECT id, email FROM users WHERE email = ?', [body.email]);
       if (existing.length) {
-        sendJson(res, 409, { error: 'Email already registered' });
+        sendJson(req, res, 409, { error: 'Email already registered' });
         return;
       }
 
@@ -262,7 +281,7 @@ const server = http.createServer(async (req, res) => {
       const token = uuid();
       const session = { access_token: token, user: { id: user.id, email: user.email } };
       sessions.set(token, session.user);
-      sendJson(res, 200, { session, user: session.user });
+      sendJson(req, res, 200, { session, user: session.user });
       return;
     }
 
@@ -271,50 +290,50 @@ const server = http.createServer(async (req, res) => {
       const [rows] = await pool.query('SELECT id, email, password_hash FROM users WHERE email = ?', [body.email || '']);
       const dbUser = rows[0];
       if (!dbUser || !verifyPassword(body.password || '', dbUser.password_hash)) {
-        sendJson(res, 401, { error: 'Invalid credentials' });
+        sendJson(req, res, 401, { error: 'Invalid credentials' });
         return;
       }
 
       const token = uuid();
       const session = { access_token: token, user: { id: dbUser.id, email: dbUser.email } };
       sessions.set(token, session.user);
-      sendJson(res, 200, { session, user: session.user });
+      sendJson(req, res, 200, { session, user: session.user });
       return;
     }
 
     if (req.url === '/api/auth/me' && req.method === 'GET') {
       const user = authFromRequest(req);
       if (!user) {
-        sendJson(res, 401, { error: 'Unauthorized' });
+        sendJson(req, res, 401, { error: 'Unauthorized' });
         return;
       }
-      sendJson(res, 200, { user });
+      sendJson(req, res, 200, { user });
       return;
     }
 
     if (req.url === '/api/auth/signout' && req.method === 'POST') {
       const token = (req.headers.authorization || '').replace('Bearer ', '');
       sessions.delete(token);
-      sendJson(res, 200, { ok: true });
+      sendJson(req, res, 200, { ok: true });
       return;
     }
 
     if (req.url === '/api/db/query' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) {
-        sendJson(res, 401, { error: 'Unauthorized' });
+        sendJson(req, res, 401, { error: 'Unauthorized' });
         return;
       }
 
       const body = await readBody(req);
       const rows = await executeCrudQuery(body, user.id);
-      sendJson(res, 200, { data: rows, error: null });
+      sendJson(req, res, 200, { data: rows, error: null });
       return;
     }
 
-    sendJson(res, 404, { error: 'Not found' });
+    sendJson(req, res, 404, { error: 'Not found' });
   } catch (error) {
-    sendJson(res, 500, { error: error?.message || String(error) });
+    sendJson(req, res, 500, { error: error?.message || String(error) });
   }
 });
 
