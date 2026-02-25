@@ -14,7 +14,7 @@ try {
   const sourceHint = envSource.loaded
     ? `Loaded env from ${envSource.path}`
     : 'No .env file found in project root (or .env.example).';
-  console.error(`${error.message}. ${sourceHint} Copy .env.example to .env and adjust MySQL credentials.`);
+  console.error(`${error.message}. ${sourceHint} Copy .env.example to .env and adjust SQLite path if needed.`);
   process.exit(1);
 }
 
@@ -23,85 +23,84 @@ const pool = createPool(process.env);
 const sessions = new Map();
 const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'users']);
 
-const schemaSql = `
-CREATE TABLE IF NOT EXISTS users (
-  id CHAR(36) PRIMARY KEY,
-  email VARCHAR(255) NOT NULL UNIQUE,
-  password_hash VARCHAR(255) NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS projects (
-  id CHAR(36) PRIMARY KEY,
-  user_id CHAR(36) NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  description TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX (user_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS campaigns (
-  id CHAR(36) PRIMARY KEY,
-  project_id CHAR(36) NOT NULL,
-  user_id CHAR(36) NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  description TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX (project_id),
-  INDEX (user_id),
-  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS audiences (
-  id CHAR(36) PRIMARY KEY,
-  campaign_id CHAR(36) NOT NULL,
-  user_id CHAR(36) NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  description TEXT,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX (campaign_id),
-  INDEX (user_id),
-  FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS hypotheses (
-  id CHAR(36) PRIMARY KEY,
-  campaign_id CHAR(36) NOT NULL,
-  user_id CHAR(36) NOT NULL,
-  type VARCHAR(255) NOT NULL,
-  \
-\`condition\` TEXT,
-  validation_status VARCHAR(64) DEFAULT 'No Validada',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX (campaign_id),
-  INDEX (user_id),
-  FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS videos (
-  id CHAR(36) PRIMARY KEY,
-  audience_id CHAR(36) NOT NULL,
-  user_id CHAR(36) NOT NULL,
-  title VARCHAR(255) NOT NULL,
-  url TEXT,
-  cpc DECIMAL(10,2) DEFAULT 0,
-  views INT DEFAULT 0,
-  engagement DECIMAL(10,2) DEFAULT 0,
-  likes INT DEFAULT 0,
-  shares INT DEFAULT 0,
-  comments INT DEFAULT 0,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX (audience_id),
-  INDEX (user_id),
-  FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE CASCADE,
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-`;
+const schemaSql = [
+  `CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+  )`,
+  `CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)',
+  `CREATE TABLE IF NOT EXISTS campaigns (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_campaigns_project_id ON campaigns(project_id)',
+  'CREATE INDEX IF NOT EXISTS idx_campaigns_user_id ON campaigns(user_id)',
+  `CREATE TABLE IF NOT EXISTS audiences (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_audiences_campaign_id ON audiences(campaign_id)',
+  'CREATE INDEX IF NOT EXISTS idx_audiences_user_id ON audiences(user_id)',
+  `CREATE TABLE IF NOT EXISTS hypotheses (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    condition TEXT,
+    validation_status TEXT DEFAULT 'No Validada',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_hypotheses_campaign_id ON hypotheses(campaign_id)',
+  'CREATE INDEX IF NOT EXISTS idx_hypotheses_user_id ON hypotheses(user_id)',
+  `CREATE TABLE IF NOT EXISTS videos (
+    id TEXT PRIMARY KEY,
+    audience_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT,
+    cpc REAL DEFAULT 0,
+    views INTEGER DEFAULT 0,
+    engagement REAL DEFAULT 0,
+    likes INTEGER DEFAULT 0,
+    shares INTEGER DEFAULT 0,
+    comments INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)',
+  'CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)',
+];
 
 const textEncoder = new TextEncoder();
 
@@ -148,7 +147,7 @@ function authFromRequest(req) {
 }
 
 async function runMigrations() {
-  for (const statement of schemaSql.split(';').map((s) => s.trim()).filter(Boolean)) {
+  for (const statement of schemaSql) {
     await pool.query(statement);
   }
 }
@@ -300,7 +299,7 @@ const server = http.createServer(async (req, res) => {
 runMigrations()
   .then(() => {
     server.listen(port, () => {
-      console.log(`MySQL backend running on port ${port}`);
+      console.log(`SQLite backend running on port ${port}`);
     });
   })
   .catch((error) => {

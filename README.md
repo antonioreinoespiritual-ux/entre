@@ -1,6 +1,6 @@
 # entre
 
-Aplicación migrada para usar **backend propio con MySQL** en lugar de Supabase.
+Aplicación migrada para usar **backend propio con SQLite (mysqlite)** en lugar de Supabase.
 
 ## 1) Variables de entorno
 
@@ -8,7 +8,7 @@ Aplicación migrada para usar **backend propio con MySQL** en lugar de Supabase.
 cp .env.example .env
 ```
 
-Ajusta credenciales de MySQL en `.env`. El backend carga `.env` automáticamente al arrancar.
+Ajusta la ruta de SQLite en `.env` (`SQLITE_PATH` o `MYSQLITE_PATH`). El backend carga `.env` automáticamente al arrancar.
 
 ## 2) Ejecutar backend
 
@@ -22,7 +22,7 @@ Healthcheck:
 curl http://localhost:4000/api/health
 ```
 
-El backend crea automáticamente las tablas necesarias (`users`, `projects`, `campaigns`, `audiences`, `hypotheses`, `videos`) al iniciar.
+El backend crea automáticamente la base y las tablas necesarias (`users`, `projects`, `campaigns`, `audiences`, `hypotheses`, `videos`) al iniciar.
 
 ## 3) Ejecutar frontend
 
@@ -30,6 +30,6 @@ El backend crea automáticamente las tablas necesarias (`users`, `projects`, `ca
 npm run dev
 ```
 
-El frontend ahora usa `VITE_BACKEND_URL` y un cliente compatible con la API usada antes de Supabase (`auth`, `from(...).select/insert/update/delete.eq().order().single()`).
+El frontend usa `VITE_BACKEND_URL` y un cliente compatible con la API usada antes de Supabase (`auth`, `from(...).select/insert/update/delete.eq().order().single()`).
 
 Si no haces login manual, el frontend crea/inicia automáticamente una sesión demo para que puedas crear proyectos/campañas de inmediato. Puedes fijar esas credenciales con `VITE_DEMO_EMAIL` y `VITE_DEMO_PASSWORD`.
