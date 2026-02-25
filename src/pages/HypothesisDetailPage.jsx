@@ -8,7 +8,7 @@ import { useVideos } from '@/contexts/VideoContext';
 import { useAudiences } from '@/contexts/AudienceContext';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
 import { useToast } from '@/components/ui/use-toast';
-import { validateBulkVideoUpdates } from '@/lib/bulkVideoUpdates';
+import { parseAndValidateBulkVideoJson } from '@/lib/bulkVideoUpdates';
 
 const tabs = ['paid', 'organic', 'live'];
 const baseVideo = {
@@ -48,6 +48,7 @@ const HypothesisDetailPage = () => {
   const [bulkInput, setBulkInput] = useState('');
   const [bulkPreview, setBulkPreview] = useState(null);
   const [bulkApplying, setBulkApplying] = useState(false);
+  const [bulkPayload, setBulkPayload] = useState(null);
   const [form, setForm] = useState(baseVideo);
   const [editingVideo, setEditingVideo] = useState(null);
   const [editForm, setEditForm] = useState(baseVideo);
@@ -139,17 +140,39 @@ const HypothesisDetailPage = () => {
   };
 
   const runBulkValidation = () => {
-    const preview = validateBulkVideoUpdates(bulkInput, videos);
-    setBulkPreview(preview);
-    if (!preview.ok) {
-      toast({ title: 'Validación fallida', description: preview.errors[0] || 'Corrige el JSON para continuar', variant: 'destructive' });
+    const parsed = parseAndValidateBulkVideoJson(bulkInput);
+    if (!parsed.ok || !parsed.payload) {
+      setBulkPayload(null);
+      setBulkPreview({ received: 0, applicable: 0, not_found: 0, invalid: parsed.errors?.length || 1, results: [] });
+      toast({ title: 'Validación fallida', description: parsed.errors?.[0] || 'Corrige el JSON para continuar', variant: 'destructive' });
       return;
     }
-    toast({ title: 'Validación OK', description: `Listo para actualizar ${preview.summary.willUpdate} videos` });
+
+    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+    fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/videos/bulk-update`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session?.access_token || ''}`,
+      },
+      body: JSON.stringify({ ...parsed.payload, dryRun: true }),
+    })
+      .then(async (response) => {
+        const json = await response.json();
+        if (!response.ok) throw new Error(json.error || 'No se pudo validar en backend');
+        setBulkPayload(parsed.payload);
+        setBulkPreview(json);
+        toast({ title: 'Validación OK', description: `Applicable: ${json.applicable || 0} · Not found: ${json.not_found || 0}` });
+      })
+      .catch((error) => {
+        setBulkPayload(null);
+        setBulkPreview({ received: 0, applicable: 0, not_found: 0, invalid: 1, results: [] });
+        toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      });
   };
 
   const applyBulkUpdate = async () => {
-    if (!bulkPreview?.ok || !bulkPreview?.payload) return;
+    if (!bulkPayload) return;
     const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
     setBulkApplying(true);
     try {
@@ -159,15 +182,17 @@ const HypothesisDetailPage = () => {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session?.access_token || ''}`,
         },
-        body: JSON.stringify(bulkPreview.payload),
+        body: JSON.stringify(bulkPayload),
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json.error || 'No se pudo aplicar actualización masiva');
-      toast({ title: 'Actualización masiva completada', description: `Actualizados ${json.summary?.updated || 0}/${json.summary?.received || 0}` });
+      const updatedCount = (json.results || []).filter((row) => row.status === 'updated').length;
+      toast({ title: 'Actualización masiva completada', description: `Actualizados ${updatedCount}/${json.received || 0}` });
       await fetchVideos(hypothesisId);
       setShowBulkModal(false);
       setBulkInput('');
       setBulkPreview(null);
+      setBulkPayload(null);
     } catch (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     } finally {
@@ -288,27 +313,26 @@ const HypothesisDetailPage = () => {
                 ) : (
                   <div className="space-y-3 text-sm">
                     <div className="grid grid-cols-2 gap-2">
-                      <div className="rounded-lg border border-slate-700 p-2">Recibidos: <b>{bulkPreview.summary?.received || 0}</b></div>
-                      <div className="rounded-lg border border-slate-700 p-2">Aplicables: <b>{bulkPreview.summary?.willUpdate || 0}</b></div>
-                      <div className="rounded-lg border border-slate-700 p-2">Inválidos: <b>{bulkPreview.summary?.invalid || 0}</b></div>
-                      <div className="rounded-lg border border-slate-700 p-2">No encontrados: <b>{bulkPreview.summary?.notFound || 0}</b></div>
+                      <div className="rounded-lg border border-slate-700 p-2">Recibidos: <b>{bulkPreview.received || 0}</b></div>
+                      <div className="rounded-lg border border-slate-700 p-2">Applicable: <b>{bulkPreview.applicable || 0}</b></div>
+                      <div className="rounded-lg border border-slate-700 p-2">Inválidos: <b>{bulkPreview.invalid || 0}</b></div>
+                      <div className="rounded-lg border border-slate-700 p-2">No encontrados: <b>{bulkPreview.not_found || 0}</b></div>
                     </div>
-
-                    {bulkPreview.warnings?.length ? <div className="rounded-lg border border-yellow-600/60 bg-yellow-500/10 p-2 text-yellow-200">{bulkPreview.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div> : null}
-                    {bulkPreview.errors?.length ? <div className="rounded-lg border border-red-600/60 bg-red-500/10 p-2 text-red-200">{bulkPreview.errors.map((error) => <p key={error}>{error}</p>)}</div> : null}
 
                     <div className="max-h-[200px] overflow-auto rounded-lg border border-slate-700">
                       <table className="w-full text-xs">
                         <thead className="bg-slate-800 sticky top-0">
-                          <tr><th className="text-left p-2">inputIndex</th><th className="text-left p-2">Identificador</th><th className="text-left p-2">Estado</th><th className="text-left p-2">Fields</th></tr>
+                          <tr><th className="text-left p-2">inputIndex</th><th className="text-left p-2">Estado</th><th className="text-left p-2">identifierUsed</th><th className="text-left p-2">matchedVideoId</th><th className="text-left p-2">Fields</th><th className="text-left p-2">Reason</th></tr>
                         </thead>
                         <tbody>
-                          {bulkPreview.previewRows.map((row) => (
-                            <tr key={`${row.inputIndex}-${row.identifier}`} className="border-t border-slate-800">
+                          {(bulkPreview.results || []).map((row) => (
+                            <tr key={`${row.inputIndex}-${row.identifierUsed || 'none'}`} className="border-t border-slate-800">
                               <td className="p-2">{row.inputIndex}</td>
-                              <td className="p-2">{row.identifier}</td>
                               <td className="p-2">{row.status}</td>
-                              <td className="p-2">{row.fieldKeys.join(', ') || '-'}</td>
+                              <td className="p-2">{row.identifierUsed || '-'}</td>
+                              <td className="p-2">{row.matchedVideoId || '-'}</td>
+                              <td className="p-2">{(row.updatedFields || []).join(', ') || '-'}</td>
+                              <td className="p-2">{row.error || '-'}</td>
                             </tr>
                           ))}
                         </tbody>
@@ -323,7 +347,7 @@ const HypothesisDetailPage = () => {
               <p className="text-xs text-slate-400">Identificador prioritario: video_id -&gt; session_id -&gt; video_name.</p>
               <div className="flex items-center gap-2">
                 <Button className="bg-cyan-700 hover:bg-cyan-600 text-white" onClick={runBulkValidation}>Validar</Button>
-                <Button className="bg-emerald-600 hover:bg-emerald-500 text-white" disabled={!bulkPreview?.ok || bulkApplying} onClick={applyBulkUpdate}>{bulkApplying ? 'Aplicando...' : 'Aplicar'}</Button>
+                <Button className="bg-emerald-600 hover:bg-emerald-500 text-white" disabled={!bulkPayload || bulkApplying} onClick={applyBulkUpdate}>{bulkApplying ? 'Aplicando...' : 'Aplicar'}</Button>
               </div>
             </div>
           </div>
