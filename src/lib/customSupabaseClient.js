@@ -180,44 +180,66 @@ function createQueryBuilder(table) {
   return builder;
 }
 
+async function trySignIn(credentials) {
+  try {
+    const signin = await fetch(`${apiBaseUrl}/api/auth/signin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials),
+    });
+
+    if (!signin.ok) return null;
+    const json = await signin.json();
+    return json.session || null;
+  } catch {
+    return null;
+  }
+}
+
+async function trySignUp(credentials) {
+  try {
+    const signup = await fetch(`${apiBaseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(credentials),
+    });
+
+    if (!signup.ok) return null;
+    const json = await signup.json();
+    return json.session || null;
+  } catch {
+    return null;
+  }
+}
+
 async function ensureSession() {
   const existingSession = getStoredSession();
   if (existingSession?.access_token) return existingSession;
 
   if (!ensureSessionPromise) {
     ensureSessionPromise = (async () => {
-      const credentials = getDemoCredentials();
+      const preferredCredentials = getDemoCredentials();
 
-      try {
-        const signin = await fetch(`${apiBaseUrl}/api/auth/signin`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(credentials),
-        });
-
-        if (signin.ok) {
-          const json = await signin.json();
-          setStoredSession(json.session);
-          return json.session;
-        }
-      } catch {
-        // Keep fallback to signup.
+      let session = await trySignIn(preferredCredentials);
+      if (!session) {
+        session = await trySignUp(preferredCredentials);
       }
 
-      const signup = await fetch(`${apiBaseUrl}/api/auth/signup`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(credentials),
-      });
-
-      if (!signup.ok) {
-        const payload = await signup.json().catch(() => ({}));
-        throw new Error(payload.error || 'Unable to create demo session');
+      if (!session) {
+        const fallbackCredentials = {
+          email: `demo-${crypto.randomUUID()}@local.entre`,
+          password: import.meta.env.VITE_DEMO_PASSWORD || 'demo123456',
+        };
+        localStorage.setItem(demoEmailStorageKey, fallbackCredentials.email);
+        session = await trySignUp(fallbackCredentials);
       }
 
-      const signupJson = await signup.json();
-      setStoredSession(signupJson.session);
-      return signupJson.session;
+      if (!session) {
+        throw new Error('Unable to create demo session');
+      }
+
+      setStoredSession(session);
+      return session;
     })().finally(() => {
       ensureSessionPromise = null;
     });
@@ -225,6 +247,7 @@ async function ensureSession() {
 
   return ensureSessionPromise;
 }
+
 
 export const supabase = {
   auth: {
