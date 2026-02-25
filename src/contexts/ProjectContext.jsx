@@ -20,14 +20,28 @@ export const ProjectProvider = ({ children }) => {
   const { toast } = useToast();
 
   useEffect(() => {
+    let active = true;
+
     const getCurrentUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
+      if (!active) return;
       if (user) {
         setCurrentUser(user);
       }
     };
+
     getCurrentUser();
-  }, []);
+    const retryTimer = setInterval(() => {
+      if (!currentUser) {
+        getCurrentUser();
+      }
+    }, 1000);
+
+    return () => {
+      active = false;
+      clearInterval(retryTimer);
+    };
+  }, [currentUser]);
 
   const fetchProjects = useCallback(async () => {
     if (!currentUser) return [];
@@ -93,7 +107,7 @@ export const ProjectProvider = ({ children }) => {
     try {
       const { data, error } = await supabase
         .from('projects')
-        .insert([{ ...projectData, user_id: currentUser.id }])
+        .insert([{ ...projectData }])
         .select()
         .single();
 

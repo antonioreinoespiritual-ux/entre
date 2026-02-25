@@ -3,15 +3,17 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { Plus, FolderOpen, Trash2, Edit, Eye } from 'lucide-react';
+import { Plus, FolderOpen, Trash2, Edit, Eye, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useProjects } from '@/contexts/ProjectContext';
 import ProjectForm from '@/components/ProjectForm';
+import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const ProjectsPage = () => {
   const navigate = useNavigate();
   const { projects, loading, fetchProjects, deleteProject } = useProjects();
   const [isFormOpen, setIsFormOpen] = useState(false);
+  const { signOut } = useAuth();
   const [editingProject, setEditingProject] = useState(null);
 
   useEffect(() => {
@@ -63,13 +65,25 @@ const ProjectsPage = () => {
                 </h1>
                 <p className="text-gray-600 mt-2">Manage your marketing campaigns and hypotheses</p>
               </div>
-              <Button
-                onClick={() => setIsFormOpen(true)}
-                className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white shadow-lg"
-              >
-                <Plus className="w-5 h-5 mr-2" />
-                Create New Project
-              </Button>
+              <div className="flex gap-2">
+                <Button
+                  onClick={async () => {
+                    await signOut();
+                    navigate('/login');
+                  }}
+                  className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-100"
+                >
+                  <LogOut className="w-4 h-4 mr-2" />
+                  Cerrar sesión
+                </Button>
+                <Button
+                  onClick={() => setIsFormOpen(true)}
+                  className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white shadow-lg"
+                >
+                  <Plus className="w-5 h-5 mr-2" />
+                  Create New Project
+                </Button>
+              </div>
             </div>
           </motion.div>
 

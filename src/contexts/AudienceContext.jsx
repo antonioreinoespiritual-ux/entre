@@ -20,14 +20,28 @@ export const AudienceProvider = ({ children }) => {
   const { toast } = useToast();
 
   useEffect(() => {
+    let active = true;
+
     const getCurrentUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
+      if (!active) return;
       if (user) {
         setCurrentUser(user);
       }
     };
+
     getCurrentUser();
-  }, []);
+    const retryTimer = setInterval(() => {
+      if (!currentUser) {
+        getCurrentUser();
+      }
+    }, 1000);
+
+    return () => {
+      active = false;
+      clearInterval(retryTimer);
+    };
+  }, [currentUser]);
 
   const fetchAudiences = useCallback(async (campaignId) => {
     if (!currentUser) return [];
