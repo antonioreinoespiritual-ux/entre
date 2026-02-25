@@ -112,7 +112,6 @@ const schemaSql = [
     FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)',
   'CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)',
   'CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)',
 ];
@@ -190,6 +189,8 @@ async function ensureVideoHierarchyMigration() {
   if (!(await hasColumn('videos', 'audience_id'))) {
     await pool.query('ALTER TABLE videos ADD COLUMN audience_id TEXT');
   }
+
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
 
   const [legacyVideos] = await pool.query('SELECT id, audience_id, user_id FROM videos WHERE hypothesis_id IS NULL AND audience_id IS NOT NULL');
 
