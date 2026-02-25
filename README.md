@@ -1,24 +1,16 @@
 # entre
 
-Migración base para usar backend con **MySQL** en lugar de Supabase, manteniendo una API de consultas parecida para no romper la lógica existente.
+Aplicación migrada para usar **backend propio con MySQL** en lugar de Supabase.
 
-## Ejecutar frontend
-
-```bash
-npm run dev
-```
-
-## Ejecutar backend MySQL
-
-1. Copia variables de entorno:
+## 1) Variables de entorno
 
 ```bash
 cp .env.example .env
 ```
 
-2. Ajusta credenciales de MySQL en `.env`.
+Ajusta credenciales de MySQL en `.env`.
 
-3. Inicia backend:
+## 2) Ejecutar backend
 
 ```bash
 npm run backend:dev
@@ -30,18 +22,12 @@ Healthcheck:
 curl http://localhost:4000/api/health
 ```
 
-## Adapter de migración
+El backend crea automáticamente las tablas necesarias (`users`, `projects`, `campaigns`, `audiences`, `hypotheses`, `videos`) al iniciar.
 
-Se agregó `createMysqlSupabaseAdapter(pool)` para facilitar el reemplazo de consultas tipo Supabase:
+## 3) Ejecutar frontend
 
-```js
-const db = createMysqlSupabaseAdapter(pool);
-const { data, error } = await db.from('users').select('*').eq('id', 1).single();
+```bash
+npm run dev
 ```
 
-Operaciones soportadas:
-
-- `select()` + `eq()` + `single()`
-- `insert()`
-- `update()` + `eq()`
-- `delete()` + `eq()`
+El frontend ahora usa `VITE_BACKEND_URL` y un cliente compatible con la API usada antes de Supabase (`auth`, `from(...).select/insert/update/delete.eq().order().single()`).
