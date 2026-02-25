@@ -178,6 +178,18 @@ const schemaSql = [
     FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_video_ab_tests_hypothesis_id ON video_ab_tests(hypothesis_id)',
+  `CREATE TABLE IF NOT EXISTS audience_ab_tests (
+    id TEXT PRIMARY KEY,
+    campaign_id TEXT NOT NULL,
+    audience_a_id TEXT NOT NULL,
+    audience_b_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    config_json TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    dataset_hash TEXT NOT NULL,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_audience_ab_tests_campaign_id ON audience_ab_tests(campaign_id)',
 ];
 
 const textEncoder = new TextEncoder();
@@ -798,6 +810,120 @@ function compareVideosAB(videoA, videoB, config = {}) {
   };
 }
 
+function buildAudienceAggregates(videos = []) {
+  const sums = {
+    views: 0,
+    clicks: 0,
+    initiatest: 0,
+    initiate_checkouts: 0,
+    view_content: 0,
+    formulario_lead: 0,
+    purchase: 0,
+    likes: 0,
+    comments: 0,
+    shares: 0,
+    saves: 0,
+  };
+  for (const video of videos) {
+    Object.keys(sums).forEach((key) => {
+      sums[key] += toNumber(video[key]);
+    });
+  }
+  const denomViews = Math.max(sums.views, 0);
+  const rates = {
+    ctr: denomViews > 0 ? sums.clicks / denomViews : 0,
+    purchase_rate: denomViews > 0 ? sums.purchase / denomViews : 0,
+    lead_rate: denomViews > 0 ? sums.formulario_lead / denomViews : 0,
+    initiate_rate: denomViews > 0 ? sums.initiatest / denomViews : 0,
+  };
+  return {
+    counts: { videos: videos.length },
+    sums,
+    rates,
+  };
+}
+
+function buildAudienceWarnings(videos = [], selectedType = 'all', minViews = 1000) {
+  const missingViews = videos.filter((video) => toNumber(video.views) <= 0).length;
+  const inconsistentCtr = videos.filter((video) => toNumber(video.views) > 0 && Math.abs((toNumber(video.clicks) / toNumber(video.views)) - toNumber(video.ctr || 0)) > 0.2).length;
+  const types = new Set(videos.map((video) => video.video_type).filter(Boolean));
+  const totalViews = videos.reduce((sum, video) => sum + toNumber(video.views), 0);
+  const warnings = [];
+  if (missingViews) warnings.push(`Hay ${missingViews} videos sin views válidas`);
+  if (inconsistentCtr) warnings.push(`Hay ${inconsistentCtr} videos con ctr inconsistente`);
+  if (selectedType === 'all' && types.size > 1) warnings.push('Mezcla de tipos de video en la selección');
+  if (totalViews < minViews) warnings.push(`Muestra insuficiente: ${totalViews} views < ${minViews}`);
+  return warnings;
+}
+
+function audienceInsights(aggregates) {
+  const { sums, rates } = aggregates;
+  const notes = [];
+  if (sums.views > 0 && rates.ctr < 0.01) notes.push('Muchos views y bajo CTR: revisar hook y CTA.');
+  if (rates.ctr >= 0.02 && rates.purchase_rate < 0.001) notes.push('Buen CTR pero baja conversión: revisar post-click / oferta.');
+  if (sums.view_content > 0 && sums.formulario_lead === 0) notes.push('Hay interés inicial pero cero leads: revisar fricción del formulario.');
+  if (!notes.length) notes.push('Señales equilibradas; continuar iteración y monitoreo.');
+  return notes;
+}
+
+function compareAudiencesAB(audienceA, audienceB, config = {}) {
+  const metric = config.primaryMetric || 'ctr';
+  const alpha = Number(config.alpha || 0.05);
+  const mde = Number(config.mde || 0.1);
+  const minExposure = Number(config.minExposure || 1000);
+
+  const aggA = buildAudienceAggregates(audienceA.videos || []);
+  const aggB = buildAudienceAggregates(audienceB.videos || []);
+  const viewsA = aggA.sums.views;
+  const viewsB = aggB.sums.views;
+  const exposureOk = viewsA >= minExposure && viewsB >= minExposure;
+
+  let valA = metric === 'ctr' ? aggA.rates.ctr : metric === 'purchase_rate' ? aggA.rates.purchase_rate : (viewsA > 0 ? (1000 * aggA.sums.clicks) / viewsA : 0);
+  let valB = metric === 'ctr' ? aggB.rates.ctr : metric === 'purchase_rate' ? aggB.rates.purchase_rate : (viewsB > 0 ? (1000 * aggB.sums.clicks) / viewsB : 0);
+
+  const pooled = (aggA.sums.clicks + aggB.sums.clicks) / Math.max(viewsA + viewsB, 1);
+  const se = Math.sqrt(Math.max(pooled * (1 - pooled) * ((1 / Math.max(viewsA, 1)) + (1 / Math.max(viewsB, 1))), 1e-12));
+  const delta = valB - valA;
+  const z = delta / (se || 1);
+  const pValue = 2 * (1 - normCdf(Math.abs(z)));
+
+  const frequentist = {
+    p_value: pValue,
+    uplift_absolute: delta,
+    uplift_relative: valA ? delta / valA : null,
+    ci95_delta: [delta - 1.96 * (se || 1), delta + 1.96 * (se || 1)],
+    winner: pValue < alpha ? (delta > 0 ? 'B' : 'A') : 'Inconcluso',
+  };
+
+  const bayesianProb = normCdf(delta / (se || 1));
+  const bayesian = {
+    p_b_gt_a: bayesianProb,
+    p_uplift_gt_mde: normCdf((delta - mde) / (se || 1)),
+  };
+
+  const sequential = {
+    exposure_ok: exposureOk,
+    min_exposure: minExposure,
+    decision: !exposureOk ? 'Inconcluso' : bayesianProb > 0.95 ? 'Ganador B' : bayesianProb < 0.05 ? 'Ganador A' : 'Inconcluso',
+  };
+
+  const decision = !exposureOk ? 'Inconcluso' : frequentist.winner === 'Inconcluso' ? sequential.decision : `Ganador ${frequentist.winner}`;
+  return {
+    primary_metric: metric,
+    A: { label: audienceA.audience?.name || 'A', value: valA, views: viewsA, ...aggA },
+    B: { label: audienceB.audience?.name || 'B', value: valB, views: viewsB, ...aggB },
+    frequentist,
+    bayesian,
+    sequential,
+    decision,
+    recommendations: decision === 'Ganador B'
+      ? ['Escalar audiencia B', 'Mantener monitoreo por tipo de video', 'Documentar aprendizaje de segmentación']
+      : decision === 'Ganador A'
+        ? ['Mantener audiencia A', 'Refinar criterios de B', 'Recolectar evidencia adicional']
+        : ['Recolectar más exposición (views)', 'No concluir aún', 'Revisar coherencia de creativos por audiencia'],
+  };
+}
+
 async function executeCrudQuery(body, currentUserId) {
   const table = body.table;
   const operation = body.operation || 'select';
@@ -1102,6 +1228,137 @@ const server = http.createServer(async (req, res) => {
         [hypothesisId],
       );
       sendJson(req, res, 200, { hypothesis, videos, runs, volume });
+      return;
+    }
+
+    const audienceDashboardMatch = url.pathname.match(/^\/api\/audiences\/([^/]+)\/dashboard$/);
+    if (audienceDashboardMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const audienceId = audienceDashboardMatch[1];
+      const selectedType = url.searchParams.get('video_type') || 'all';
+      const minViews = Number(url.searchParams.get('min_views') || 1000);
+
+      const [audienceRows] = await pool.query(
+        `SELECT a.*
+         FROM audiences a
+         JOIN campaigns c ON c.id = a.campaign_id
+         JOIN projects p ON p.id = c.project_id
+         WHERE a.id = ? AND a.user_id = ? AND c.user_id = ? AND p.user_id = ?
+         LIMIT 1`,
+        [audienceId, user.id, user.id, user.id],
+      );
+      const audience = audienceRows[0];
+      if (!audience) {
+        sendJson(req, res, 404, { error: 'Audience not found' });
+        return;
+      }
+
+      const where = ['audience_id = ?', 'user_id = ?'];
+      const values = [audienceId, user.id];
+      if (selectedType !== 'all') {
+        where.push('video_type = ?');
+        values.push(selectedType);
+      }
+      const [videos] = await pool.query(`SELECT * FROM videos WHERE ${where.join(' AND ')} ORDER BY created_at DESC`, values);
+      const aggregates = buildAudienceAggregates(videos);
+      const warnings = buildAudienceWarnings(videos, selectedType, minViews);
+      const byType = {
+        paid: buildAudienceAggregates(videos.filter((video) => video.video_type === 'paid')),
+        organic: buildAudienceAggregates(videos.filter((video) => video.video_type === 'organic')),
+        live: buildAudienceAggregates(videos.filter((video) => video.video_type === 'live')),
+      };
+
+      sendJson(req, res, 200, {
+        audience,
+        videos,
+        counts: aggregates.counts,
+        sums: aggregates.sums,
+        rates: aggregates.rates,
+        by_type: byType,
+        warnings,
+        insights: audienceInsights(aggregates),
+      });
+      return;
+    }
+
+    if (url.pathname === '/api/audiences/ab-test' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const audienceAId = body.audienceAId;
+      const audienceBId = body.audienceBId;
+      if (!audienceAId || !audienceBId) {
+        sendJson(req, res, 400, { error: 'audienceAId and audienceBId are required' });
+        return;
+      }
+
+      const [audRows] = await pool.query(
+        `SELECT a.*
+         FROM audiences a
+         JOIN campaigns c ON c.id = a.campaign_id
+         JOIN projects p ON p.id = c.project_id
+         WHERE a.id IN (?, ?) AND a.user_id = ? AND c.user_id = ? AND p.user_id = ?`,
+        [audienceAId, audienceBId, user.id, user.id, user.id],
+      );
+      const audienceA = audRows.find((audience) => audience.id === audienceAId);
+      const audienceB = audRows.find((audience) => audience.id === audienceBId);
+      if (!audienceA || !audienceB) {
+        sendJson(req, res, 404, { error: 'Audience not found' });
+        return;
+      }
+      if (audienceA.campaign_id !== audienceB.campaign_id) {
+        sendJson(req, res, 400, { error: 'Both audiences must belong to same campaign' });
+        return;
+      }
+
+      const videoType = body.videoType || 'all';
+      const whereA = ['audience_id = ?', 'user_id = ?'];
+      const valsA = [audienceA.id, user.id];
+      const whereB = ['audience_id = ?', 'user_id = ?'];
+      const valsB = [audienceB.id, user.id];
+      if (videoType !== 'all') {
+        whereA.push('video_type = ?');
+        valsA.push(videoType);
+        whereB.push('video_type = ?');
+        valsB.push(videoType);
+      }
+      const [videosA] = await pool.query(`SELECT * FROM videos WHERE ${whereA.join(' AND ')}`, valsA);
+      const [videosB] = await pool.query(`SELECT * FROM videos WHERE ${whereB.join(' AND ')}`, valsB);
+
+      const config = {
+        primaryMetric: body.primaryMetric || 'ctr',
+        alpha: Number(body.alpha || 0.05),
+        mde: Number(body.mde || 0.1),
+        method: body.method || 'hybrid',
+        minExposure: Number(body.minExposure || 1000),
+        videoType: videoType,
+      };
+
+      const results = compareAudiencesAB({ audience: audienceA, videos: videosA }, { audience: audienceB, videos: videosB }, config);
+      const datasetHash = crypto.createHash('sha256').update([...videosA.map((video) => video.id), ...videosB.map((video) => video.id)].sort().join('|')).digest('hex');
+      const runId = uuid();
+      await pool.query(
+        'INSERT INTO audience_ab_tests (id, campaign_id, audience_a_id, audience_b_id, config_json, results_json, dataset_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [runId, audienceA.campaign_id, audienceA.id, audienceB.id, JSON.stringify(config), JSON.stringify(results), datasetHash],
+      );
+
+      sendJson(req, res, 200, {
+        id: runId,
+        campaign_id: audienceA.campaign_id,
+        audience_a_id: audienceA.id,
+        audience_b_id: audienceB.id,
+        config,
+        results,
+        dataset_hash: datasetHash,
+      });
       return;
     }
 

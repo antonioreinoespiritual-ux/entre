@@ -12,6 +12,7 @@ import ProjectDetailPage from '@/pages/ProjectDetailPage';
 import CampaignDetailPage from '@/pages/CampaignDetailPage';
 import AudienceDashboardPage from '@/pages/AudienceDashboardPage';
 import AudienceDetailPage from '@/pages/AudienceDetailPage';
+import AudienceAbTestPage from '@/pages/AudienceAbTestPage';
 import HypothesesDashboardPage from '@/pages/HypothesesDashboardPage';
 import HypothesisDetailPage from '@/pages/HypothesisDetailPage';
 import HypothesisAdvancedAnalysisPage from '@/pages/HypothesisAdvancedAnalysisPage';
@@ -58,6 +59,7 @@ const ProtectedApp = () => (
               <Route path="/campaigns/:id" element={<CampaignDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences" element={<AudienceDashboardPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences/:audienceId" element={<AudienceDetailPage />} />
+              <Route path="/projects/:projectId/campaigns/:campaignId/audiences/ab-test" element={<AudienceAbTestPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses" element={<HypothesesDashboardPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId" element={<HypothesisDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/analysis" element={<HypothesisAdvancedAnalysisPage />} />
