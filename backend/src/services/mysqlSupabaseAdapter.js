@@ -3,6 +3,13 @@
  * Supported chain: from(table).select(columns?).eq(field, value).single()
  * Also supports insert/update/delete with eq filter.
  */
+function quoteIdent(name) {
+  return String(name)
+    .split('.')
+    .map((part) => `\`${part.replaceAll('`', '``')}\``)
+    .join('.');
+}
+
 export function createMysqlSupabaseAdapter(pool) {
   const run = async (query, params = []) => {
     try {
@@ -18,7 +25,7 @@ export function createMysqlSupabaseAdapter(pool) {
       return { sql: '', values: [] };
     }
 
-    const sql = ` WHERE ${filters.map(({ field }) => `\`${field}\` = ?`).join(' AND ')}`;
+    const sql = ` WHERE ${filters.map(({ field }) => `${quoteIdent(field)} = ?`).join(' AND ')}`;
     const values = filters.map(({ value }) => value);
     return { sql, values };
   };
@@ -59,9 +66,10 @@ export function createMysqlSupabaseAdapter(pool) {
         },
         async execute() {
           const { sql: whereSql, values: whereValues } = buildWhere(state.filters);
+          const quotedTable = quoteIdent(state.table);
 
           if (state.operation === 'select') {
-            return run(`SELECT ${state.columns} FROM \`${state.table}\`${whereSql}`, whereValues);
+            return run(`SELECT ${state.columns} FROM ${quotedTable}${whereSql}`, whereValues);
           }
 
           if (state.operation === 'insert') {
@@ -69,20 +77,20 @@ export function createMysqlSupabaseAdapter(pool) {
             const fields = Object.keys(payload || {});
             const placeholders = fields.map(() => '?').join(', ');
             const values = fields.map((field) => payload[field]);
-            const query = `INSERT INTO \`${state.table}\` (${fields.map((f) => `\`${f}\``).join(', ')}) VALUES (${placeholders})`;
+            const query = `INSERT INTO ${quotedTable} (${fields.map((f) => quoteIdent(f)).join(', ')}) VALUES (${placeholders})`;
             return run(query, values);
           }
 
           if (state.operation === 'update') {
             const fields = Object.keys(state.payload || {});
-            const setSql = fields.map((f) => `\`${f}\` = ?`).join(', ');
+            const setSql = fields.map((f) => `${quoteIdent(f)} = ?`).join(', ');
             const setValues = fields.map((f) => state.payload[f]);
-            const query = `UPDATE \`${state.table}\` SET ${setSql}${whereSql}`;
+            const query = `UPDATE ${quotedTable} SET ${setSql}${whereSql}`;
             return run(query, [...setValues, ...whereValues]);
           }
 
           if (state.operation === 'delete') {
-            return run(`DELETE FROM \`${state.table}\`${whereSql}`, whereValues);
+            return run(`DELETE FROM ${quotedTable}${whereSql}`, whereValues);
           }
 
           return { data: null, error: new Error(`Unsupported operation: ${state.operation}`) };
@@ -96,3 +104,5 @@ export function createMysqlSupabaseAdapter(pool) {
     },
   };
 }
+
+export { quoteIdent };

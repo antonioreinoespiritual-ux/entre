@@ -21,3 +21,25 @@ test('select + eq builds expected SQL', async () => {
   });
 });
 
+test('from(schema.table) quotes both identifier parts', async () => {
+  const calls = [];
+  const pool = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      return [[{ ok: 1 }]];
+    },
+  };
+
+  const db = createMysqlSupabaseAdapter(pool);
+  const result = await db
+    .from('information_schema.tables')
+    .select('*')
+    .eq('table_schema', 'mysql')
+    .single();
+
+  assert.equal(result.error, null);
+  assert.deepEqual(calls[0], {
+    sql: 'SELECT * FROM `information_schema`.`tables` WHERE `table_schema` = ?',
+    params: ['mysql'],
+  });
+});
