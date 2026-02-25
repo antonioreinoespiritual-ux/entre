@@ -42,6 +42,8 @@ const HypothesisDetailPage = () => {
   const [activeTab, setActiveTab] = useState('paid');
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(baseVideo);
+  const [editingVideo, setEditingVideo] = useState(null);
+  const [editForm, setEditForm] = useState(baseVideo);
 
   useEffect(() => {
     fetchHypotheses(campaignId);
@@ -70,9 +72,11 @@ const HypothesisDetailPage = () => {
   };
 
   const renderInput = (field) => {
+    const source = editingVideo ? editForm : form;
+    const setter = editingVideo ? setEditForm : setForm;
     if (field === 'audience_id') {
       return (
-        <select className="w-full rounded-lg border p-2" value={form.audience_id} onChange={(e) => setForm({ ...form, audience_id: e.target.value })}>
+        <select className="w-full rounded-lg border p-2" value={source.audience_id} onChange={(e) => setter({ ...source, audience_id: e.target.value })}>
           <option value="">Sin público</option>
           {audiences.map((aud) => <option key={aud.id} value={aud.id}>{aud.name}</option>)}
         </select>
@@ -80,11 +84,40 @@ const HypothesisDetailPage = () => {
     }
 
     if (field === 'contexto_cualitativo') {
-      return <textarea className="w-full rounded-lg border p-2" rows="2" value={form[field]} onChange={(e) => setForm({ ...form, [field]: e.target.value })} />;
+      return <textarea className="w-full rounded-lg border p-2" rows="2" value={source[field]} onChange={(e) => setter({ ...source, [field]: e.target.value })} />;
     }
 
     const isNumeric = numericFields.includes(field);
-    return <input type={isNumeric ? 'number' : 'text'} className="w-full rounded-lg border p-2" required={field === 'title'} value={form[field]} onChange={(e) => setForm({ ...form, [field]: e.target.value })} />;
+    return <input type={isNumeric ? 'number' : 'text'} className="w-full rounded-lg border p-2" required={field === 'title'} value={source[field]} onChange={(e) => setter({ ...source, [field]: e.target.value })} />;
+  };
+
+  const openEdit = (video) => {
+    setEditingVideo(video);
+    setEditForm({ ...baseVideo, ...video });
+  };
+
+  const saveEdit = async (event) => {
+    event.preventDefault();
+    if (!editingVideo) return;
+    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+    const payload = { ...editForm };
+    numericFields.forEach((field) => { payload[field] = Number(payload[field] || 0); });
+    delete payload.id;
+    delete payload.user_id;
+    delete payload.hypothesis_id;
+    delete payload.video_type;
+    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/videos/${editingVideo.id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session?.access_token || ''}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    if (response.ok) {
+      setEditingVideo(null);
+      await fetchVideos(hypothesisId);
+    }
   };
 
   if (!hypothesis) return <div className="min-h-screen flex items-center justify-center">Cargando hipótesis...</div>;
@@ -134,17 +167,35 @@ const HypothesisDetailPage = () => {
             </form>
           )}
 
+          {editingVideo && (
+            <form onSubmit={saveEdit} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-blue-50 mb-6">
+              {fieldMapByType[editingVideo.video_type || activeTab].map((field) => (
+                <div key={field} className={field === 'contexto_cualitativo' ? 'md:col-span-2' : ''}>
+                  <label className="block text-sm font-medium mb-1">{labels[field] || field}</label>
+                  {renderInput(field)}
+                </div>
+              ))}
+              <div className="md:col-span-2 flex gap-2">
+                <Button type="submit" className="bg-blue-600 text-white">Guardar cambios</Button>
+                <Button type="button" className="bg-gray-200 text-gray-700" onClick={() => setEditingVideo(null)}>Cancelar</Button>
+              </div>
+            </form>
+          )}
+
           {tabVideos.length === 0 ? (
             <div className="text-center py-10 text-gray-500">No hay videos {activeTab} todavía</div>
           ) : (
             <div className="space-y-3">
               {tabVideos.map((video) => (
-                <div key={video.id} className="rounded-xl border bg-gray-50 p-4 flex justify-between gap-3">
+                <div key={video.id} className="rounded-xl border bg-gray-50 p-4 flex justify-between gap-3 cursor-pointer" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesisId}/videos/${video.id}`)}>
                   <div>
                     <h3 className="font-semibold">{video.title}</h3>
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
-                  <Button className="bg-red-100 text-red-700" onClick={() => deleteVideo(video.id, hypothesisId)}><Trash2 className="w-4 h-4" /></Button>
+                  <div className="flex gap-2">
+                    <Button className="bg-blue-100 text-blue-700" onClick={(event) => { event.stopPropagation(); openEdit(video); }}>Editar</Button>
+                    <Button className="bg-red-100 text-red-700" onClick={(event) => { event.stopPropagation(); deleteVideo(video.id, hypothesisId); }}><Trash2 className="w-4 h-4" /></Button>
+                  </div>
                 </div>
               ))}
             </div>

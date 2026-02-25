@@ -166,6 +166,18 @@ const schemaSql = [
     FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_analysis_runs_hypothesis_id ON hypothesis_analysis_runs(hypothesis_id)',
+  `CREATE TABLE IF NOT EXISTS video_ab_tests (
+    id TEXT PRIMARY KEY,
+    hypothesis_id TEXT NOT NULL,
+    video_a_id TEXT NOT NULL,
+    video_b_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    config_json TEXT NOT NULL,
+    results_json TEXT NOT NULL,
+    dataset_hash TEXT NOT NULL,
+    FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_video_ab_tests_hypothesis_id ON video_ab_tests(hypothesis_id)',
 ];
 
 const textEncoder = new TextEncoder();
@@ -659,6 +671,133 @@ async function runHypothesisAnalysis(hypothesis, videos, config) {
   return { frequentist, bayesian, sequential, diagnostics, verdict, volume };
 }
 
+async function fetchOwnedVideoById(videoId, userId) {
+  const [rows] = await pool.query(
+    `SELECT v.*
+     FROM videos v
+     JOIN hypotheses h ON h.id = v.hypothesis_id
+     JOIN campaigns c ON c.id = h.campaign_id
+     JOIN projects p ON p.id = c.project_id
+     WHERE v.id = ? AND v.user_id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+     LIMIT 1`,
+    [videoId, userId, userId, userId, userId],
+  );
+  return rows[0] || null;
+}
+
+function computeDerivedVideoMetrics(video) {
+  const views = Math.max(toNumber(video.views), 0);
+  const clicks = Math.max(toNumber(video.clicks), 0);
+  const purchase = Math.max(toNumber(video.purchase), 0);
+  const viewContent = Math.max(toNumber(video.view_content), 0);
+  return {
+    ctr: views > 0 ? clicks / views : toNumber(video.ctr),
+    purchase_rate: viewContent > 0 ? purchase / viewContent : (views > 0 ? purchase / views : 0),
+    clicks_per_1000_views: views > 0 ? (1000 * clicks) / views : 0,
+  };
+}
+
+function compareVideosAB(videoA, videoB, config = {}) {
+  const primaryMetric = config.primaryMetric || 'ctr';
+  const alpha = Number(config.alpha || 0.05);
+  const mde = Number(config.mde || 0.1);
+  const minExposure = Number(config.minExposure || 1000);
+  const derivedA = computeDerivedVideoMetrics(videoA);
+  const derivedB = computeDerivedVideoMetrics(videoB);
+  const exposureA = Math.max(toNumber(videoA.views), 0);
+  const exposureB = Math.max(toNumber(videoB.views), 0);
+  const exposureOk = exposureA >= minExposure && exposureB >= minExposure;
+
+  let frequentist;
+  let bayesian;
+
+  if (primaryMetric === 'ctr' || primaryMetric === 'purchase_rate') {
+    const successA = primaryMetric === 'ctr' ? toNumber(videoA.clicks) : toNumber(videoA.purchase);
+    const totalA = primaryMetric === 'ctr' ? Math.max(toNumber(videoA.views), 1) : Math.max(toNumber(videoA.view_content || videoA.views), 1);
+    const successB = primaryMetric === 'ctr' ? toNumber(videoB.clicks) : toNumber(videoB.purchase);
+    const totalB = primaryMetric === 'ctr' ? Math.max(toNumber(videoB.views), 1) : Math.max(toNumber(videoB.view_content || videoB.views), 1);
+    const p1 = successA / totalA;
+    const p2 = successB / totalB;
+    const pooled = (successA + successB) / (totalA + totalB);
+    const se = Math.sqrt(Math.max(pooled * (1 - pooled) * ((1 / totalA) + (1 / totalB)), 1e-12));
+    const z = (p2 - p1) / se;
+    const pValue = 2 * (1 - normCdf(Math.abs(z)));
+    frequentist = {
+      metric: primaryMetric,
+      p_value: pValue,
+      uplift_absolute: p2 - p1,
+      uplift_relative: p1 ? (p2 - p1) / p1 : null,
+      ci95_delta: [(p2 - p1) - 1.96 * se, (p2 - p1) + 1.96 * se],
+      winner: pValue < alpha ? (p2 > p1 ? 'B' : 'A') : 'Inconcluso',
+    };
+    bayesian = {
+      p_b_gt_a: normCdf((p2 - p1) / (se || 1)),
+      p_uplift_gt_mde: normCdf(((p2 - p1) - mde) / (se || 1)),
+    };
+  } else {
+    const aRate = derivedA.clicks_per_1000_views;
+    const bRate = derivedB.clicks_per_1000_views;
+    const delta = bRate - aRate;
+    const se = Math.sqrt(Math.max((Math.abs(aRate) + Math.abs(bRate)) / Math.max(exposureA + exposureB, 1), 1e-6));
+    const z = delta / se;
+    const pValue = 2 * (1 - normCdf(Math.abs(z)));
+    frequentist = {
+      metric: primaryMetric,
+      normalized_metric: 'clicks_per_1000_views',
+      p_value: pValue,
+      uplift_absolute: delta,
+      uplift_relative: aRate ? delta / aRate : null,
+      ci95_delta: [delta - 1.96 * se, delta + 1.96 * se],
+      winner: pValue < alpha ? (delta > 0 ? 'B' : 'A') : 'Inconcluso',
+    };
+    bayesian = {
+      p_b_gt_a: delta > 0 ? 0.8 : 0.2,
+      p_uplift_gt_mde: Math.abs(delta) > mde ? 0.8 : 0.4,
+    };
+  }
+
+  const sequentialDecision = !exposureOk
+    ? 'Inconcluso'
+    : bayesian.p_b_gt_a > 0.95
+      ? 'Ganador B'
+      : bayesian.p_b_gt_a < 0.05
+        ? 'Ganador A'
+        : 'Inconcluso';
+
+  const mixedTypes = (videoA.video_type || '') !== (videoB.video_type || '');
+  const qualityFlags = [];
+  if (mixedTypes) qualityFlags.push('Comparar tipos distintos puede sesgar el resultado');
+  if (toNumber(videoA.ctr) > 1 || toNumber(videoB.ctr) > 1) qualityFlags.push('CTR inconsistente detectado');
+
+  const decision = !exposureOk
+    ? 'Inconcluso'
+    : frequentist.winner === 'Inconcluso'
+      ? sequentialDecision
+      : `Ganador ${frequentist.winner}`;
+
+  return {
+    primary_metric: primaryMetric,
+    derived: { A: derivedA, B: derivedB },
+    frequentist,
+    bayesian,
+    sequential: {
+      min_exposure: minExposure,
+      exposure_a: exposureA,
+      exposure_b: exposureB,
+      exposure_ok: exposureOk,
+      decision: sequentialDecision,
+    },
+    quality_flags: qualityFlags,
+    mixed_types: mixedTypes,
+    decision,
+    recommendations: decision === 'Ganador B'
+      ? ['Escalar variante B', 'Mantener observación de calidad', 'Documentar aprendizaje creativo']
+      : decision === 'Ganador A'
+        ? ['Mantener variante A', 'Iterar elementos de B', 'Repetir test con más muestra']
+        : ['Recolectar más muestra', 'No decidir todavía', 'Revisar hook/CTA'],
+  };
+}
+
 async function executeCrudQuery(body, currentUserId) {
   const table = body.table;
   const operation = body.operation || 'select';
@@ -819,6 +958,125 @@ const server = http.createServer(async (req, res) => {
       const token = (req.headers.authorization || '').replace('Bearer ', '');
       sessions.delete(token);
       sendJson(req, res, 200, { ok: true });
+      return;
+    }
+
+    const videoMatch = url.pathname.match(/^\/api\/videos\/([^/]+)$/);
+    if (videoMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const video = await fetchOwnedVideoById(videoMatch[1], user.id);
+      if (!video) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+      sendJson(req, res, 200, { video });
+      return;
+    }
+
+    if (videoMatch && req.method === 'PATCH') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const existing = await fetchOwnedVideoById(videoMatch[1], user.id);
+      if (!existing) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+
+      const body = await readBody(req);
+      if ('hypothesis_id' in body || 'video_type' in body) {
+        sendJson(req, res, 400, { error: 'hypothesis_id and video_type cannot be changed' });
+        return;
+      }
+
+      const disallowed = new Set(['id', 'user_id', 'created_at']);
+      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key));
+      if (!entries.length) {
+        sendJson(req, res, 400, { error: 'No editable fields provided' });
+        return;
+      }
+
+      const setSql = entries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+      const values = entries.map(([, value]) => value);
+      await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, existing.id, user.id]);
+      const updated = await fetchOwnedVideoById(existing.id, user.id);
+      sendJson(req, res, 200, { video: updated });
+      return;
+    }
+
+    if (url.pathname === '/api/ab-test' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const videoAId = body.videoAId;
+      const videoBId = body.videoBId;
+      if (!videoAId || !videoBId) {
+        sendJson(req, res, 400, { error: 'videoAId and videoBId are required' });
+        return;
+      }
+
+      const videoA = await fetchOwnedVideoById(videoAId, user.id);
+      const videoB = await fetchOwnedVideoById(videoBId, user.id);
+      if (!videoA || !videoB) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+      if (videoA.hypothesis_id !== videoB.hypothesis_id) {
+        sendJson(req, res, 400, { error: 'Both videos must belong to same hypothesis' });
+        return;
+      }
+
+      const config = {
+        primaryMetric: body.primaryMetric || 'ctr',
+        method: body.method || 'hybrid',
+        alpha: Number(body.alpha || 0.05),
+        mde: Number(body.mde || 0.1),
+        exposureUnit: body.exposureUnit || 'views',
+        minExposure: Number(body.minExposure || 1000),
+      };
+
+      const results = compareVideosAB(videoA, videoB, config);
+      const datasetHash = crypto.createHash('sha256').update([videoA.id, videoB.id, videoA.updated_at || '', videoB.updated_at || ''].join('|')).digest('hex');
+      const testId = uuid();
+      await pool.query(
+        'INSERT INTO video_ab_tests (id, hypothesis_id, video_a_id, video_b_id, config_json, results_json, dataset_hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [testId, videoA.hypothesis_id, videoA.id, videoB.id, JSON.stringify(config), JSON.stringify(results), datasetHash],
+      );
+
+      sendJson(req, res, 200, { id: testId, hypothesis_id: videoA.hypothesis_id, config, results, dataset_hash: datasetHash });
+      return;
+    }
+
+    const videoHistoryMatch = url.pathname.match(/^\/api\/videos\/([^/]+)\/ab-tests$/);
+    if (videoHistoryMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const video = await fetchOwnedVideoById(videoHistoryMatch[1], user.id);
+      if (!video) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+
+      const [rows] = await pool.query(
+        `SELECT * FROM video_ab_tests
+         WHERE hypothesis_id = ? AND (video_a_id = ? OR video_b_id = ?)
+         ORDER BY created_at DESC LIMIT 30`,
+        [video.hypothesis_id, video.id, video.id],
+      );
+      sendJson(req, res, 200, { data: rows });
       return;
     }
 
