@@ -19,6 +19,17 @@ const ProjectDetailPage = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [newCampaign, setNewCampaign] = useState({ name: '', description: '' });
 
+  const openInCloud = async () => {
+    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/cloud/locate?targetType=project&targetId=${id}`, {
+      headers: { Authorization: `Bearer ${session?.access_token || ''}` },
+    });
+    if (response.ok) {
+      const json = await response.json();
+      navigate(`/cloud/${json.parentId || json.nodeId}`);
+    }
+  };
+
   useEffect(() => {
     loadProject();
   }, [id]);
@@ -101,6 +112,7 @@ const ProjectDetailPage = () => {
                 {project.name}
               </h1>
               <p className="text-gray-600">{project.description || 'No description'}</p>
+              <Button onClick={openInCloud} className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
             </div>
           </motion.div>
 

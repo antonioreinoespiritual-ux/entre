@@ -1,7 +1,8 @@
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
+import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const VideoContext = createContext();
 
@@ -16,78 +17,47 @@ export const useVideos = () => {
 export const VideoProvider = ({ children }) => {
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
   const { toast } = useToast();
+  const { currentUser } = useAuth();
 
-  useEffect(() => {
-    const getCurrentUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUser(user);
-      }
-    };
-    getCurrentUser();
-  }, []);
-
-  const validateHypothesesForVideo = useCallback(async (audienceId, videoMetrics) => {
-    if (!currentUser) return;
+  const validateHypothesisForVideo = useCallback(async (hypothesisId, videoMetrics) => {
+    if (!currentUser || !hypothesisId) return;
     try {
-      const { data: audience, error: audienceError } = await supabase
-        .from('audiences')
-        .select('campaign_id')
-        .eq('id', audienceId)
+      const { data: hypothesis, error } = await supabase
+        .from('hypotheses')
+        .select('*')
+        .eq('id', hypothesisId)
         .eq('user_id', currentUser.id)
         .single();
 
-      if (audienceError) throw audienceError;
+      if (error || !hypothesis) return;
 
-      const { data: hypotheses, error: hypothesesError } = await supabase
-        .from('hypotheses')
-        .select('*')
-        .eq('campaign_id', audience.campaign_id)
-        .eq('user_id', currentUser.id);
+      let isValidated = false;
+      const condition = String(hypothesis.condition || '').toLowerCase();
+      if (condition.includes('views') && Number(videoMetrics.views) > 1000) isValidated = true;
+      if (condition.includes('engagement') && Number(videoMetrics.engagement) > 5) isValidated = true;
+      if (condition.includes('likes') && Number(videoMetrics.likes) > 100) isValidated = true;
 
-      if (hypothesesError) throw hypothesesError;
-
-      for (const hypothesis of hypotheses) {
-        try {
-          let isValidated = false;
-          const condition = hypothesis.condition.toLowerCase();
-
-          if (condition.includes('views') && videoMetrics.views > 1000) {
-            isValidated = true;
-          }
-          if (condition.includes('engagement') && videoMetrics.engagement > 5) {
-            isValidated = true;
-          }
-          if (condition.includes('likes') && videoMetrics.likes > 100) {
-            isValidated = true;
-          }
-
-          if (isValidated && hypothesis.validation_status !== 'Validada') {
-            await supabase
-              .from('hypotheses')
-              .update({ validation_status: 'Validada' })
-              .eq('id', hypothesis.id)
-              .eq('user_id', currentUser.id);
-          }
-        } catch (err) {
-          console.error('Error validating hypothesis:', err);
-        }
+      if (isValidated && hypothesis.validation_status !== 'Validada') {
+        await supabase
+          .from('hypotheses')
+          .update({ validation_status: 'Validada' })
+          .eq('id', hypothesis.id)
+          .eq('user_id', currentUser.id);
       }
     } catch (error) {
-      console.error('Error in hypothesis validation:', error);
+      console.error('Error validating hypothesis:', error);
     }
   }, [currentUser]);
 
-  const fetchVideos = useCallback(async (audienceId) => {
-    if (!currentUser) return [];
+  const fetchVideos = useCallback(async (hypothesisId) => {
+    if (!currentUser || !hypothesisId) return [];
     setLoading(true);
     try {
       const { data, error } = await supabase
         .from('videos')
         .select('*')
-        .eq('audience_id', audienceId)
+        .eq('hypothesis_id', hypothesisId)
         .eq('user_id', currentUser.id)
         .order('created_at', { ascending: false });
 
@@ -124,10 +94,9 @@ export const VideoProvider = ({ children }) => {
         description: 'Video created successfully',
       });
 
-      await validateHypothesesForVideo(videoData.audience_id, videoData);
-
-      if (videoData.audience_id) {
-        await fetchVideos(videoData.audience_id);
+      await validateHypothesisForVideo(videoData.hypothesis_id, videoData);
+      if (videoData.hypothesis_id) {
+        await fetchVideos(videoData.hypothesis_id);
       }
       return data;
     } catch (error) {
@@ -140,45 +109,9 @@ export const VideoProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  }, [toast, fetchVideos, validateHypothesesForVideo, currentUser]);
+  }, [toast, fetchVideos, validateHypothesisForVideo, currentUser]);
 
-  const updateVideo = useCallback(async (id, videoData) => {
-    if (!currentUser) return null;
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('videos')
-        .update(videoData)
-        .eq('id', id)
-        .eq('user_id', currentUser.id)
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      toast({
-        title: 'Success',
-        description: 'Video updated successfully',
-      });
-
-      if (data) {
-        await validateHypothesesForVideo(data.audience_id, data);
-      }
-
-      return data;
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: `Failed to update video: ${error.message}`,
-        variant: 'destructive',
-      });
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [toast, validateHypothesesForVideo, currentUser]);
-
-  const deleteVideo = useCallback(async (id, audienceId) => {
+  const deleteVideo = useCallback(async (id, hypothesisId) => {
     if (!currentUser) return false;
     setLoading(true);
     try {
@@ -195,8 +128,8 @@ export const VideoProvider = ({ children }) => {
         description: 'Video deleted successfully',
       });
 
-      if (audienceId) {
-        await fetchVideos(audienceId);
+      if (hypothesisId) {
+        await fetchVideos(hypothesisId);
       }
       return true;
     } catch (error) {
@@ -216,7 +149,6 @@ export const VideoProvider = ({ children }) => {
     loading,
     fetchVideos,
     createVideo,
-    updateVideo,
     deleteVideo,
   };
 

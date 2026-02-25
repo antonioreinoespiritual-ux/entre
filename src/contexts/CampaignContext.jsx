@@ -1,7 +1,8 @@
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
+import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const CampaignContext = createContext();
 
@@ -16,18 +17,8 @@ export const useCampaigns = () => {
 export const CampaignProvider = ({ children }) => {
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
   const { toast } = useToast();
-
-  useEffect(() => {
-    const getCurrentUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUser(user);
-      }
-    };
-    getCurrentUser();
-  }, []);
+  const { currentUser } = useAuth();
 
   const fetchCampaigns = useCallback(async (projectId) => {
     if (!currentUser) return [];

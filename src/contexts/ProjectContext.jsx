@@ -1,7 +1,8 @@
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
+import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const ProjectContext = createContext();
 
@@ -16,18 +17,8 @@ export const useProjects = () => {
 export const ProjectProvider = ({ children }) => {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
   const { toast } = useToast();
-
-  useEffect(() => {
-    const getCurrentUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUser(user);
-      }
-    };
-    getCurrentUser();
-  }, []);
+  const { currentUser } = useAuth();
 
   const fetchProjects = useCallback(async () => {
     if (!currentUser) return [];
@@ -93,7 +84,7 @@ export const ProjectProvider = ({ children }) => {
     try {
       const { data, error } = await supabase
         .from('projects')
-        .insert([{ ...projectData, user_id: currentUser.id }])
+        .insert([{ ...projectData }])
         .select()
         .single();
 

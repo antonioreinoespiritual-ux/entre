@@ -1,7 +1,8 @@
 
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
+import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const AudienceContext = createContext();
 
@@ -16,18 +17,8 @@ export const useAudiences = () => {
 export const AudienceProvider = ({ children }) => {
   const [audiences, setAudiences] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null);
   const { toast } = useToast();
-
-  useEffect(() => {
-    const getCurrentUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        setCurrentUser(user);
-      }
-    };
-    getCurrentUser();
-  }, []);
+  const { currentUser } = useAuth();
 
   const fetchAudiences = useCallback(async (campaignId) => {
     if (!currentUser) return [];
@@ -36,9 +27,7 @@ export const AudienceProvider = ({ children }) => {
       const { data, error } = await supabase
         .from('audiences')
         .select(`
-          *,
-          clients:clients(*),
-          videos:videos(*)
+          *
         `)
         .eq('campaign_id', campaignId)
         .eq('user_id', currentUser.id)
