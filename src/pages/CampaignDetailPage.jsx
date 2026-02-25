@@ -18,6 +18,18 @@ const CampaignDetailPage = () => {
   const [campaign, setCampaign] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const openInCloud = async () => {
+    if (!campaign?.id) return;
+    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/cloud/locate?targetType=campaign&targetId=${campaign.id}`, {
+      headers: { Authorization: `Bearer ${session?.access_token || ''}` },
+    });
+    if (response.ok) {
+      const json = await response.json();
+      navigate(`/cloud/${json.parentId || json.nodeId}`);
+    }
+  };
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -57,6 +69,7 @@ const CampaignDetailPage = () => {
           <div className="bg-white rounded-2xl shadow-xl p-8 mb-6">
             <h1 className="text-3xl font-bold mb-2">{campaign.name}</h1>
             <p className="text-gray-600">{campaign.description || 'Sin descripción'}</p>
+            <Button onClick={openInCloud} className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
           </div>
 
           <div className="grid md:grid-cols-2 gap-6">

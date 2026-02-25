@@ -18,6 +18,7 @@ import HypothesisDetailPage from '@/pages/HypothesisDetailPage';
 import HypothesisAdvancedAnalysisPage from '@/pages/HypothesisAdvancedAnalysisPage';
 import VideoDetailPage from '@/pages/VideoDetailPage';
 import AbTestPage from '@/pages/AbTestPage';
+import CloudPage from '@/pages/CloudPage';
 import LoginPage from '@/pages/LoginPage';
 import SignupPage from '@/pages/SignupPage';
 
@@ -65,6 +66,8 @@ const ProtectedApp = () => (
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/analysis" element={<HypothesisAdvancedAnalysisPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/videos/:videoId" element={<VideoDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/ab-test" element={<AbTestPage />} />
+              <Route path="/cloud" element={<CloudPage />} />
+              <Route path="/cloud/:nodeId" element={<CloudPage />} />
               <Route path="*" element={<Navigate to="/projects" replace />} />
             </Routes>
           </HypothesisProvider>

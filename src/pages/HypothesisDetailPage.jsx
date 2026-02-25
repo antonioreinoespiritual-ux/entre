@@ -45,6 +45,17 @@ const HypothesisDetailPage = () => {
   const [editingVideo, setEditingVideo] = useState(null);
   const [editForm, setEditForm] = useState(baseVideo);
 
+  const openInCloud = async () => {
+    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/cloud/locate?targetType=hypothesis&targetId=${hypothesisId}`, {
+      headers: { Authorization: `Bearer ${session?.access_token || ''}` },
+    });
+    if (response.ok) {
+      const json = await response.json();
+      navigate(`/cloud/${json.parentId || json.nodeId}`);
+    }
+  };
+
   useEffect(() => {
     fetchHypotheses(campaignId);
     fetchAudiences(campaignId);
@@ -138,6 +149,7 @@ const HypothesisDetailPage = () => {
               <Activity className="w-4 h-4 mr-2" />
               Análisis avanzado
             </Button>
+            <Button onClick={openInCloud} className="bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
           </div>
           <p className="text-sm text-gray-600 mt-2">Tipo: {hypothesis.type} · Canal: {hypothesis.canal_principal || '-'}</p>
           <p className="mt-2">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>

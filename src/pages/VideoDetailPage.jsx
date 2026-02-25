@@ -37,6 +37,14 @@ const VideoDetailPage = () => {
   const derived = useMemo(() => (video ? computeDerivedMetrics(video) : null), [video]);
   const comparables = useMemo(() => videos.filter((v) => v.id !== videoId && (v.video_type || '') === (video?.video_type || '')).slice(0, 3), [videos, videoId, video]);
 
+  const openInCloud = async () => {
+    const response = await fetch(`${apiBaseUrl}/api/cloud/locate?targetType=video&targetId=${videoId}`, { headers: { Authorization: `Bearer ${getToken()}` } });
+    if (response.ok) {
+      const json = await response.json();
+      navigate(`/cloud/${json.parentId || json.nodeId}`);
+    }
+  };
+
   if (!video) return <div className="min-h-screen flex items-center justify-center">Cargando video...</div>;
 
   const flags = [];
@@ -57,7 +65,10 @@ const VideoDetailPage = () => {
               <p className="text-sm text-gray-300">Tipo: {video.video_type} · Creado: {video.created_at || '-'} · audience: {video.audience_id || 'N/A'}</p>
               <p className="text-sm text-gray-300">external_id: {video.external_id || '-'} · campaign/ad_set/ad: {video.campaign_id_ref || '-'} / {video.ad_set_id || '-'} / {video.ad_id || '-'}</p>
             </div>
-            <Button className="bg-indigo-600 hover:bg-indigo-700 text-white" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesisId}/ab-test?videoA=${video.id}`)}><Beaker className="w-4 h-4 mr-2" />Prueba A/B</Button>
+            <div className="flex gap-2">
+              <Button className="bg-indigo-600 hover:bg-indigo-700 text-white" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesisId}/ab-test?videoA=${video.id}`)}><Beaker className="w-4 h-4 mr-2" />Prueba A/B</Button>
+              <Button className="bg-indigo-600 hover:bg-indigo-700 text-white" onClick={openInCloud}>Abrir en Cloud</Button>
+            </div>
           </div>
         </section>
 

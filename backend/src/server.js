@@ -2,6 +2,8 @@ import process from 'node:process';
 import http from 'node:http';
 import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createPool, validateDbEnv } from './config/db.js';
 import { loadBackendEnv } from './config/env.js';
 
@@ -34,6 +36,7 @@ const corsOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigins.join(','))
   .filter(Boolean);
 const sessions = new Map();
 const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'users']);
+const storageRoot = path.resolve('backend/storage');
 
 const schemaSql = [
   `CREATE TABLE IF NOT EXISTS users (
@@ -190,12 +193,250 @@ const schemaSql = [
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_audience_ab_tests_campaign_id ON audience_ab_tests(campaign_id)',
+  `CREATE TABLE IF NOT EXISTS cloud_nodes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    parent_id TEXT,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    mime_type TEXT,
+    size INTEGER,
+    storage_path TEXT,
+    target_type TEXT,
+    target_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS cloud_events (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_parent ON cloud_nodes(user_id, parent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_target ON cloud_nodes(user_id, target_type, target_id)',
 ];
 
 const textEncoder = new TextEncoder();
 
 function uuid() {
   return crypto.randomUUID();
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+async function recordCloudEvent(userId, eventType, payload = {}) {
+  await pool.query(
+    'INSERT INTO cloud_events (id, user_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    [uuid(), userId, eventType, JSON.stringify(payload), nowIso()],
+  );
+}
+
+async function getCloudNodeById(nodeId, userId) {
+  const [rows] = await pool.query('SELECT * FROM cloud_nodes WHERE id = ? AND user_id = ?', [nodeId, userId]);
+  return rows[0] || null;
+}
+
+async function findNodeByName(userId, parentId, name, type = 'folder') {
+  const sql = parentId == null
+    ? 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id IS NULL AND name = ? AND type = ? LIMIT 1'
+    : 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id = ? AND name = ? AND type = ? LIMIT 1';
+  const params = parentId == null
+    ? [userId, name, type]
+    : [userId, parentId, name, type];
+  const [rows] = await pool.query(sql, params);
+  return rows[0] || null;
+}
+
+async function createCloudNode({ userId, parentId = null, name, type = 'folder', mimeType = null, size = null, storagePath = null, targetType = null, targetId = null }) {
+  const node = {
+    id: uuid(),
+    user_id: userId,
+    parent_id: parentId,
+    name,
+    type,
+    mime_type: mimeType,
+    size,
+    storage_path: storagePath,
+    target_type: targetType,
+    target_id: targetId,
+    created_at: nowIso(),
+    updated_at: nowIso(),
+  };
+  await pool.query(
+    `INSERT INTO cloud_nodes (id, user_id, parent_id, name, type, mime_type, size, storage_path, target_type, target_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [node.id, node.user_id, node.parent_id, node.name, node.type, node.mime_type, node.size, node.storage_path, node.target_type, node.target_id, node.created_at, node.updated_at],
+  );
+  return node;
+}
+
+async function ensureFolder(userId, parentId, name) {
+  const existing = await findNodeByName(userId, parentId, name, 'folder');
+  if (existing) return existing;
+  return createCloudNode({ userId, parentId, name, type: 'folder' });
+}
+
+async function findCloudShortcut(userId, parentId, targetType, targetId) {
+  const sql = parentId == null
+    ? 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id IS NULL AND type = ? AND target_type = ? AND target_id = ? LIMIT 1'
+    : 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id = ? AND type = ? AND target_type = ? AND target_id = ? LIMIT 1';
+  const params = parentId == null
+    ? [userId, 'shortcut', targetType, targetId]
+    : [userId, parentId, 'shortcut', targetType, targetId];
+  const [rows] = await pool.query(sql, params);
+  return rows[0] || null;
+}
+
+async function ensureShortcut(userId, parentId, name, targetType, targetId) {
+  const existing = await findCloudShortcut(userId, parentId, targetType, targetId);
+  if (existing) {
+    if (existing.name !== name) {
+      await pool.query('UPDATE cloud_nodes SET name = ?, updated_at = ? WHERE id = ?', [name, nowIso(), existing.id]);
+      existing.name = name;
+    }
+    return existing;
+  }
+  return createCloudNode({ userId, parentId, name, type: 'shortcut', targetType, targetId });
+}
+
+async function syncCloudForUser(userId) {
+  const root = await ensureFolder(userId, null, 'Cloud');
+  const projectsFolder = await ensureFolder(userId, root.id, 'Proyectos');
+
+  const [projects] = await pool.query('SELECT * FROM projects WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+  const [campaigns] = await pool.query('SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+  const [audiences] = await pool.query('SELECT * FROM audiences WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+  const [hypotheses] = await pool.query('SELECT * FROM hypotheses WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+  const [videos] = await pool.query('SELECT * FROM videos WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+
+  for (const project of projects) {
+    const projectFolder = await ensureFolder(userId, projectsFolder.id, project.name || `Proyecto ${project.id}`);
+    await ensureShortcut(userId, projectFolder.id, 'Abrir proyecto', 'project', project.id);
+    const campaignsFolder = await ensureFolder(userId, projectFolder.id, 'Campañas');
+
+    const projectCampaigns = campaigns.filter((campaign) => campaign.project_id === project.id);
+    for (const campaign of projectCampaigns) {
+      const campaignFolder = await ensureFolder(userId, campaignsFolder.id, campaign.name || `Campaña ${campaign.id}`);
+      await ensureShortcut(userId, campaignFolder.id, 'Abrir campaña', 'campaign', campaign.id);
+
+      const audiencesFolder = await ensureFolder(userId, campaignFolder.id, 'Audiencias');
+      const hypothesesFolder = await ensureFolder(userId, campaignFolder.id, 'Hipótesis');
+      const audienceVideosMap = new Map();
+
+      const campaignAudiences = audiences.filter((audience) => audience.campaign_id === campaign.id);
+      for (const audience of campaignAudiences) {
+        const audienceFolder = await ensureFolder(userId, audiencesFolder.id, audience.name || `Audiencia ${audience.id}`);
+        await ensureShortcut(userId, audienceFolder.id, 'Abrir audiencia', 'audience', audience.id);
+        audienceVideosMap.set(audience.id, await ensureFolder(userId, audienceFolder.id, 'Videos'));
+      }
+
+      const campaignHypotheses = hypotheses.filter((hypothesis) => hypothesis.campaign_id === campaign.id);
+      for (const hypothesis of campaignHypotheses) {
+        const hypothesisName = hypothesis.hypothesis_statement || hypothesis.condition || hypothesis.type || `Hipótesis ${hypothesis.id}`;
+        const hypothesisFolder = await ensureFolder(userId, hypothesesFolder.id, hypothesisName.slice(0, 80));
+        await ensureShortcut(userId, hypothesisFolder.id, 'Abrir hipótesis', 'hypothesis', hypothesis.id);
+        const videosFolder = await ensureFolder(userId, hypothesisFolder.id, 'Videos');
+
+        const hypothesisVideos = videos.filter((video) => video.hypothesis_id === hypothesis.id);
+        for (const video of hypothesisVideos) {
+          await ensureShortcut(userId, videosFolder.id, video.title || `Video ${video.id}`, 'video', video.id);
+          if (video.audience_id && audienceVideosMap.has(video.audience_id)) {
+            await ensureShortcut(userId, audienceVideosMap.get(video.audience_id).id, video.title || `Video ${video.id}`, 'video', video.id);
+          }
+        }
+      }
+    }
+  }
+
+  await recordCloudEvent(userId, 'sync', { scope: 'full' });
+}
+
+async function locateCloudNodeForTarget(userId, targetType, targetId) {
+  const [rows] = await pool.query(
+    'SELECT * FROM cloud_nodes WHERE user_id = ? AND target_type = ? AND target_id = ? ORDER BY updated_at DESC LIMIT 1',
+    [userId, targetType, targetId],
+  );
+  return rows[0] || null;
+}
+
+async function resolveShortcutAppLink(userId, targetType, targetId) {
+  if (targetType === 'project') {
+    return `/projects/${targetId}`;
+  }
+
+  if (targetType === 'campaign') {
+    const [rows] = await pool.query(
+      `SELECT c.id AS campaign_id, p.id AS project_id
+       FROM campaigns c
+       JOIN projects p ON p.id = c.project_id
+       WHERE c.id = ? AND c.user_id = ? AND p.user_id = ?
+       LIMIT 1`,
+      [targetId, userId, userId],
+    );
+    const row = rows[0];
+    return row ? `/projects/${row.project_id}/campaigns/${row.campaign_id}` : '/projects';
+  }
+
+  if (targetType === 'audience') {
+    const [rows] = await pool.query(
+      `SELECT a.id AS audience_id, c.id AS campaign_id, p.id AS project_id
+       FROM audiences a
+       JOIN campaigns c ON c.id = a.campaign_id
+       JOIN projects p ON p.id = c.project_id
+       WHERE a.id = ? AND a.user_id = ? AND c.user_id = ? AND p.user_id = ?
+       LIMIT 1`,
+      [targetId, userId, userId, userId],
+    );
+    const row = rows[0];
+    return row ? `/projects/${row.project_id}/campaigns/${row.campaign_id}/audiences/${row.audience_id}` : '/projects';
+  }
+
+  if (targetType === 'hypothesis') {
+    const [rows] = await pool.query(
+      `SELECT h.id AS hypothesis_id, c.id AS campaign_id, p.id AS project_id
+       FROM hypotheses h
+       JOIN campaigns c ON c.id = h.campaign_id
+       JOIN projects p ON p.id = c.project_id
+       WHERE h.id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+       LIMIT 1`,
+      [targetId, userId, userId, userId],
+    );
+    const row = rows[0];
+    return row ? `/projects/${row.project_id}/campaigns/${row.campaign_id}/hypotheses/${row.hypothesis_id}` : '/projects';
+  }
+
+  if (targetType === 'video') {
+    const [rows] = await pool.query(
+      `SELECT v.id AS video_id, h.id AS hypothesis_id, c.id AS campaign_id, p.id AS project_id
+       FROM videos v
+       JOIN hypotheses h ON h.id = v.hypothesis_id
+       JOIN campaigns c ON c.id = h.campaign_id
+       JOIN projects p ON p.id = c.project_id
+       WHERE v.id = ? AND v.user_id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+       LIMIT 1`,
+      [targetId, userId, userId, userId, userId],
+    );
+    const row = rows[0];
+    return row ? `/projects/${row.project_id}/campaigns/${row.campaign_id}/hypotheses/${row.hypothesis_id}/videos/${row.video_id}` : '/projects';
+  }
+
+  return '/projects';
+}
+
+async function getCloudBreadcrumbs(userId, nodeId) {
+  const breadcrumbs = [];
+  let currentId = nodeId;
+  while (currentId) {
+    const node = await getCloudNodeById(currentId, userId);
+    if (!node) break;
+    breadcrumbs.unshift({ id: node.id, name: node.name, type: node.type });
+    currentId = node.parent_id;
+  }
+  return breadcrumbs;
 }
 
 function normalizeIdentifier(value) {
@@ -994,6 +1235,9 @@ async function executeCrudQuery(body, currentUserId) {
       fields.map((field) => writeRow[field]),
     );
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
+    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
+      await syncCloudForUser(currentUserId);
+    }
     return inserted;
   }
 
@@ -1003,11 +1247,17 @@ async function executeCrudQuery(body, currentUserId) {
     const setSql = fields.map((field) => `${normalizeIdentifier(field)} = ?`).join(', ');
     await pool.query(`UPDATE ${quotedTable} SET ${setSql}${where}`, [...fields.map((field) => payload[field]), ...whereValues]);
     const [updated] = await pool.query(`SELECT * FROM ${quotedTable}${where}`, whereValues);
+    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
+      await syncCloudForUser(currentUserId);
+    }
     return updated;
   }
 
   if (operation === 'delete') {
     await pool.query(`DELETE FROM ${quotedTable}${where}`, whereValues);
+    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
+      await syncCloudForUser(currentUserId);
+    }
     return [];
   }
 
@@ -1050,6 +1300,7 @@ const server = http.createServer(async (req, res) => {
       const token = uuid();
       const session = { access_token: token, user: { id: user.id, email: user.email } };
       sessions.set(token, session.user);
+      await syncCloudForUser(user.id);
       sendJson(req, res, 200, { session, user: session.user });
       return;
     }
@@ -1084,6 +1335,211 @@ const server = http.createServer(async (req, res) => {
       const token = (req.headers.authorization || '').replace('Bearer ', '');
       sessions.delete(token);
       sendJson(req, res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === '/api/cloud/tree' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      await syncCloudForUser(user.id);
+      const parentId = url.searchParams.get('parentId');
+      const search = (url.searchParams.get('search') || '').trim().toLowerCase();
+      const sort = url.searchParams.get('sort') || 'name';
+      const limit = Math.max(Number(url.searchParams.get('limit') || 200), 1);
+      const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
+
+      const treeSql = parentId == null
+        ? 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id IS NULL ORDER BY name COLLATE NOCASE ASC'
+        : 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id = ? ORDER BY name COLLATE NOCASE ASC';
+      const treeParams = parentId == null ? [user.id] : [user.id, parentId];
+      let [rows] = await pool.query(treeSql, treeParams);
+      if (search) rows = rows.filter((row) => String(row.name || '').toLowerCase().includes(search));
+      if (sort === 'updated_at') rows.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
+      if (sort === 'created_at') rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+
+      const paged = rows.slice(offset, offset + limit);
+      const breadcrumbs = parentId ? await getCloudBreadcrumbs(user.id, parentId) : [];
+      sendJson(req, res, 200, { data: paged, total: rows.length, breadcrumbs });
+      return;
+    }
+
+    if (url.pathname === '/api/cloud/folder' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(req);
+      if (!body.name) {
+        sendJson(req, res, 400, { error: 'name is required' });
+        return;
+      }
+      const parentId = body.parentId || null;
+      if (parentId && !(await getCloudNodeById(parentId, user.id))) {
+        sendJson(req, res, 404, { error: 'Parent not found' });
+        return;
+      }
+      const node = await createCloudNode({ userId: user.id, parentId, name: body.name, type: 'folder' });
+      await recordCloudEvent(user.id, 'create', { type: 'folder', nodeId: node.id });
+      sendJson(req, res, 200, { node });
+      return;
+    }
+
+    const cloudNodeMatch = url.pathname.match(/^\/api\/cloud\/node\/([^/]+)$/);
+    if (cloudNodeMatch && req.method === 'PATCH') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const node = await getCloudNodeById(cloudNodeMatch[1], user.id);
+      if (!node) {
+        sendJson(req, res, 404, { error: 'Node not found' });
+        return;
+      }
+      const body = await readBody(req);
+      const name = body.name ?? node.name;
+      const parentId = body.parentId ?? node.parent_id;
+      if (parentId && !(await getCloudNodeById(parentId, user.id))) {
+        sendJson(req, res, 404, { error: 'Destination parent not found' });
+        return;
+      }
+      await pool.query('UPDATE cloud_nodes SET name = ?, parent_id = ?, updated_at = ? WHERE id = ? AND user_id = ?', [name, parentId, nowIso(), node.id, user.id]);
+      await recordCloudEvent(user.id, 'move', { nodeId: node.id, parentId, name });
+      sendJson(req, res, 200, { ok: true });
+      return;
+    }
+
+    if (cloudNodeMatch && req.method === 'DELETE') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const node = await getCloudNodeById(cloudNodeMatch[1], user.id);
+      if (!node) {
+        sendJson(req, res, 404, { error: 'Node not found' });
+        return;
+      }
+      const [children] = await pool.query('SELECT id FROM cloud_nodes WHERE user_id = ? AND parent_id = ? LIMIT 1', [user.id, node.id]);
+      if (children.length) {
+        sendJson(req, res, 400, { error: 'Folder is not empty' });
+        return;
+      }
+      if (node.type === 'file' && node.storage_path) {
+        try { fs.unlinkSync(node.storage_path); } catch {}
+      }
+      await pool.query('DELETE FROM cloud_nodes WHERE id = ? AND user_id = ?', [node.id, user.id]);
+      await recordCloudEvent(user.id, 'delete', { nodeId: node.id });
+      sendJson(req, res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === '/api/cloud/upload' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(req);
+      if (!body.parentId || !body.name || !body.contentBase64) {
+        sendJson(req, res, 400, { error: 'parentId, name and contentBase64 are required' });
+        return;
+      }
+      const parent = await getCloudNodeById(body.parentId, user.id);
+      if (!parent) {
+        sendJson(req, res, 404, { error: 'Parent not found' });
+        return;
+      }
+      const nodeId = uuid();
+      const userFolder = path.join(storageRoot, user.id);
+      fs.mkdirSync(userFolder, { recursive: true });
+      const ext = path.extname(body.name || '') || '';
+      const filePath = path.join(userFolder, `${nodeId}${ext}`);
+      const fileBuffer = Buffer.from(String(body.contentBase64), 'base64');
+      fs.writeFileSync(filePath, fileBuffer);
+      const node = await createCloudNode({
+        userId: user.id,
+        parentId: parent.id,
+        name: body.name,
+        type: 'file',
+        mimeType: body.mimeType || 'application/octet-stream',
+        size: fileBuffer.byteLength,
+        storagePath: filePath,
+      });
+      await recordCloudEvent(user.id, 'upload', { nodeId: node.id, size: node.size });
+      sendJson(req, res, 200, { node });
+      return;
+    }
+
+    const cloudDownloadMatch = url.pathname.match(/^\/api\/cloud\/download\/([^/]+)$/);
+    if (cloudDownloadMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const node = await getCloudNodeById(cloudDownloadMatch[1], user.id);
+      if (!node) {
+        sendJson(req, res, 404, { error: 'Node not found' });
+        return;
+      }
+      if (node.type === 'shortcut') {
+        const link = await resolveShortcutAppLink(user.id, node.target_type, node.target_id);
+        sendJson(req, res, 200, {
+          shortcut: true,
+          target_type: node.target_type,
+          target_id: node.target_id,
+          link,
+        });
+        return;
+      }
+      if (node.type !== 'file' || !node.storage_path || !fs.existsSync(node.storage_path)) {
+        sendJson(req, res, 400, { error: 'File not available' });
+        return;
+      }
+      await recordCloudEvent(user.id, 'download', { nodeId: node.id });
+      res.writeHead(200, {
+        'Content-Type': node.mime_type || 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(node.name)}"`,
+      });
+      fs.createReadStream(node.storage_path).pipe(res);
+      return;
+    }
+
+    if (url.pathname === '/api/cloud/sync' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      await syncCloudForUser(user.id);
+      sendJson(req, res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === '/api/cloud/locate' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const targetType = url.searchParams.get('targetType');
+      const targetId = url.searchParams.get('targetId');
+      if (!targetType || !targetId) {
+        sendJson(req, res, 400, { error: 'targetType and targetId are required' });
+        return;
+      }
+      await syncCloudForUser(user.id);
+      const node = await locateCloudNodeForTarget(user.id, targetType, targetId);
+      if (!node) {
+        sendJson(req, res, 404, { error: 'Cloud location not found' });
+        return;
+      }
+      sendJson(req, res, 200, { nodeId: node.id, parentId: node.parent_id, type: node.type });
       return;
     }
 
