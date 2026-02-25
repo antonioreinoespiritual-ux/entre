@@ -241,8 +241,15 @@ export const supabase = {
         const { user } = await request('/api/auth/me', { method: 'GET' });
         return { data: { session: { ...session, user } }, error: null };
       } catch {
+        // Token inválido (ej. backend reiniciado): limpiar y recrear sesión demo.
         setStoredSession(null);
-        return { data: { session: null }, error: null };
+        try {
+          session = await ensureSession();
+          const { user } = await request('/api/auth/me', { method: 'GET' });
+          return { data: { session: { ...session, user } }, error: null };
+        } catch {
+          return { data: { session: null }, error: null };
+        }
       }
     },
     async getUser() {
