@@ -7,9 +7,7 @@
     "dev": "vite --host :: --port 3000",
     "build": "node tools/generate-llms.js || true && vite build",
     "preview": "vite preview --host :: --port 3000",
-    "lint": "eslint . --quiet",
-    "backend:dev": "node --watch backend/src/server.js",
-    "backend:start": "node backend/src/server.js"
+    "lint": "eslint . --quiet"
   },
   "dependencies": {
     "@emotion/is-prop-valid": "^1.3.1",
@@ -23,6 +21,7 @@
     "@radix-ui/react-slot": "^1.1.1",
     "@radix-ui/react-tabs": "^1.1.2",
     "@radix-ui/react-toast": "^1.2.4",
+    "@supabase/supabase-js": "2.30.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^11.15.0",
