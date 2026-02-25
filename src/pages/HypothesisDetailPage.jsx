@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
 import { useAudiences } from '@/contexts/AudienceContext';
+import { buildVolumeSnapshot } from '@/lib/analysis/volume';
 
 const tabs = ['paid', 'organic', 'live'];
 const baseVideo = {
@@ -50,6 +51,12 @@ const HypothesisDetailPage = () => {
 
   const hypothesis = useMemo(() => hypotheses.find((h) => h.id === hypothesisId), [hypotheses, hypothesisId]);
   const tabVideos = useMemo(() => videos.filter((video) => (video.video_type || 'organic') === activeTab), [videos, activeTab]);
+  const volume = useMemo(() => buildVolumeSnapshot({
+    videos,
+    minimum: hypothesis?.volumen_minimo || 0,
+    unit: hypothesis?.volumen_unidad || 'videos',
+    hypothesisId,
+  }), [videos, hypothesis, hypothesisId]);
 
   const onCreateVideo = async (event) => {
     event.preventDefault();
@@ -101,8 +108,13 @@ const HypothesisDetailPage = () => {
           </div>
           <p className="text-sm text-gray-600 mt-2">Tipo: {hypothesis.type} · Canal: {hypothesis.canal_principal || '-'}</p>
           <p className="mt-2">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
-          <p className="text-sm text-gray-500 mt-2">X: {hypothesis.variable_x || '-'} · Y: {hypothesis.metrica_objetivo_y || '-'} · Umbral: {hypothesis.umbral_operador || ''} {hypothesis.umbral_valor ?? ''}</p>
-          <p className="text-sm text-gray-500">Volumen mínimo: {hypothesis.volumen_minimo ?? '-'} {hypothesis.volumen_unidad || ''}</p>
+          <p className="text-sm text-gray-500 mt-2">X: {hypothesis.variable_x || '-'} · Umbral: {hypothesis.umbral_operador || ''} {hypothesis.umbral_valor ?? ''}</p>
+          <p className="text-sm text-gray-500">Métrica objetivo (Y): {hypothesis.metrica_objetivo_y || '-'}</p>
+          <p className="text-sm text-gray-500">Volumen mínimo: {volume.minimum} {volume.unit}</p>
+          <p className="text-sm text-gray-500">Volumen actual: {volume.current} {volume.unit}</p>
+          <p className="text-sm font-medium">
+            Volumen mínimo cumplido: <span className={volume.meets_minimum ? 'text-green-600' : 'text-yellow-700'}>{volume.meets_minimum ? 'Sí' : 'No'}</span>
+          </p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-6">

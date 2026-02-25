@@ -355,6 +355,52 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeVolumeUnit(unit) {
+  return String(unit || '').trim().toLowerCase() || 'videos';
+}
+
+function resolveVolumeField(unit) {
+  const normalized = normalizeVolumeUnit(unit);
+  const map = {
+    views: 'views',
+    clicks: 'clicks',
+    videos: 'videos',
+    initiatest: 'initiatest',
+    duration_min: 'duracion_min',
+    duracion_min: 'duracion_min',
+    sessions: 'sessions',
+  };
+  return map[normalized] || 'videos';
+}
+
+function computeCurrentVolumeFromVideos(videos, unit) {
+  const field = resolveVolumeField(unit);
+  if (field === 'videos') return videos.length;
+  if (field === 'sessions') {
+    const unique = new Set();
+    videos.forEach((video) => {
+      const id = video.external_id || video.session_id || video.ad_id || video.live_id;
+      if (id) unique.add(String(id));
+    });
+    return unique.size || videos.length;
+  }
+  return videos.reduce((sum, video) => sum + toNumber(video[field]), 0);
+}
+
+function buildVolumeSnapshot(hypothesis, videos) {
+  const unit = normalizeVolumeUnit(hypothesis?.volumen_unidad || 'videos');
+  const minimum = toNumber(hypothesis?.volumen_minimo, 0);
+  const current = computeCurrentVolumeFromVideos(videos || [], unit);
+  return {
+    hypothesis_id: hypothesis?.id || null,
+    unit,
+    minimum,
+    current,
+    count_videos: Array.isArray(videos) ? videos.length : 0,
+    meets_minimum: current >= minimum,
+  };
+}
+
 function stdDev(values) {
   if (!values.length) return 0;
   const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -511,8 +557,8 @@ function runDataDiagnostics(videos, hypothesis, config) {
   const std = stdDev(values);
   const outliers = values.filter((value) => std > 0 && Math.abs((value - mean) / std) > 3).length;
   const channels = new Set(videos.map((video) => video.video_type).filter(Boolean));
-  const minVolume = Number(hypothesis.volumen_minimo || 0);
-  const sampleInsufficient = videos.length < minVolume;
+  const volume = buildVolumeSnapshot(hypothesis, videos);
+  const sampleInsufficient = !volume.meets_minimum;
   const ctrInconsistencies = videos.filter((video) => toNumber(video.views) > 0 && Math.abs((toNumber(video.clicks) / toNumber(video.views)) - toNumber(video.ctr || 0)) > 0.2).length;
 
   return {
@@ -521,7 +567,7 @@ function runDataDiagnostics(videos, hypothesis, config) {
       { check: 'outliers', status: outliers ? 'warning' : 'ok', detail: `${outliers} outliers (>3σ)` },
       { check: 'duplicates_creative_id', status: duplicateCreative.size ? 'warning' : 'ok', detail: `${duplicateCreative.size} creative_id duplicados` },
       { check: 'mixed_channels', status: channels.size > 1 ? 'warning' : 'ok', detail: `${channels.size} tipos de canal en muestra` },
-      { check: 'sample_size', status: sampleInsufficient ? 'warning' : 'ok', detail: `n=${videos.length}, volumen mínimo=${minVolume}` },
+      { check: 'sample_size', status: sampleInsufficient ? 'warning' : 'ok', detail: `volumen actual=${volume.current} ${volume.unit}, mínimo=${volume.minimum} ${volume.unit}` },
       { check: 'ctr_consistency', status: ctrInconsistencies ? 'warning' : 'ok', detail: `${ctrInconsistencies} inconsistencias clicks/views vs ctr` },
     ],
     histogram: {
@@ -536,13 +582,13 @@ function runDataDiagnostics(videos, hypothesis, config) {
 }
 
 function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos }) {
-  const minVolume = Number(hypothesis.volumen_minimo || 0);
-  const volumeOk = videos.length >= minVolume;
+  const volume = buildVolumeSnapshot(hypothesis, videos);
+  const volumeOk = volume.meets_minimum;
   const passesFrequentist = Boolean(frequentist?.passes);
   const bayesStrong = Number(bayesian?.p_improvement_gt_threshold || 0) >= 0.95;
   const cleanEnough = diagnostics.warnings_count <= 2;
   const validated = volumeOk && cleanEnough && (passesFrequentist || bayesStrong);
-  const inconclusive = !validated && (videos.length > 0);
+  const inconclusive = !validated && (!volumeOk || videos.length > 0);
   return {
     status: validated ? 'Validada' : inconclusive ? 'Inconclusa' : 'No validada',
     summary: validated
@@ -554,6 +600,9 @@ function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos }
       frequentist_pass: passesFrequentist,
       bayesian_probability: Number(bayesian?.p_improvement_gt_threshold || 0),
       volume_ok: volumeOk,
+      volume_current: volume.current,
+      volume_minimum: volume.minimum,
+      volume_unit: volume.unit,
       warnings: diagnostics.warnings_count,
     },
     recommendation: validated
@@ -597,6 +646,7 @@ async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) 
 }
 
 async function runHypothesisAnalysis(hypothesis, videos, config) {
+  const volume = buildVolumeSnapshot(hypothesis, videos);
   const frequentist = runFrequentistAnalysis(videos, config);
   const bayesian = runBayesianAnalysis(videos, config);
   const diagnostics = runDataDiagnostics(videos, hypothesis, config);
@@ -606,7 +656,7 @@ async function runHypothesisAnalysis(hypothesis, videos, config) {
     risk_note: 'Riesgo de falso positivo controlado por regla bayesiana de stopping.',
   };
   const verdict = buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos });
-  return { frequentist, bayesian, sequential, diagnostics, verdict };
+  return { frequentist, bayesian, sequential, diagnostics, verdict, volume };
 }
 
 async function executeCrudQuery(body, currentUserId) {
@@ -788,11 +838,31 @@ const server = http.createServer(async (req, res) => {
       };
 
       const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
+      const volume = buildVolumeSnapshot(hypothesis, videos);
       const [runs] = await pool.query(
         'SELECT id, hypothesis_id, created_at, config_json, results_json, dataset_hash FROM hypothesis_analysis_runs WHERE hypothesis_id = ? ORDER BY created_at DESC LIMIT 15',
         [hypothesisId],
       );
-      sendJson(req, res, 200, { hypothesis, videos, runs });
+      sendJson(req, res, 200, { hypothesis, videos, runs, volume });
+      return;
+    }
+
+    const volumeMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/volume$/);
+    if (volumeMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const hypothesisId = volumeMatch[1];
+      const config = {
+        video_type: url.searchParams.get('video_type') || '',
+        date_from: url.searchParams.get('date_from') || '',
+        date_to: url.searchParams.get('date_to') || '',
+      };
+      const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
+      sendJson(req, res, 200, buildVolumeSnapshot(hypothesis, videos));
       return;
     }
 
@@ -840,6 +910,7 @@ const server = http.createServer(async (req, res) => {
         run_id: runId,
         config,
         results,
+        volume: results.volume,
       });
       return;
     }

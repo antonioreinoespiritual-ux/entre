@@ -3,6 +3,7 @@ import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowLeft, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { buildVolumeSnapshot } from '@/lib/analysis/volume';
 
 const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
@@ -60,6 +61,7 @@ const HypothesisAdvancedAnalysisPage = () => {
   const [videos, setVideos] = useState([]);
   const [runs, setRuns] = useState([]);
   const [results, setResults] = useState(null);
+  const [volume, setVolume] = useState(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -74,6 +76,12 @@ const HypothesisAdvancedAnalysisPage = () => {
       setHypothesis(data.hypothesis);
       setVideos(data.videos || []);
       setRuns(data.runs || []);
+      setVolume(data.volume || buildVolumeSnapshot({
+        videos: data.videos || [],
+        minimum: data.hypothesis?.volumen_minimo || 0,
+        unit: data.hypothesis?.volumen_unidad || 'videos',
+        hypothesisId,
+      }));
     } catch (loadError) {
       setError(loadError.message);
     } finally {
@@ -101,6 +109,7 @@ const HypothesisAdvancedAnalysisPage = () => {
         body: JSON.stringify(payload),
       });
       setResults(response.results);
+      setVolume(response.volume || null);
       await loadData();
     } catch (runError) {
       setError(runError.message);
@@ -115,6 +124,16 @@ const HypothesisAdvancedAnalysisPage = () => {
     if (status === 'No validada') return 'bg-red-100 text-red-700';
     return 'bg-yellow-100 text-yellow-700';
   }, [results, hypothesis]);
+
+  const resolvedVolume = useMemo(
+    () => volume || buildVolumeSnapshot({
+      videos,
+      minimum: hypothesis?.volumen_minimo || 0,
+      unit: hypothesis?.volumen_unidad || 'videos',
+      hypothesisId,
+    }),
+    [volume, videos, hypothesis, hypothesisId],
+  );
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-slate-900 to-gray-800 text-white"><div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-400 border-t-transparent" /></div>;
@@ -137,12 +156,17 @@ const HypothesisAdvancedAnalysisPage = () => {
               <h2 className="text-xl font-semibold">Resumen de hipótesis</h2>
               <p className="text-sm text-gray-300 mt-2">Tipo: {hypothesis?.type || '-'} · Canal: {hypothesis?.canal_principal || '-'}</p>
               <p className="mt-2">{hypothesis?.hypothesis_statement || hypothesis?.condition || 'Sin statement'}</p>
-              <p className="text-sm text-gray-300 mt-2">Variable X: {hypothesis?.variable_x || '-'} · Métrica Y: {hypothesis?.metrica_objetivo_y || config.primary_metric}</p>
-              <p className="text-sm text-gray-300">Umbral: {hypothesis?.umbral_operador || config.threshold_operator} {hypothesis?.umbral_valor ?? config.threshold_value} · Volumen mínimo: {hypothesis?.volumen_minimo || 0} {hypothesis?.volumen_unidad || 'obs'}</p>
-              <p className="text-sm text-gray-400 mt-1">Ventana de análisis: {config.date_from || 'inicio'} → {config.date_to || 'actual'} · videos: {videos.length}</p>
+              <p className="text-sm text-gray-300 mt-2">Variable X: {hypothesis?.variable_x || '-'}</p>
+              <p className="text-sm text-gray-300">Objetivo hipótesis (Y): {hypothesis?.metrica_objetivo_y || '-'}</p>
+              <p className="text-sm text-gray-300">Primary metric (análisis): {config.primary_metric}</p>
+              <p className="text-sm text-gray-300">Umbral: {hypothesis?.umbral_operador || config.threshold_operator} {hypothesis?.umbral_valor ?? config.threshold_value}</p>
+              <p className="text-sm text-gray-300">Volumen mínimo: {resolvedVolume.minimum} {resolvedVolume.unit}</p>
+              <p className="text-sm text-gray-300">Volumen actual: {resolvedVolume.current} {resolvedVolume.unit} · videos: {resolvedVolume.count_videos}</p>
+              <p className="text-sm text-gray-400 mt-1">Ventana de análisis: {config.date_from || 'inicio'} → {config.date_to || 'actual'}</p>
             </div>
             <div className="flex flex-col gap-2 items-end">
               <span className={`px-3 py-1 rounded-full text-sm font-semibold ${statusBadgeClass}`}>{results?.verdict?.status || hypothesis?.validation_status || 'Inconclusa'}</span>
+              {!resolvedVolume.meets_minimum && <span className="px-3 py-1 rounded-full text-xs font-semibold bg-yellow-100 text-yellow-800">Muestra insuficiente</span>}
               <Button onClick={runAnalysis} disabled={running} className="bg-indigo-600 hover:bg-indigo-700 text-white"><RefreshCw className={`w-4 h-4 mr-2 ${running ? 'animate-spin' : ''}`} />Recalcular</Button>
             </div>
           </div>
@@ -231,6 +255,8 @@ const HypothesisAdvancedAnalysisPage = () => {
               <p className="text-base font-semibold">{results.verdict.status}</p>
               <p>{results.verdict.summary}</p>
               <p>Confianza (Bayes): {(Number(results.verdict.confidence?.bayesian_probability || 0) * 100).toFixed(1)}%</p>
+              <p>Volumen actual: {results.verdict.confidence?.volume_current ?? resolvedVolume.current} {results.verdict.confidence?.volume_unit ?? resolvedVolume.unit}</p>
+              <p>Volumen mínimo: {results.verdict.confidence?.volume_minimum ?? resolvedVolume.minimum} {results.verdict.confidence?.volume_unit ?? resolvedVolume.unit}</p>
               <p>Volumen mínimo cumplido: {results.verdict.confidence?.volume_ok ? 'Sí' : 'No'}</p>
               <p>Recomendación: <b>{results.verdict.recommendation}</b></p>
             </div>
