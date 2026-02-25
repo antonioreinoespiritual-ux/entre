@@ -72,6 +72,9 @@ const schemaSql = [
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
+    contexto TEXT,
+    notas TEXT,
+    targeting TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -84,6 +87,15 @@ const schemaSql = [
     campaign_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     type TEXT NOT NULL,
+    hypothesis_statement TEXT,
+    variable_x TEXT,
+    metrica_objetivo_y TEXT,
+    umbral_operador TEXT,
+    umbral_valor REAL,
+    volumen_minimo REAL,
+    volumen_unidad TEXT,
+    canal_principal TEXT,
+    contexto_cualitativo TEXT,
     condition TEXT,
     validation_status TEXT DEFAULT 'No Validada',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -98,9 +110,39 @@ const schemaSql = [
     hypothesis_id TEXT NOT NULL,
     audience_id TEXT,
     user_id TEXT NOT NULL,
+    video_type TEXT NOT NULL DEFAULT 'organic',
     title TEXT NOT NULL,
     url TEXT,
+    external_id TEXT,
+    external_id_type TEXT,
+    hook_texto TEXT,
+    hook_tipo TEXT,
+    cta_texto TEXT,
+    cta_tipo TEXT,
+    creative_id TEXT,
+    contexto_cualitativo TEXT,
+    clicks INTEGER DEFAULT 0,
+    views_profile INTEGER DEFAULT 0,
+    initiatest INTEGER DEFAULT 0,
+    initiate_checkouts INTEGER DEFAULT 0,
+    view_content INTEGER DEFAULT 0,
+    formulario_lead INTEGER DEFAULT 0,
+    purchase INTEGER DEFAULT 0,
+    pico_viewers INTEGER DEFAULT 0,
+    viewers_prom REAL DEFAULT 0,
+    duracion_min REAL DEFAULT 0,
+    nuevos_seguidores INTEGER DEFAULT 0,
+    saves INTEGER DEFAULT 0,
+    organic_piece_type TEXT,
+    views_finish_pct REAL DEFAULT 0,
+    retencion_pct REAL DEFAULT 0,
+    tiempo_prom_seg REAL DEFAULT 0,
+    duracion_seg REAL DEFAULT 0,
+    campaign_id_ref TEXT,
+    ad_set_id TEXT,
     cpc REAL DEFAULT 0,
+    ctr REAL DEFAULT 0,
+    duracion_del_video_seg REAL DEFAULT 0,
     views INTEGER DEFAULT 0,
     engagement REAL DEFAULT 0,
     likes INTEGER DEFAULT 0,
@@ -113,6 +155,7 @@ const schemaSql = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)',
+  'CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)',
   'CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)',
 ];
 
@@ -184,6 +227,78 @@ async function hasColumn(tableName, columnName) {
 async function ensureVideoHierarchyMigration() {
   if (!(await hasColumn('videos', 'hypothesis_id'))) {
     await pool.query('ALTER TABLE videos ADD COLUMN hypothesis_id TEXT');
+  }
+
+  if (!(await hasColumn('videos', 'video_type'))) {
+    await pool.query("ALTER TABLE videos ADD COLUMN video_type TEXT NOT NULL DEFAULT 'organic'");
+  }
+
+  const optionalVideoColumns = [
+    ['external_id', 'TEXT'],
+    ['external_id_type', 'TEXT'],
+    ['hook_texto', 'TEXT'],
+    ['hook_tipo', 'TEXT'],
+    ['cta_texto', 'TEXT'],
+    ['cta_tipo', 'TEXT'],
+    ['creative_id', 'TEXT'],
+    ['contexto_cualitativo', 'TEXT'],
+    ['clicks', 'INTEGER DEFAULT 0'],
+    ['views_profile', 'INTEGER DEFAULT 0'],
+    ['initiatest', 'INTEGER DEFAULT 0'],
+    ['initiate_checkouts', 'INTEGER DEFAULT 0'],
+    ['view_content', 'INTEGER DEFAULT 0'],
+    ['formulario_lead', 'INTEGER DEFAULT 0'],
+    ['purchase', 'INTEGER DEFAULT 0'],
+    ['pico_viewers', 'INTEGER DEFAULT 0'],
+    ['viewers_prom', 'REAL DEFAULT 0'],
+    ['duracion_min', 'REAL DEFAULT 0'],
+    ['nuevos_seguidores', 'INTEGER DEFAULT 0'],
+    ['saves', 'INTEGER DEFAULT 0'],
+    ['organic_piece_type', 'TEXT'],
+    ['views_finish_pct', 'REAL DEFAULT 0'],
+    ['retencion_pct', 'REAL DEFAULT 0'],
+    ['tiempo_prom_seg', 'REAL DEFAULT 0'],
+    ['duracion_seg', 'REAL DEFAULT 0'],
+    ['campaign_id_ref', 'TEXT'],
+    ['ad_set_id', 'TEXT'],
+    ['ctr', 'REAL DEFAULT 0'],
+    ['duracion_del_video_seg', 'REAL DEFAULT 0'],
+  ];
+
+  for (const [columnName, columnType] of optionalVideoColumns) {
+    if (!(await hasColumn('videos', columnName))) {
+      await pool.query(`ALTER TABLE videos ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
+
+  const optionalAudienceColumns = [
+    ['contexto', 'TEXT'],
+    ['notas', 'TEXT'],
+    ['targeting', 'TEXT'],
+  ];
+
+  for (const [columnName, columnType] of optionalAudienceColumns) {
+    if (!(await hasColumn('audiences', columnName))) {
+      await pool.query(`ALTER TABLE audiences ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+  const optionalHypothesisColumns = [
+    ['hypothesis_statement', 'TEXT'],
+    ['variable_x', 'TEXT'],
+    ['metrica_objetivo_y', 'TEXT'],
+    ['umbral_operador', 'TEXT'],
+    ['umbral_valor', 'REAL'],
+    ['volumen_minimo', 'REAL'],
+    ['volumen_unidad', 'TEXT'],
+    ['canal_principal', 'TEXT'],
+    ['contexto_cualitativo', 'TEXT'],
+  ];
+
+  for (const [columnName, columnType] of optionalHypothesisColumns) {
+    if (!(await hasColumn('hypotheses', columnName))) {
+      await pool.query(`ALTER TABLE hypotheses ADD COLUMN ${columnName} ${columnType}`);
+    }
   }
 
   if (!(await hasColumn('videos', 'audience_id'))) {
@@ -270,6 +385,22 @@ async function executeCrudQuery(body, currentUserId) {
       writeRow.user_id = currentUserId;
       if (!writeRow.hypothesis_id) {
         throw new Error('videos.hypothesis_id is required');
+      }
+      if (!writeRow.video_type || !['paid', 'organic', 'live'].includes(String(writeRow.video_type))) {
+        throw new Error("videos.video_type must be one of: paid, organic, live");
+      }
+
+      const [ownershipRows] = await pool.query(
+        `SELECT h.id
+         FROM hypotheses h
+         JOIN campaigns c ON c.id = h.campaign_id
+         JOIN projects p ON p.id = c.project_id
+         WHERE h.id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+         LIMIT 1`,
+        [writeRow.hypothesis_id, currentUserId, currentUserId, currentUserId],
+      );
+      if (!ownershipRows.length) {
+        throw new Error('Invalid hypothesis_id for current user');
       }
     }
     const fields = Object.keys(writeRow);
