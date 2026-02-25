@@ -13,7 +13,7 @@ function parseRelations(selectText = '') {
   if (normalized.includes('audiences:audiences(*)')) relations.push({ alias: 'audiences', table: 'audiences', type: 'rows', foreignKey: 'campaign_id' });
   if (normalized.includes('hypotheses:hypotheses(count)')) relations.push({ alias: 'hypotheses', table: 'hypotheses', type: 'count', foreignKey: 'campaign_id' });
   if (normalized.includes('hypotheses:hypotheses(*)')) relations.push({ alias: 'hypotheses', table: 'hypotheses', type: 'rows', foreignKey: 'campaign_id' });
-  if (normalized.includes('videos:videos(*)')) relations.push({ alias: 'videos', table: 'videos', type: 'rows', foreignKey: 'audience_id' });
+  if (normalized.includes('videos:videos(*)')) relations.push({ alias: 'videos', table: 'videos', type: 'rows', foreignKey: 'hypothesis_id' });
   if (normalized.includes('clients:clients(*)')) relations.push({ alias: 'clients', table: 'clients', type: 'rows', foreignKey: 'audience_id' });
 
   return relations;

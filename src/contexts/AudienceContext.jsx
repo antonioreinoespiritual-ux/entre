@@ -27,9 +27,7 @@ export const AudienceProvider = ({ children }) => {
       const { data, error } = await supabase
         .from('audiences')
         .select(`
-          *,
-          clients:clients(*),
-          videos:videos(*)
+          *
         `)
         .eq('campaign_id', campaignId)
         .eq('user_id', currentUser.id)

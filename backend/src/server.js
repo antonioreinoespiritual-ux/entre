@@ -95,7 +95,8 @@ const schemaSql = [
   'CREATE INDEX IF NOT EXISTS idx_hypotheses_user_id ON hypotheses(user_id)',
   `CREATE TABLE IF NOT EXISTS videos (
     id TEXT PRIMARY KEY,
-    audience_id TEXT NOT NULL,
+    hypothesis_id TEXT NOT NULL,
+    audience_id TEXT,
     user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     url TEXT,
@@ -107,9 +108,11 @@ const schemaSql = [
     comments INTEGER DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE CASCADE,
+    FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
+  'CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)',
   'CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)',
   'CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)',
 ];
@@ -174,10 +177,51 @@ function authFromRequest(req) {
   return sessions.get(token) || null;
 }
 
+async function hasColumn(tableName, columnName) {
+  const [rows] = await pool.query(`PRAGMA table_info(${tableName})`);
+  return rows.some((row) => row.name === columnName);
+}
+
+async function ensureVideoHierarchyMigration() {
+  if (!(await hasColumn('videos', 'hypothesis_id'))) {
+    await pool.query('ALTER TABLE videos ADD COLUMN hypothesis_id TEXT');
+  }
+
+  if (!(await hasColumn('videos', 'audience_id'))) {
+    await pool.query('ALTER TABLE videos ADD COLUMN audience_id TEXT');
+  }
+
+  const [legacyVideos] = await pool.query('SELECT id, audience_id, user_id FROM videos WHERE hypothesis_id IS NULL AND audience_id IS NOT NULL');
+
+  for (const video of legacyVideos) {
+    const [audienceRows] = await pool.query('SELECT id, campaign_id, name FROM audiences WHERE id = ?', [video.audience_id]);
+    const audience = audienceRows[0];
+    if (!audience) continue;
+
+    const migrationCondition = `Migrated from audience ${audience.name || audience.id} (${audience.id})`;
+    const [existingHypRows] = await pool.query(
+      'SELECT id FROM hypotheses WHERE campaign_id = ? AND user_id = ? AND type = ? AND condition = ?',
+      [audience.campaign_id, video.user_id, 'Auto-migrated', migrationCondition],
+    );
+
+    let hypothesisId = existingHypRows[0]?.id;
+    if (!hypothesisId) {
+      hypothesisId = uuid();
+      await pool.query(
+        'INSERT INTO hypotheses (id, campaign_id, user_id, type, condition, validation_status) VALUES (?, ?, ?, ?, ?, ?)',
+        [hypothesisId, audience.campaign_id, video.user_id, 'Auto-migrated', migrationCondition, 'No Validada'],
+      );
+    }
+
+    await pool.query('UPDATE videos SET hypothesis_id = ? WHERE id = ?', [hypothesisId, video.id]);
+  }
+}
+
 async function runMigrations() {
   for (const statement of schemaSql) {
     await pool.query(statement);
   }
+  await ensureVideoHierarchyMigration();
 }
 
 async function executeCrudQuery(body, currentUserId) {
@@ -219,6 +263,13 @@ async function executeCrudQuery(body, currentUserId) {
     if (table === 'projects') {
       delete writeRow.user_id;
       writeRow.user_id = currentUserId;
+    }
+    if (table === 'videos') {
+      delete writeRow.user_id;
+      writeRow.user_id = currentUserId;
+      if (!writeRow.hypothesis_id) {
+        throw new Error('videos.hypothesis_id is required');
+      }
     }
     const fields = Object.keys(writeRow);
     const placeholders = fields.map(() => '?').join(', ');
@@ -326,8 +377,14 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readBody(req);
-      const rows = await executeCrudQuery(body, user.id);
-      sendJson(req, res, 200, { data: rows, error: null });
+      try {
+        const rows = await executeCrudQuery(body, user.id);
+        sendJson(req, res, 200, { data: rows, error: null });
+      } catch (error) {
+        const message = error?.message || String(error);
+        const statusCode = message.includes('required') ? 400 : 500;
+        sendJson(req, res, statusCode, { error: message });
+      }
       return;
     }
 

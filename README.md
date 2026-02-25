@@ -48,3 +48,8 @@ localStorage.removeItem('mysql_backend_session');
 ```
 
 - `ECANCELED` con `node --watch` es un problema intermitente del watcher en algunos entornos. Usa `npm run backend:dev` (sin watch) para evitarlo.
+
+
+## Modelo de datos
+
+Jerarquía actual: `Project -> Campaign -> (Audiences, Hypotheses) -> Videos (dentro de Hypothesis)`.
