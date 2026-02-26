@@ -125,9 +125,14 @@ export const HypothesisProvider = ({ children }) => {
     if (!currentUser) return null;
     setLoading(true);
     try {
+      const sanitizedPayload = { ...hypothesisData };
+      delete sanitizedPayload.audiences_breakdown;
+      delete sanitizedPayload.audience_breakdown;
+      delete sanitizedPayload.breakdown_config;
+
       const { data, error } = await supabase
         .from('hypotheses')
-        .update(hypothesisData)
+        .update(sanitizedPayload)
         .eq('id', id)
         .eq('user_id', currentUser.id)
         .select()

@@ -142,11 +142,19 @@ const HypothesesDashboardPage = () => {
     }
     const thresholdSuffix = currentForm.umbral_tipo === '%' ? '%' : '';
     const payload = {
-      ...currentForm,
+      type: currentForm.type,
+      hypothesis_statement: currentForm.hypothesis_statement,
+      variable_x: currentForm.variable_x,
+      metrica_objetivo_y: currentForm.metrica_objetivo_y,
+      umbral_operador: currentForm.umbral_operador,
+      umbral_valor: Number(currentForm.umbral_valor || 0),
+      volumen_minimo: Number(currentForm.volumen_minimo || 0),
+      volumen_unidad: currentForm.volumen_unidad,
+      canal_principal: currentForm.canal_principal,
+      contexto_cualitativo: currentForm.contexto_cualitativo,
       campaign_id: campaignId,
       condition: `${currentForm.metrica_objetivo_y} ${currentForm.umbral_operador} ${currentForm.umbral_valor}${thresholdSuffix}`,
     };
-    delete payload.umbral_tipo;
     return payload;
   };
 
