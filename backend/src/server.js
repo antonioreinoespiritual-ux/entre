@@ -905,6 +905,12 @@ function resolveVolumeField(unit) {
   const map = {
     views: 'views',
     clicks: 'clicks',
+    ctr: 'ctr',
+    cpc: 'cpc',
+    initiate_checkout_rate: 'initiate_checkout_rate',
+    view_content_rate: 'view_content_rate',
+    lead_rate: 'lead_rate',
+    purchase_rate: 'purchase_rate',
     videos: 'videos',
     initiatest: 'initiatest',
     duration_min: 'duracion_min',
@@ -924,6 +930,38 @@ function computeCurrentVolumeFromVideos(videos, unit) {
       if (id) unique.add(String(id));
     });
     return unique.size || videos.length;
+  }
+  if (field === 'initiate_checkout_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.views += toNumber(video.views);
+      acc.initiateCheckouts += toNumber(video.initiate_checkouts);
+      return acc;
+    }, { views: 0, initiateCheckouts: 0 });
+    return totals.views > 0 ? totals.initiateCheckouts / totals.views : 0;
+  }
+  if (field === 'view_content_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.views += toNumber(video.views);
+      acc.viewContent += toNumber(video.view_content);
+      return acc;
+    }, { views: 0, viewContent: 0 });
+    return totals.views > 0 ? totals.viewContent / totals.views : 0;
+  }
+  if (field === 'lead_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.views += toNumber(video.views);
+      acc.leads += toNumber(video.formulario_lead);
+      return acc;
+    }, { views: 0, leads: 0 });
+    return totals.views > 0 ? totals.leads / totals.views : 0;
+  }
+  if (field === 'purchase_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.viewContent += toNumber(video.view_content);
+      acc.purchase += toNumber(video.purchase);
+      return acc;
+    }, { viewContent: 0, purchase: 0 });
+    return totals.viewContent > 0 ? totals.purchase / totals.viewContent : 0;
   }
   return videos.reduce((sum, video) => sum + toNumber(video[field]), 0);
 }
@@ -982,15 +1020,43 @@ function percentile(sortedValues, q) {
 }
 
 function metricFromVideo(video, metric) {
-  if (metric === 'ctr') {
+  const normalizedMetric = String(metric || '').trim().toLowerCase();
+  if (normalizedMetric === 'ctr') {
     if (toNumber(video.views) > 0) return toNumber(video.clicks) / toNumber(video.views);
     return toNumber(video.ctr, 0);
   }
-  if (metric === 'purchase_rate') {
+
+  if (normalizedMetric === 'purchase_rate') {
     if (toNumber(video.view_content) > 0) return toNumber(video.purchase) / toNumber(video.view_content);
     return 0;
   }
-  return toNumber(video[metric], 0);
+
+  if (normalizedMetric === 'initiate_checkout_rate') {
+    if (toNumber(video.views) > 0) return toNumber(video.initiate_checkouts) / toNumber(video.views);
+    return 0;
+  }
+
+  if (normalizedMetric === 'view_content_rate') {
+    if (toNumber(video.views) > 0) return toNumber(video.view_content) / toNumber(video.views);
+    return 0;
+  }
+
+  if (normalizedMetric === 'lead_rate') {
+    if (toNumber(video.views) > 0) return toNumber(video.formulario_lead) / toNumber(video.views);
+    return 0;
+  }
+
+  const metricAliasToField = {
+    'views finish %': 'views_finish_pct',
+    'retention %': 'retencion_pct',
+    'avg watch time': 'tiempo_prom_seg',
+    'live peak viewers': 'pico_viewers',
+    'live avg viewers': 'viewers_prom',
+    'live new followers': 'nuevos_seguidores',
+  };
+
+  const resolvedField = metricAliasToField[normalizedMetric] || metric;
+  return toNumber(video[resolvedField], 0);
 }
 
 function runFrequentistAnalysis(videos, config) {
