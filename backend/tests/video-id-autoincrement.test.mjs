@@ -109,3 +109,91 @@ test('assigns next video_id as max+1 when creating video without video_id', asyn
     server.kill('SIGTERM');
   }
 });
+
+
+test('bulk update resolves by videos.video_id values', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-bulk-video-id-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4106;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const email = `bulkvideoid-${Date.now()}@example.com`;
+    const password = 'secret123';
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    assert.equal(signupRes.status, 200);
+    const signupJson = await signupRes.json();
+    const token = signupJson?.session?.access_token;
+    const userId = signupJson?.user?.id;
+    assert.ok(token);
+    assert.ok(userId);
+
+    const project = await api(baseUrl, token, {
+      table: 'projects', operation: 'insert', payload: { name: 'P', description: 'D' },
+    });
+    const campaign = await api(baseUrl, token, {
+      table: 'campaigns', operation: 'insert', payload: { project_id: project[0].id, user_id: userId, name: 'C', description: 'D' },
+    });
+    const hypothesis = await api(baseUrl, token, {
+      table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, user_id: userId, type: 'test', condition: 'views > 0' },
+    });
+
+    const video = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: {
+        hypothesis_id: hypothesis[0].id,
+        video_type: 'organic',
+        title: 'Bulk target',
+        external_id: 's-001',
+        video_id: 1341,
+      },
+    });
+
+    const bulkRes = await fetch(`${baseUrl}/api/videos/bulk-update`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        updates: [
+          { video_id: '1341', fields: { views: 1234, clicks: 77 } },
+        ],
+      }),
+    });
+    assert.equal(bulkRes.status, 200);
+    const bulkJson = await bulkRes.json();
+    assert.equal(bulkJson.applicable, 1);
+    assert.equal(bulkJson.results?.[0]?.status, 'updated');
+    assert.equal(String(bulkJson.results?.[0]?.matchedVideoId), String(video[0].id));
+
+    const selected = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'select',
+      filters: [{ field: 'id', value: video[0].id }],
+    });
+    assert.equal(selected[0].views, 1234);
+    assert.equal(selected[0].clicks, 77);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

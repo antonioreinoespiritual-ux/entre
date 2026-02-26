@@ -812,8 +812,20 @@ async function resolveVideoIdentifier(updateItem, authUserId) {
   const videoIdRaw = stringifyIdentifierValue(normalized.video_id);
   if (videoIdRaw) {
     const [rows] = await pool.query(
-      'SELECT id FROM videos WHERE user_id = ? AND (id = ? OR CAST(id AS TEXT) = ?) LIMIT 1',
-      [authUserId, videoIdRaw, videoIdRaw],
+      `SELECT id
+       FROM videos
+       WHERE user_id = ?
+         AND (
+           id = ?
+           OR CAST(id AS TEXT) = ?
+           OR CAST(video_id AS TEXT) = ?
+           OR (
+             ? GLOB '[0-9]*'
+             AND CAST(video_id AS INTEGER) = CAST(? AS INTEGER)
+           )
+         )
+       LIMIT 1`,
+      [authUserId, videoIdRaw, videoIdRaw, videoIdRaw, videoIdRaw, videoIdRaw],
     );
     if (rows[0]) {
       return { matched: true, matchedVideoId: String(rows[0].id), identifierUsed: 'video_id', reasonIfNotFound: null };
