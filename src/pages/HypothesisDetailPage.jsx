@@ -7,6 +7,8 @@ import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
 import { useAudiences } from '@/contexts/AudienceContext';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
+import { useToast } from '@/components/ui/use-toast';
+import BulkVideoUpdateModal from '@/components/BulkVideoUpdateModal';
 
 const tabs = ['paid', 'organic', 'live'];
 const baseVideo = {
@@ -35,6 +37,7 @@ const labels = {
 const HypothesisDetailPage = () => {
   const { projectId, campaignId, hypothesisId } = useParams();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const { hypotheses, fetchHypotheses } = useHypotheses();
   const { videos, fetchVideos, createVideo, deleteVideo } = useVideos();
   const { audiences, fetchAudiences } = useAudiences();
@@ -163,7 +166,7 @@ const HypothesisDetailPage = () => {
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-6">
-          <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-semibold flex items-center gap-2"><Video className="w-5 h-5 text-purple-600" />Videos</h2><Button className="bg-purple-600 text-white" onClick={() => setShowForm((v) => !v)}><Plus className="w-4 h-4 mr-2" />Crear video {activeTab}</Button></div>
+          <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-semibold flex items-center gap-2"><Video className="w-5 h-5 text-purple-600" />Videos</h2><div className="flex items-center gap-2"><BulkVideoUpdateModal triggerClassName="bg-slate-900 text-cyan-300 border border-cyan-600 hover:bg-slate-800" onApplied={async () => { await fetchVideos(hypothesisId); }} /><Button className="bg-purple-600 text-white" onClick={() => setShowForm((v) => !v)}><Plus className="w-4 h-4 mr-2" />Crear video {activeTab}</Button></div></div>
 
           <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab===tab? 'bg-purple-600 text-white':'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
 
@@ -214,6 +217,7 @@ const HypothesisDetailPage = () => {
           )}
         </div>
       </div>
+
     </div>
   );
 };

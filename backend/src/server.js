@@ -228,6 +228,15 @@ function uuid() {
 function nowIso() {
   return new Date().toISOString();
 }
+function autoExternalIdForVideo(videoType, videoId) {
+  const normalizedVideoType = String(videoType || 'organic').trim().toLowerCase();
+  const normalizedVideoId = String(videoId || '').trim();
+  if (!normalizedVideoId) return null;
+  if (normalizedVideoType === 'paid') return `ad-${normalizedVideoId}`;
+  if (normalizedVideoType === 'live') return `live-${normalizedVideoId}`;
+  return `session-${normalizedVideoId}`;
+}
+
 
 async function recordCloudEvent(userId, eventType, payload = {}) {
   await pool.query(
@@ -518,6 +527,26 @@ function resolveCorsOrigin(req) {
   if (!requestOrigin) return corsOrigins[0] || '*';
   if (corsOrigins.includes('*')) return requestOrigin;
   if (corsOrigins.includes(requestOrigin)) return requestOrigin;
+
+  // DX fallback: allow common local network dev origins (e.g. http://192.168.x.x:3000)
+  // when CORS_ORIGIN was not explicitly configured for the LAN IP.
+  try {
+    const parsed = new URL(requestOrigin);
+    const hostname = parsed.hostname || '';
+    const port = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+    const isPrivateLan = /^10\./.test(hostname)
+      || /^192\.168\./.test(hostname)
+      || /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(hostname);
+    const isDevPort = ['3000', '5173'].includes(port);
+
+    if ((isLocalhost || isPrivateLan) && isDevPort) {
+      return requestOrigin;
+    }
+  } catch {
+    // Ignore malformed origin and fall back to configured default.
+  }
+
   return corsOrigins[0] || 'http://localhost:3000';
 }
 
@@ -602,8 +631,11 @@ async function ensureVideoHierarchyMigration() {
     ['duracion_seg', 'REAL DEFAULT 0'],
     ['campaign_id_ref', 'TEXT'],
     ['ad_set_id', 'TEXT'],
+    ['ad_id', 'TEXT'],
+    ['video_id', 'INTEGER'],
     ['ctr', 'REAL DEFAULT 0'],
     ['duracion_del_video_seg', 'REAL DEFAULT 0'],
+    ['metrics_json', 'TEXT'],
   ];
 
   for (const [columnName, columnType] of optionalVideoColumns) {
@@ -648,6 +680,35 @@ async function ensureVideoHierarchyMigration() {
 
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_video_id ON videos(video_id)');
+
+
+  const [maxVideoIdRows] = await pool.query(
+    `SELECT COALESCE(MAX(CASE
+      WHEN trim(CAST(video_id AS TEXT)) <> '' AND trim(CAST(video_id AS TEXT)) GLOB '[0-9]*'
+      THEN CAST(video_id AS INTEGER)
+      ELSE NULL
+    END), 0) AS max_video_id FROM videos`,
+  );
+  let nextVideoId = Number(maxVideoIdRows[0]?.max_video_id || 0) + 1;
+  const [videosWithoutVideoId] = await pool.query('SELECT id FROM videos WHERE video_id IS NULL ORDER BY created_at ASC, id ASC');
+  for (const video of videosWithoutVideoId) {
+    await pool.query('UPDATE videos SET video_id = ? WHERE id = ?', [nextVideoId, video.id]);
+    nextVideoId += 1;
+  }
+
+  const [videosWithoutExternalId] = await pool.query(
+    `SELECT id, video_id, video_type
+     FROM videos
+     WHERE (external_id IS NULL OR trim(external_id) = '')
+       AND video_id IS NOT NULL
+     ORDER BY created_at ASC, id ASC`,
+  );
+  for (const video of videosWithoutExternalId) {
+    const generatedExternalId = autoExternalIdForVideo(video.video_type, video.video_id);
+    if (!generatedExternalId) continue;
+    await pool.query('UPDATE videos SET external_id = ? WHERE id = ?', [generatedExternalId, video.id]);
+  }
 
   const [legacyVideos] = await pool.query('SELECT id, audience_id, user_id FROM videos WHERE hypothesis_id IS NULL AND audience_id IS NOT NULL');
 
@@ -687,6 +748,154 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+const bulkVideoAllowedFields = new Map([
+  ['views', { column: 'views', type: 'int' }],
+  ['clicks', { column: 'clicks', type: 'int' }],
+  ['ctr', { column: 'ctr', type: 'float' }],
+  ['cpc', { column: 'cpc', type: 'float' }],
+  ['initiate_checkouts', { column: 'initiate_checkouts', type: 'int' }],
+  ['view_content', { column: 'view_content', type: 'int' }],
+  ['lead_form', { column: 'formulario_lead', type: 'int' }],
+  ['purchase', { column: 'purchase', type: 'int' }],
+  ['likes', { column: 'likes', type: 'int' }],
+  ['comments', { column: 'comments', type: 'int' }],
+  ['shares', { column: 'shares', type: 'int' }],
+  ['saves', { column: 'saves', type: 'int' }],
+  ['new_followers', { column: 'nuevos_seguidores', type: 'int' }],
+  ['avg_watch_time_sec', { column: 'tiempo_prom_seg', type: 'float' }],
+  ['retention_pct', { column: 'retencion_pct', type: 'float' }],
+  ['views_finish_pct', { column: 'views_finish_pct', type: 'float' }],
+  ['campaign_id', { column: 'campaign_id_ref', type: 'text' }],
+  ['ad_set_id', { column: 'ad_set_id', type: 'text' }],
+  ['ad_id', { column: 'ad_id', type: 'text' }],
+  ['url', { column: 'url', type: 'text' }],
+  ['video_type', { column: 'video_type', type: 'enum', enumValues: ['paid', 'organic', 'live'] }],
+]);
+
+function parseTypedValue(value, type) {
+  if (value == null || value === '') return null;
+  if (type === 'text') return String(value);
+  if (type === 'enum') return String(value).trim().toLowerCase();
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (type === 'int') return Math.trunc(parsed);
+  return parsed;
+}
+
+function normalizeBulkUpdateFields(fields) {
+  const normalizedFields = {};
+  const invalidKeys = [];
+
+  if (!fields || typeof fields !== 'object' || Array.isArray(fields)) {
+    return { normalizedFields, invalidKeys: ['fields_must_be_object'] };
+  }
+
+  for (const [rawKey, rawValue] of Object.entries(fields)) {
+    const key = String(rawKey || '').trim().toLowerCase();
+    if (!key) continue;
+    const config = bulkVideoAllowedFields.get(key);
+    if (!config) {
+      invalidKeys.push(rawKey);
+      continue;
+    }
+    const typed = parseTypedValue(rawValue, config.type);
+    if (typed == null && rawValue !== null && rawValue !== '') {
+      invalidKeys.push(rawKey);
+      continue;
+    }
+    if (config.type === 'enum' && !config.enumValues.includes(typed)) {
+      invalidKeys.push(rawKey);
+      continue;
+    }
+    normalizedFields[config.column] = typed;
+  }
+
+  return { normalizedFields, invalidKeys };
+}
+
+function normalizeIdentifierPayload(updateItem = {}) {
+  return {
+    ...updateItem,
+    video_id: updateItem.video_id ?? updateItem.record_id ?? null,
+    video_name: updateItem.video_name ?? updateItem.record_name ?? updateItem.name ?? null,
+  };
+}
+
+function stringifyIdentifierValue(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized.length ? normalized : null;
+}
+
+async function resolveVideoIdentifier(updateItem, authUserId) {
+  const normalized = normalizeIdentifierPayload(updateItem);
+  const notFoundReasons = [];
+
+  const videoIdRaw = stringifyIdentifierValue(normalized.video_id);
+  if (videoIdRaw) {
+    const [rows] = await pool.query(
+      `SELECT id
+       FROM videos
+       WHERE user_id = ?
+         AND (
+           id = ?
+           OR CAST(id AS TEXT) = ?
+           OR CAST(video_id AS TEXT) = ?
+           OR (
+             ? GLOB '[0-9]*'
+             AND CAST(video_id AS INTEGER) = CAST(? AS INTEGER)
+           )
+         )
+       LIMIT 1`,
+      [authUserId, videoIdRaw, videoIdRaw, videoIdRaw, videoIdRaw, videoIdRaw],
+    );
+    if (rows[0]) {
+      return { matched: true, matchedVideoId: String(rows[0].id), identifierUsed: 'video_id', reasonIfNotFound: null };
+    }
+
+    // Compatibilidad: en algunos flujos antiguos "record_id" llegaba en external_id/session_id.
+    const [legacyRows] = await pool.query(
+      'SELECT id FROM videos WHERE user_id = ? AND lower(external_id) = lower(?) LIMIT 1',
+      [authUserId, videoIdRaw],
+    );
+    if (legacyRows[0]) {
+      return { matched: true, matchedVideoId: String(legacyRows[0].id), identifierUsed: 'video_id(external_id)', reasonIfNotFound: null };
+    }
+
+    notFoundReasons.push(`video_id_not_found:${videoIdRaw}`);
+  }
+
+  const sessionIdRaw = stringifyIdentifierValue(normalized.session_id);
+  if (sessionIdRaw) {
+    const [rows] = await pool.query('SELECT id FROM videos WHERE user_id = ? AND lower(external_id) = lower(?) LIMIT 1', [authUserId, sessionIdRaw]);
+    if (rows[0]) {
+      return { matched: true, matchedVideoId: String(rows[0].id), identifierUsed: 'session_id', reasonIfNotFound: null };
+    }
+    notFoundReasons.push(`session_id_not_found:${sessionIdRaw}`);
+  }
+
+  const videoNameRaw = stringifyIdentifierValue(normalized.video_name);
+  if (videoNameRaw) {
+    const [rows] = await pool.query('SELECT id FROM videos WHERE user_id = ? AND lower(title) = lower(?) LIMIT 1', [authUserId, videoNameRaw]);
+    if (rows[0]) {
+      return { matched: true, matchedVideoId: String(rows[0].id), identifierUsed: 'video_name', reasonIfNotFound: null };
+    }
+    notFoundReasons.push(`video_name_not_found:${videoNameRaw}`);
+  }
+
+  if (!videoIdRaw && !sessionIdRaw && !videoNameRaw) {
+    return { matched: false, matchedVideoId: null, identifierUsed: null, reasonIfNotFound: 'missing_identifier' };
+  }
+
+  const attempted = [videoIdRaw ? 'video_id' : null, sessionIdRaw ? 'session_id' : null, videoNameRaw ? 'video_name' : null].filter(Boolean);
+  return {
+    matched: false,
+    matchedVideoId: null,
+    identifierUsed: attempted.join('->') || null,
+    reasonIfNotFound: notFoundReasons.join('|') || 'not_found',
+  };
+}
+
 function normalizeVolumeUnit(unit) {
   return String(unit || '').trim().toLowerCase() || 'videos';
 }
@@ -696,6 +905,12 @@ function resolveVolumeField(unit) {
   const map = {
     views: 'views',
     clicks: 'clicks',
+    ctr: 'ctr',
+    cpc: 'cpc',
+    initiate_checkout_rate: 'initiate_checkout_rate',
+    view_content_rate: 'view_content_rate',
+    lead_rate: 'lead_rate',
+    purchase_rate: 'purchase_rate',
     videos: 'videos',
     initiatest: 'initiatest',
     duration_min: 'duracion_min',
@@ -715,6 +930,38 @@ function computeCurrentVolumeFromVideos(videos, unit) {
       if (id) unique.add(String(id));
     });
     return unique.size || videos.length;
+  }
+  if (field === 'initiate_checkout_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.views += toNumber(video.views);
+      acc.initiateCheckouts += toNumber(video.initiate_checkouts);
+      return acc;
+    }, { views: 0, initiateCheckouts: 0 });
+    return totals.views > 0 ? totals.initiateCheckouts / totals.views : 0;
+  }
+  if (field === 'view_content_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.views += toNumber(video.views);
+      acc.viewContent += toNumber(video.view_content);
+      return acc;
+    }, { views: 0, viewContent: 0 });
+    return totals.views > 0 ? totals.viewContent / totals.views : 0;
+  }
+  if (field === 'lead_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.views += toNumber(video.views);
+      acc.leads += toNumber(video.formulario_lead);
+      return acc;
+    }, { views: 0, leads: 0 });
+    return totals.views > 0 ? totals.leads / totals.views : 0;
+  }
+  if (field === 'purchase_rate') {
+    const totals = videos.reduce((acc, video) => {
+      acc.viewContent += toNumber(video.view_content);
+      acc.purchase += toNumber(video.purchase);
+      return acc;
+    }, { viewContent: 0, purchase: 0 });
+    return totals.viewContent > 0 ? totals.purchase / totals.viewContent : 0;
   }
   return videos.reduce((sum, video) => sum + toNumber(video[field]), 0);
 }
@@ -773,15 +1020,258 @@ function percentile(sortedValues, q) {
 }
 
 function metricFromVideo(video, metric) {
-  if (metric === 'ctr') {
+  const normalizedMetric = String(metric || '').trim().toLowerCase();
+  if (normalizedMetric === 'ctr') {
     if (toNumber(video.views) > 0) return toNumber(video.clicks) / toNumber(video.views);
     return toNumber(video.ctr, 0);
   }
-  if (metric === 'purchase_rate') {
+
+  if (normalizedMetric === 'purchase_rate') {
     if (toNumber(video.view_content) > 0) return toNumber(video.purchase) / toNumber(video.view_content);
     return 0;
   }
-  return toNumber(video[metric], 0);
+
+  if (normalizedMetric === 'initiate_checkout_rate') {
+    if (toNumber(video.views) > 0) return toNumber(video.initiate_checkouts) / toNumber(video.views);
+    return 0;
+  }
+
+  if (normalizedMetric === 'view_content_rate') {
+    if (toNumber(video.views) > 0) return toNumber(video.view_content) / toNumber(video.views);
+    return 0;
+  }
+
+  if (normalizedMetric === 'lead_rate') {
+    if (toNumber(video.views) > 0) return toNumber(video.formulario_lead) / toNumber(video.views);
+    return 0;
+  }
+
+  const metricAliasToField = {
+    'views finish %': 'views_finish_pct',
+    'retention %': 'retencion_pct',
+    'avg watch time': 'tiempo_prom_seg',
+    'live peak viewers': 'pico_viewers',
+    'live avg viewers': 'viewers_prom',
+    'live new followers': 'nuevos_seguidores',
+  };
+
+  const resolvedField = metricAliasToField[normalizedMetric] || metric;
+  return toNumber(video[resolvedField], 0);
+}
+
+function resolveHypothesisMetricConfig(hypothesis = {}) {
+  const primaryMetric = String(hypothesis.metrica_objetivo_y || 'views').trim();
+  const threshold = Number(hypothesis.umbral_valor ?? 0);
+  const directOperator = String(hypothesis.umbral_operador || '').trim();
+
+  if (directOperator) {
+    return { metric: primaryMetric, operator: directOperator, threshold: Number.isFinite(threshold) ? threshold : 0 };
+  }
+
+  const condition = String(hypothesis.condition || '');
+  const parsed = condition.match(/(>=|<=|>|<)\s*(-?[0-9]+(?:\.[0-9]+)?)/);
+  if (parsed) {
+    return {
+      metric: primaryMetric,
+      operator: parsed[1],
+      threshold: Number(parsed[2]),
+    };
+  }
+
+  return { metric: primaryMetric, operator: '>=', threshold: Number.isFinite(threshold) ? threshold : 0 };
+}
+
+function compareAgainstThreshold(value, operator, threshold) {
+  if (operator === '>=') return value >= threshold;
+  if (operator === '<=') return value <= threshold;
+  if (operator === '>') return value > threshold;
+  if (operator === '<') return value < threshold;
+  return value >= threshold;
+}
+
+function computeAudienceMetricValueFromAggregate(metric, aggregateRow = {}) {
+  const normalizedMetric = String(metric || '').trim().toLowerCase();
+  const countMetrics = new Set([
+    'clicks',
+    'views',
+    'views_profile',
+    'initiatest',
+    'initiate_checkouts',
+    'view_content',
+    'formulario_lead',
+    'purchase',
+    'likes',
+    'comments',
+    'shares',
+    'saves',
+    'nuevos_seguidores',
+    'pico_viewers',
+  ]);
+
+  const aliasMap = {
+    'views finish %': 'views_finish_pct',
+    'retention %': 'retencion_pct',
+    'avg watch time': 'tiempo_prom_seg',
+    'live peak viewers': 'pico_viewers',
+    'live avg viewers': 'viewers_prom',
+    'live new followers': 'nuevos_seguidores',
+  };
+  const resolvedMetric = aliasMap[normalizedMetric] || normalizedMetric;
+
+  if (countMetrics.has(resolvedMetric)) {
+    return toNumber(aggregateRow[`sum_${resolvedMetric}`], 0);
+  }
+
+  if (resolvedMetric === 'ctr') {
+    const clicks = toNumber(aggregateRow.sum_clicks, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? clicks / views : toNumber(aggregateRow.avg_ctr, 0);
+  }
+
+  if (resolvedMetric === 'cpc') {
+    return toNumber(aggregateRow.avg_cpc, 0);
+  }
+
+  if (resolvedMetric === 'initiate_checkout_rate') {
+    const initiateCheckouts = toNumber(aggregateRow.sum_initiate_checkouts, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? initiateCheckouts / views : 0;
+  }
+
+  if (resolvedMetric === 'view_content_rate') {
+    const viewContent = toNumber(aggregateRow.sum_view_content, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? viewContent / views : 0;
+  }
+
+  if (resolvedMetric === 'lead_rate') {
+    const leads = toNumber(aggregateRow.sum_formulario_lead, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? leads / views : 0;
+  }
+
+  if (resolvedMetric === 'purchase_rate') {
+    const purchases = toNumber(aggregateRow.sum_purchase, 0);
+    const viewContent = toNumber(aggregateRow.sum_view_content, 0);
+    return viewContent > 0 ? purchases / viewContent : 0;
+  }
+
+  if (resolvedMetric === 'retencion_pct') {
+    const weightedSum = toNumber(aggregateRow.weighted_retencion, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? weightedSum / views : toNumber(aggregateRow.avg_retencion_pct, 0);
+  }
+
+  if (resolvedMetric === 'views_finish_pct') {
+    const weightedSum = toNumber(aggregateRow.weighted_views_finish, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? weightedSum / views : toNumber(aggregateRow.avg_views_finish_pct, 0);
+  }
+
+  if (resolvedMetric === 'tiempo_prom_seg') {
+    return toNumber(aggregateRow.avg_tiempo_prom_seg, 0);
+  }
+
+  if (resolvedMetric === 'viewers_prom') {
+    return toNumber(aggregateRow.avg_viewers_prom, 0);
+  }
+
+  return toNumber(aggregateRow[`sum_${resolvedMetric}`] ?? aggregateRow[`avg_${resolvedMetric}`], 0);
+}
+
+
+
+async function buildHypothesisAudienceBreakdown({ videos = [], userId, metric, operator, threshold }) {
+  if (!Array.isArray(videos) || videos.length === 0) return [];
+
+  const groups = new Map();
+  for (const video of videos) {
+    const key = video.audience_id ? String(video.audience_id) : '__null__';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(video);
+  }
+
+  const audienceIds = [...groups.keys()].filter((key) => key !== '__null__');
+  const audienceNameById = new Map();
+  if (audienceIds.length) {
+    const placeholders = audienceIds.map(() => '?').join(', ');
+    const [audiences] = await pool.query(
+      `SELECT id, name FROM audiences WHERE user_id = ? AND id IN (${placeholders})`,
+      [userId, ...audienceIds],
+    );
+    audiences.forEach((audience) => audienceNameById.set(String(audience.id), audience.name || 'Sin nombre'));
+  }
+
+  const normalizedMetric = String(metric || '').trim().toLowerCase();
+
+  return [...groups.entries()].map(([groupKey, groupVideos]) => {
+    const videosCount = groupVideos.length;
+    if (!videosCount) {
+      return {
+        audience_id: groupKey === '__null__' ? null : groupKey,
+        audience_name: groupKey === '__null__' ? 'Sin público' : (audienceNameById.get(groupKey) || 'Sin nombre'),
+        videos_count: 0,
+        metric_value: null,
+        status: 'no_data',
+      };
+    }
+
+    let metricValue = null;
+
+    if (normalizedMetric === 'ctr') {
+      const clicks = groupVideos.reduce((sum, video) => sum + toNumber(video.clicks), 0);
+      const views = groupVideos.reduce((sum, video) => sum + toNumber(video.views), 0);
+      metricValue = views > 0 ? clicks / views : null;
+    } else if (normalizedMetric === 'retencion_pct' || normalizedMetric === 'retention_pct') {
+      const weighted = groupVideos.reduce((sum, video) => sum + (toNumber(video.retencion_pct) * Math.max(toNumber(video.views), 0)), 0);
+      const views = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = views > 0 ? weighted / views : null;
+    } else if (normalizedMetric === 'views_finish_pct') {
+      const weighted = groupVideos.reduce((sum, video) => sum + (toNumber(video.views_finish_pct) * Math.max(toNumber(video.views), 0)), 0);
+      const views = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = views > 0 ? weighted / views : null;
+    } else if (normalizedMetric === 'initiate_checkout_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.initiate_checkouts), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'view_content_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.view_content), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'lead_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.formulario_lead), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'purchase_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.purchase), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.view_content), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'cpc') {
+      const values = groupVideos.map((video) => toNumber(video.cpc)).filter((value) => Number.isFinite(value));
+      metricValue = values.length ? (values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+    } else {
+      const metricFieldMap = {
+        lead_form: 'formulario_lead',
+        new_followers: 'nuevos_seguidores',
+      };
+      const field = metricFieldMap[normalizedMetric] || normalizedMetric;
+      metricValue = groupVideos.reduce((sum, video) => sum + toNumber(video[field]), 0);
+    }
+
+    const status = metricValue == null
+      ? 'no_data'
+      : compareAgainstThreshold(metricValue, operator, threshold)
+        ? 'pass'
+        : 'fail';
+
+    return {
+      audience_id: groupKey === '__null__' ? null : groupKey,
+      audience_name: groupKey === '__null__' ? 'Sin público' : (audienceNameById.get(groupKey) || 'Sin nombre'),
+      videos_count: videosCount,
+      metric_value: metricValue,
+      status,
+    };
+  });
 }
 
 function runFrequentistAnalysis(videos, config) {
@@ -1268,13 +1758,11 @@ async function executeCrudQuery(body, currentUserId) {
   if (operation === 'insert') {
     const row = Array.isArray(payload) ? payload[0] : payload;
     const writeRow = { ...row, id: row?.id || uuid() };
-    if (table === 'projects') {
+    if (table !== 'users') {
       delete writeRow.user_id;
       writeRow.user_id = currentUserId;
     }
     if (table === 'videos') {
-      delete writeRow.user_id;
-      writeRow.user_id = currentUserId;
       if (!writeRow.hypothesis_id) {
         throw new Error('videos.hypothesis_id is required');
       }
@@ -1295,12 +1783,47 @@ async function executeCrudQuery(body, currentUserId) {
         throw new Error('Invalid hypothesis_id for current user');
       }
     }
-    const fields = Object.keys(writeRow);
-    const placeholders = fields.map(() => '?').join(', ');
-    await pool.query(
-      `INSERT INTO ${quotedTable} (${fields.map(normalizeIdentifier).join(', ')}) VALUES (${placeholders})`,
-      fields.map((field) => writeRow[field]),
-    );
+    const insertRow = async () => {
+      const fields = Object.keys(writeRow);
+      const placeholders = fields.map(() => '?').join(', ');
+      await pool.query(
+        `INSERT INTO ${quotedTable} (${fields.map(normalizeIdentifier).join(', ')}) VALUES (${placeholders})`,
+        fields.map((field) => writeRow[field]),
+      );
+    };
+
+    const ensureAutoExternalId = () => {
+      if (table !== 'videos') return;
+      if (String(writeRow.external_id || '').trim()) return;
+      const generatedExternalId = autoExternalIdForVideo(writeRow.video_type, writeRow.video_id);
+      if (generatedExternalId) writeRow.external_id = generatedExternalId;
+    };
+
+    if (table === 'videos' && (writeRow.video_id == null || String(writeRow.video_id).trim() === '')) {
+      await pool.query('BEGIN IMMEDIATE');
+      try {
+        const [maxRows] = await pool.query(
+          `SELECT COALESCE(MAX(CASE
+            WHEN trim(CAST(video_id AS TEXT)) <> '' AND trim(CAST(video_id AS TEXT)) GLOB '[0-9]*'
+            THEN CAST(video_id AS INTEGER)
+            ELSE NULL
+          END), 0) AS max_video_id
+          FROM videos
+          WHERE user_id = ?`,
+          [currentUserId],
+        );
+        writeRow.video_id = Number(maxRows[0]?.max_video_id || 0) + 1;
+        ensureAutoExternalId();
+        await insertRow();
+        await pool.query('COMMIT');
+      } catch (error) {
+        await pool.query('ROLLBACK');
+        throw error;
+      }
+    } else {
+      ensureAutoExternalId();
+      await insertRow();
+    }
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
     if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
@@ -1610,6 +2133,121 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/api/videos/bulk-update' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const updates = Array.isArray(body?.updates) ? body.updates : null;
+      if (!updates) {
+        sendJson(req, res, 400, { error: 'Body must include updates array' });
+        return;
+      }
+
+      const dryRun = Boolean(body?.dryRun || body?.previewOnly || false);
+      const mergedByVideoId = new Map();
+      const results = [];
+
+      for (let index = 0; index < updates.length; index += 1) {
+        const rawUpdate = updates[index] || {};
+        const normalizedUpdate = normalizeIdentifierPayload(rawUpdate);
+        const identifierProvided = normalizedUpdate.video_id || normalizedUpdate.session_id || normalizedUpdate.video_name || null;
+        const { normalizedFields, invalidKeys } = normalizeBulkUpdateFields(normalizedUpdate.fields);
+        const updatedFields = Object.keys(normalizedFields);
+
+        if (!updatedFields.length || invalidKeys.length) {
+          results.push({
+            inputIndex: index,
+            status: 'invalid',
+            identifierProvided,
+            identifierUsed: null,
+            matchedVideoId: null,
+            updatedFields,
+            error: invalidKeys.length ? `invalid_fields:${invalidKeys.join(',')}` : 'empty_fields',
+          });
+          continue;
+        }
+
+        const resolution = await resolveVideoIdentifier(normalizedUpdate, user.id);
+        if (!resolution.matched) {
+          results.push({
+            inputIndex: index,
+            status: 'not_found',
+            identifierProvided,
+            identifierUsed: resolution.identifierUsed,
+            matchedVideoId: null,
+            updatedFields,
+            error: resolution.reasonIfNotFound,
+          });
+          continue;
+        }
+
+        const previous = mergedByVideoId.get(resolution.matchedVideoId);
+        mergedByVideoId.set(resolution.matchedVideoId, {
+          inputIndex: index,
+          matchedVideoId: resolution.matchedVideoId,
+          identifierProvided,
+          identifierUsed: resolution.identifierUsed,
+          normalizedFields: { ...(previous?.normalizedFields || {}), ...normalizedFields },
+        });
+
+        results.push({
+          inputIndex: index,
+          status: 'applicable',
+          identifierProvided,
+          identifierUsed: resolution.identifierUsed,
+          matchedVideoId: resolution.matchedVideoId,
+          updatedFields,
+          error: null,
+        });
+      }
+
+      if (!dryRun) {
+        try {
+          await pool.query('BEGIN');
+          for (const entry of mergedByVideoId.values()) {
+            const setEntries = Object.entries(entry.normalizedFields);
+            if (!setEntries.length) continue;
+            const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+            const values = setEntries.map(([, value]) => value);
+            await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.matchedVideoId, user.id]);
+          }
+          await pool.query('COMMIT');
+        } catch (error) {
+          await pool.query('ROLLBACK');
+          sendJson(req, res, 500, { error: error?.message || String(error) });
+          return;
+        }
+      }
+
+      const finalResults = results.map((result) => {
+        if (dryRun) return result;
+        if (result.status !== 'applicable') return result;
+        const merged = mergedByVideoId.get(result.matchedVideoId);
+        const isLatest = merged && merged.inputIndex === result.inputIndex;
+        return {
+          ...result,
+          status: isLatest ? 'updated' : 'merged',
+          updatedFields: isLatest ? Object.keys(merged.normalizedFields) : result.updatedFields,
+          error: isLatest ? null : 'merged_with_later_input',
+        };
+      });
+
+      const response = {
+        received: updates.length,
+        applicable: finalResults.filter((result) => result.status === 'applicable' || result.status === 'updated' || result.status === 'merged').length,
+        not_found: finalResults.filter((result) => result.status === 'not_found').length,
+        invalid: finalResults.filter((result) => result.status === 'invalid').length,
+        results: finalResults,
+      };
+
+      sendJson(req, res, 200, response);
+      return;
+    }
+
     const videoMatch = url.pathname.match(/^\/api\/videos\/([^/]+)$/);
     if (videoMatch && req.method === 'GET') {
       const user = authFromRequest(req);
@@ -1743,14 +2381,26 @@ const server = http.createServer(async (req, res) => {
         date_from: url.searchParams.get('date_from') || '',
         date_to: url.searchParams.get('date_to') || '',
       };
+      const breakdownConfig = {
+        primary_metric: url.searchParams.get('primary_metric') || (url.searchParams.get('metric') || 'ctr'),
+        threshold_operator: url.searchParams.get('threshold_operator') || '>=',
+        threshold_value: Number(url.searchParams.get('threshold_value') || 0),
+      };
 
       const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
       const volume = buildVolumeSnapshot(hypothesis, videos);
+      const audienceBreakdown = await buildHypothesisAudienceBreakdown({
+        videos,
+        userId: user.id,
+        metric: breakdownConfig.primary_metric,
+        operator: breakdownConfig.threshold_operator,
+        threshold: Number.isFinite(breakdownConfig.threshold_value) ? breakdownConfig.threshold_value : 0,
+      });
       const [runs] = await pool.query(
         'SELECT id, hypothesis_id, created_at, config_json, results_json, dataset_hash FROM hypothesis_analysis_runs WHERE hypothesis_id = ? ORDER BY created_at DESC LIMIT 15',
         [hypothesisId],
       );
-      sendJson(req, res, 200, { hypothesis, videos, runs, volume });
+      sendJson(req, res, 200, { hypothesis, videos, runs, volume, audience_breakdown: audienceBreakdown, breakdown_config: breakdownConfig });
       return;
     }
 

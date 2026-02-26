@@ -75,7 +75,7 @@ export const HypothesisProvider = ({ children }) => {
       if (error) throw error;
 
       setHypotheses(data || []);
-      return data;
+      return data || [];
     } catch (error) {
       toast({
         title: 'Error',
@@ -140,6 +140,10 @@ export const HypothesisProvider = ({ children }) => {
         description: 'Hypothesis updated successfully',
       });
 
+      if (data?.campaign_id) {
+        await fetchHypotheses(data.campaign_id);
+      }
+
       return data;
     } catch (error) {
       toast({
@@ -151,7 +155,7 @@ export const HypothesisProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  }, [toast, currentUser]);
+  }, [toast, currentUser, fetchHypotheses]);
 
   const deleteHypothesis = useCallback(async (id, campaignId) => {
     if (!currentUser) return false;
