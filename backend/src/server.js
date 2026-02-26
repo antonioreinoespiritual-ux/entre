@@ -623,6 +623,7 @@ async function ensureVideoHierarchyMigration() {
     ['campaign_id_ref', 'TEXT'],
     ['ad_set_id', 'TEXT'],
     ['ad_id', 'TEXT'],
+    ['video_id', 'INTEGER'],
     ['ctr', 'REAL DEFAULT 0'],
     ['duracion_del_video_seg', 'REAL DEFAULT 0'],
     ['metrics_json', 'TEXT'],
@@ -670,6 +671,22 @@ async function ensureVideoHierarchyMigration() {
 
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_video_id ON videos(video_id)');
+
+
+  const [maxVideoIdRows] = await pool.query(
+    `SELECT COALESCE(MAX(CASE
+      WHEN trim(CAST(video_id AS TEXT)) <> '' AND trim(CAST(video_id AS TEXT)) GLOB '[0-9]*'
+      THEN CAST(video_id AS INTEGER)
+      ELSE NULL
+    END), 0) AS max_video_id FROM videos`,
+  );
+  let nextVideoId = Number(maxVideoIdRows[0]?.max_video_id || 0) + 1;
+  const [videosWithoutVideoId] = await pool.query('SELECT id FROM videos WHERE video_id IS NULL ORDER BY created_at ASC, id ASC');
+  for (const video of videosWithoutVideoId) {
+    await pool.query('UPDATE videos SET video_id = ? WHERE id = ?', [nextVideoId, video.id]);
+    nextVideoId += 1;
+  }
 
   const [legacyVideos] = await pool.query('SELECT id, audience_id, user_id FROM videos WHERE hypothesis_id IS NULL AND audience_id IS NOT NULL');
 
@@ -1453,12 +1470,38 @@ async function executeCrudQuery(body, currentUserId) {
         throw new Error('Invalid hypothesis_id for current user');
       }
     }
-    const fields = Object.keys(writeRow);
-    const placeholders = fields.map(() => '?').join(', ');
-    await pool.query(
-      `INSERT INTO ${quotedTable} (${fields.map(normalizeIdentifier).join(', ')}) VALUES (${placeholders})`,
-      fields.map((field) => writeRow[field]),
-    );
+    const insertRow = async () => {
+      const fields = Object.keys(writeRow);
+      const placeholders = fields.map(() => '?').join(', ');
+      await pool.query(
+        `INSERT INTO ${quotedTable} (${fields.map(normalizeIdentifier).join(', ')}) VALUES (${placeholders})`,
+        fields.map((field) => writeRow[field]),
+      );
+    };
+
+    if (table === 'videos' && (writeRow.video_id == null || String(writeRow.video_id).trim() === '')) {
+      await pool.query('BEGIN IMMEDIATE');
+      try {
+        const [maxRows] = await pool.query(
+          `SELECT COALESCE(MAX(CASE
+            WHEN trim(CAST(video_id AS TEXT)) <> '' AND trim(CAST(video_id AS TEXT)) GLOB '[0-9]*'
+            THEN CAST(video_id AS INTEGER)
+            ELSE NULL
+          END), 0) AS max_video_id
+          FROM videos
+          WHERE user_id = ?`,
+          [currentUserId],
+        );
+        writeRow.video_id = Number(maxRows[0]?.max_video_id || 0) + 1;
+        await insertRow();
+        await pool.query('COMMIT');
+      } catch (error) {
+        await pool.query('ROLLBACK');
+        throw error;
+      }
+    } else {
+      await insertRow();
+    }
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
     if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
