@@ -103,6 +103,21 @@ test('assigns next video_id as max+1 when creating video without video_id', asyn
     });
 
     assert.equal(autoCreated[0].video_id, 6);
+    assert.equal(autoCreated[0].external_id, 'session-6');
+
+    const autoPaid = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: { hypothesis_id: hypothesisId, video_type: 'paid', title: 'Auto-paid' },
+    });
+    assert.equal(autoPaid[0].external_id, `ad-${autoPaid[0].video_id}`);
+
+    const autoLive = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: { hypothesis_id: hypothesisId, video_type: 'live', title: 'Auto-live' },
+    });
+    assert.equal(autoLive[0].external_id, `live-${autoLive[0].video_id}`);
   } finally {
     server.kill('SIGTERM');
   }

@@ -228,6 +228,15 @@ function uuid() {
 function nowIso() {
   return new Date().toISOString();
 }
+function autoExternalIdForVideo(videoType, videoId) {
+  const normalizedVideoType = String(videoType || 'organic').trim().toLowerCase();
+  const normalizedVideoId = String(videoId || '').trim();
+  if (!normalizedVideoId) return null;
+  if (normalizedVideoType === 'paid') return `ad-${normalizedVideoId}`;
+  if (normalizedVideoType === 'live') return `live-${normalizedVideoId}`;
+  return `session-${normalizedVideoId}`;
+}
+
 
 async function recordCloudEvent(userId, eventType, payload = {}) {
   await pool.query(
@@ -686,6 +695,19 @@ async function ensureVideoHierarchyMigration() {
   for (const video of videosWithoutVideoId) {
     await pool.query('UPDATE videos SET video_id = ? WHERE id = ?', [nextVideoId, video.id]);
     nextVideoId += 1;
+  }
+
+  const [videosWithoutExternalId] = await pool.query(
+    `SELECT id, video_id, video_type
+     FROM videos
+     WHERE (external_id IS NULL OR trim(external_id) = '')
+       AND video_id IS NOT NULL
+     ORDER BY created_at ASC, id ASC`,
+  );
+  for (const video of videosWithoutExternalId) {
+    const generatedExternalId = autoExternalIdForVideo(video.video_type, video.video_id);
+    if (!generatedExternalId) continue;
+    await pool.query('UPDATE videos SET external_id = ? WHERE id = ?', [generatedExternalId, video.id]);
   }
 
   const [legacyVideos] = await pool.query('SELECT id, audience_id, user_id FROM videos WHERE hypothesis_id IS NULL AND audience_id IS NOT NULL');
@@ -1489,6 +1511,13 @@ async function executeCrudQuery(body, currentUserId) {
       );
     };
 
+    const ensureAutoExternalId = () => {
+      if (table !== 'videos') return;
+      if (String(writeRow.external_id || '').trim()) return;
+      const generatedExternalId = autoExternalIdForVideo(writeRow.video_type, writeRow.video_id);
+      if (generatedExternalId) writeRow.external_id = generatedExternalId;
+    };
+
     if (table === 'videos' && (writeRow.video_id == null || String(writeRow.video_id).trim() === '')) {
       await pool.query('BEGIN IMMEDIATE');
       try {
@@ -1503,6 +1532,7 @@ async function executeCrudQuery(body, currentUserId) {
           [currentUserId],
         );
         writeRow.video_id = Number(maxRows[0]?.max_video_id || 0) + 1;
+        ensureAutoExternalId();
         await insertRow();
         await pool.query('COMMIT');
       } catch (error) {
@@ -1510,6 +1540,7 @@ async function executeCrudQuery(body, currentUserId) {
         throw error;
       }
     } else {
+      ensureAutoExternalId();
       await insertRow();
     }
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
