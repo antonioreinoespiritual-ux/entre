@@ -1179,6 +1179,101 @@ function computeAudienceMetricValueFromAggregate(metric, aggregateRow = {}) {
   return toNumber(aggregateRow[`sum_${resolvedMetric}`] ?? aggregateRow[`avg_${resolvedMetric}`], 0);
 }
 
+
+
+async function buildHypothesisAudienceBreakdown({ videos = [], userId, metric, operator, threshold }) {
+  if (!Array.isArray(videos) || videos.length === 0) return [];
+
+  const groups = new Map();
+  for (const video of videos) {
+    const key = video.audience_id ? String(video.audience_id) : '__null__';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(video);
+  }
+
+  const audienceIds = [...groups.keys()].filter((key) => key !== '__null__');
+  const audienceNameById = new Map();
+  if (audienceIds.length) {
+    const placeholders = audienceIds.map(() => '?').join(', ');
+    const [audiences] = await pool.query(
+      `SELECT id, name FROM audiences WHERE user_id = ? AND id IN (${placeholders})`,
+      [userId, ...audienceIds],
+    );
+    audiences.forEach((audience) => audienceNameById.set(String(audience.id), audience.name || 'Sin nombre'));
+  }
+
+  const normalizedMetric = String(metric || '').trim().toLowerCase();
+
+  return [...groups.entries()].map(([groupKey, groupVideos]) => {
+    const videosCount = groupVideos.length;
+    if (!videosCount) {
+      return {
+        audience_id: groupKey === '__null__' ? null : groupKey,
+        audience_name: groupKey === '__null__' ? 'Sin público' : (audienceNameById.get(groupKey) || 'Sin nombre'),
+        videos_count: 0,
+        metric_value: null,
+        status: 'no_data',
+      };
+    }
+
+    let metricValue = null;
+
+    if (normalizedMetric === 'ctr') {
+      const clicks = groupVideos.reduce((sum, video) => sum + toNumber(video.clicks), 0);
+      const views = groupVideos.reduce((sum, video) => sum + toNumber(video.views), 0);
+      metricValue = views > 0 ? clicks / views : null;
+    } else if (normalizedMetric === 'retencion_pct' || normalizedMetric === 'retention_pct') {
+      const weighted = groupVideos.reduce((sum, video) => sum + (toNumber(video.retencion_pct) * Math.max(toNumber(video.views), 0)), 0);
+      const views = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = views > 0 ? weighted / views : null;
+    } else if (normalizedMetric === 'views_finish_pct') {
+      const weighted = groupVideos.reduce((sum, video) => sum + (toNumber(video.views_finish_pct) * Math.max(toNumber(video.views), 0)), 0);
+      const views = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = views > 0 ? weighted / views : null;
+    } else if (normalizedMetric === 'initiate_checkout_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.initiate_checkouts), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'view_content_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.view_content), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'lead_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.formulario_lead), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'purchase_rate') {
+      const numerator = groupVideos.reduce((sum, video) => sum + toNumber(video.purchase), 0);
+      const denominator = groupVideos.reduce((sum, video) => sum + Math.max(toNumber(video.view_content), 0), 0);
+      metricValue = denominator > 0 ? numerator / denominator : null;
+    } else if (normalizedMetric === 'cpc') {
+      const values = groupVideos.map((video) => toNumber(video.cpc)).filter((value) => Number.isFinite(value));
+      metricValue = values.length ? (values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+    } else {
+      const metricFieldMap = {
+        lead_form: 'formulario_lead',
+        new_followers: 'nuevos_seguidores',
+      };
+      const field = metricFieldMap[normalizedMetric] || normalizedMetric;
+      metricValue = groupVideos.reduce((sum, video) => sum + toNumber(video[field]), 0);
+    }
+
+    const status = metricValue == null
+      ? 'no_data'
+      : compareAgainstThreshold(metricValue, operator, threshold)
+        ? 'pass'
+        : 'fail';
+
+    return {
+      audience_id: groupKey === '__null__' ? null : groupKey,
+      audience_name: groupKey === '__null__' ? 'Sin público' : (audienceNameById.get(groupKey) || 'Sin nombre'),
+      videos_count: videosCount,
+      metric_value: metricValue,
+      status,
+    };
+  });
+}
+
 function runFrequentistAnalysis(videos, config) {
   const metric = config.primary_metric || 'ctr';
   const alpha = Number(config.alpha || 0.05);
@@ -2038,128 +2133,6 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname.startsWith('/api/campaigns/') && url.pathname.endsWith('/hypotheses-with-audience-breakdown') && req.method === 'GET') {
-      const user = authFromRequest(req);
-      if (!user) {
-        sendJson(req, res, 401, { error: 'Unauthorized' });
-        return;
-      }
-
-      const parts = url.pathname.split('/').filter(Boolean);
-      const campaignId = parts[2] || null;
-      if (!campaignId) {
-        sendJson(req, res, 400, { error: 'campaignId is required' });
-        return;
-      }
-
-      const [campaignRows] = await pool.query('SELECT id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
-      if (!campaignRows.length) {
-        sendJson(req, res, 404, { error: 'Campaign not found' });
-        return;
-      }
-
-      const [hypothesisRows] = await pool.query(
-        'SELECT * FROM hypotheses WHERE campaign_id = ? AND user_id = ? ORDER BY created_at DESC',
-        [campaignId, user.id],
-      );
-      const [audienceRows] = await pool.query(
-        'SELECT id, name FROM audiences WHERE campaign_id = ? AND user_id = ? ORDER BY created_at ASC',
-        [campaignId, user.id],
-      );
-
-      if (!hypothesisRows.length) {
-        sendJson(req, res, 200, { data: [] });
-        return;
-      }
-
-      const hypothesisIds = hypothesisRows.map((row) => row.id);
-      const hypothesisPlaceholders = hypothesisIds.map(() => '?').join(', ');
-      const [aggregatedRows] = await pool.query(
-        `SELECT
-          hypothesis_id,
-          audience_id,
-          COUNT(*) AS videos_count,
-          SUM(clicks) AS sum_clicks,
-          SUM(views) AS sum_views,
-          SUM(views_profile) AS sum_views_profile,
-          SUM(initiatest) AS sum_initiatest,
-          SUM(initiate_checkouts) AS sum_initiate_checkouts,
-          SUM(view_content) AS sum_view_content,
-          SUM(formulario_lead) AS sum_formulario_lead,
-          SUM(purchase) AS sum_purchase,
-          SUM(likes) AS sum_likes,
-          SUM(comments) AS sum_comments,
-          SUM(shares) AS sum_shares,
-          SUM(saves) AS sum_saves,
-          SUM(nuevos_seguidores) AS sum_nuevos_seguidores,
-          SUM(pico_viewers) AS sum_pico_viewers,
-          AVG(cpc) AS avg_cpc,
-          AVG(ctr) AS avg_ctr,
-          AVG(retencion_pct) AS avg_retencion_pct,
-          AVG(views_finish_pct) AS avg_views_finish_pct,
-          AVG(tiempo_prom_seg) AS avg_tiempo_prom_seg,
-          AVG(viewers_prom) AS avg_viewers_prom,
-          SUM(retencion_pct * CASE WHEN views > 0 THEN views ELSE 0 END) AS weighted_retencion,
-          SUM(views_finish_pct * CASE WHEN views > 0 THEN views ELSE 0 END) AS weighted_views_finish
-         FROM videos
-         WHERE user_id = ?
-           AND audience_id IS NOT NULL
-           AND hypothesis_id IN (${hypothesisPlaceholders})
-         GROUP BY hypothesis_id, audience_id`,
-        [user.id, ...hypothesisIds],
-      );
-
-      const aggregateByHypothesis = new Map();
-      for (const row of aggregatedRows) {
-        if (!aggregateByHypothesis.has(row.hypothesis_id)) {
-          aggregateByHypothesis.set(row.hypothesis_id, new Map());
-        }
-        aggregateByHypothesis.get(row.hypothesis_id).set(row.audience_id, row);
-      }
-
-      const data = hypothesisRows.map((hypothesis) => {
-        const config = resolveHypothesisMetricConfig(hypothesis);
-        const perAudienceAgg = aggregateByHypothesis.get(hypothesis.id) || new Map();
-
-        const audiencesBreakdown = audienceRows.map((audience) => {
-          const aggregate = perAudienceAgg.get(audience.id);
-          if (!aggregate || Number(aggregate.videos_count || 0) <= 0) {
-            return {
-              audience_id: audience.id,
-              audience_name: audience.name,
-              status: 'sin_datos',
-              metric_value: null,
-              metric_key: config.metric,
-              threshold: config.threshold,
-              threshold_operator: config.operator,
-              videos_count: 0,
-            };
-          }
-
-          const metricValue = computeAudienceMetricValueFromAggregate(config.metric, aggregate);
-          const status = compareAgainstThreshold(metricValue, config.operator, config.threshold) ? 'cumplio' : 'no_cumplio';
-          return {
-            audience_id: audience.id,
-            audience_name: audience.name,
-            status,
-            metric_value: metricValue,
-            metric_key: config.metric,
-            threshold: config.threshold,
-            threshold_operator: config.operator,
-            videos_count: Number(aggregate.videos_count || 0),
-          };
-        });
-
-        return {
-          ...hypothesis,
-          audiences_breakdown: audiencesBreakdown,
-        };
-      });
-
-      sendJson(req, res, 200, { data });
-      return;
-    }
-
     if (url.pathname === '/api/videos/bulk-update' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) {
@@ -2408,14 +2381,26 @@ const server = http.createServer(async (req, res) => {
         date_from: url.searchParams.get('date_from') || '',
         date_to: url.searchParams.get('date_to') || '',
       };
+      const breakdownConfig = {
+        primary_metric: url.searchParams.get('primary_metric') || (url.searchParams.get('metric') || 'ctr'),
+        threshold_operator: url.searchParams.get('threshold_operator') || '>=',
+        threshold_value: Number(url.searchParams.get('threshold_value') || 0),
+      };
 
       const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
       const volume = buildVolumeSnapshot(hypothesis, videos);
+      const audienceBreakdown = await buildHypothesisAudienceBreakdown({
+        videos,
+        userId: user.id,
+        metric: breakdownConfig.primary_metric,
+        operator: breakdownConfig.threshold_operator,
+        threshold: Number.isFinite(breakdownConfig.threshold_value) ? breakdownConfig.threshold_value : 0,
+      });
       const [runs] = await pool.query(
         'SELECT id, hypothesis_id, created_at, config_json, results_json, dataset_hash FROM hypothesis_analysis_runs WHERE hypothesis_id = ? ORDER BY created_at DESC LIMIT 15',
         [hypothesisId],
       );
-      sendJson(req, res, 200, { hypothesis, videos, runs, volume });
+      sendJson(req, res, 200, { hypothesis, videos, runs, volume, audience_breakdown: audienceBreakdown, breakdown_config: breakdownConfig });
       return;
     }
 

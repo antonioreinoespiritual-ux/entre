@@ -6,8 +6,6 @@ import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const HypothesisContext = createContext();
 
-const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
-
 export const useHypotheses = () => {
   const context = useContext(HypothesisContext);
   if (!context) {
@@ -67,18 +65,6 @@ export const HypothesisProvider = ({ children }) => {
     if (!currentUser) return [];
     setLoading(true);
     try {
-      const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
-      const response = await fetch(`${apiBaseUrl}/api/campaigns/${campaignId}/hypotheses-with-audience-breakdown`, {
-        headers: { Authorization: `Bearer ${session?.access_token || ''}` },
-      });
-
-      if (response.ok) {
-        const json = await response.json();
-        const rows = json.data || [];
-        setHypotheses(rows);
-        return rows;
-      }
-
       const { data, error } = await supabase
         .from('hypotheses')
         .select('*')

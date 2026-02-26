@@ -210,7 +210,7 @@ test('bulk update resolves by videos.video_id values', async () => {
 });
 
 
-test('hypotheses endpoint returns per-audience cumplimiento breakdown', async () => {
+test('analysis-data endpoint returns per-audience cumplimiento breakdown', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-hyp-breakdown-'));
   const dbPath = path.join(tempDir, 'app.sqlite');
   const port = 4107;
@@ -270,16 +270,14 @@ test('hypotheses endpoint returns per-audience cumplimiento breakdown', async ()
       payload: { hypothesis_id: hypothesis[0].id, audience_id: audienceB[0].id, video_type: 'organic', title: 'VB', clicks: 10, views: 500 },
     });
 
-    const resp = await fetch(`${baseUrl}/api/campaigns/${campaign[0].id}/hypotheses-with-audience-breakdown`, {
+    const resp = await fetch(`${baseUrl}/api/hypotheses/${hypothesis[0].id}/analysis-data?primary_metric=clicks&threshold_operator=%3E%3D&threshold_value=30`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     assert.equal(resp.status, 200);
     const json = await resp.json();
-    const firstHypothesis = json.data?.[0];
-    assert.ok(firstHypothesis);
-    const byAudience = new Map((firstHypothesis.audiences_breakdown || []).map((row) => [row.audience_name, row]));
-    assert.equal(byAudience.get('A')?.status, 'cumplio');
-    assert.equal(byAudience.get('B')?.status, 'no_cumplio');
+    const byAudience = new Map((json.audience_breakdown || []).map((row) => [row.audience_name, row]));
+    assert.equal(byAudience.get('A')?.status, 'pass');
+    assert.equal(byAudience.get('B')?.status, 'fail');
   } finally {
     server.kill('SIGTERM');
   }

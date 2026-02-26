@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, ChevronUp, Edit, Lightbulb, Plus, Save, X } from 'lucide-react';
+import { ArrowLeft, Edit, Lightbulb, Plus, Save, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 
@@ -91,7 +91,6 @@ const thresholdTypeOptions = [
   { value: 'decimal', label: 'decimal' },
 ];
 
-const percentageMetrics = new Set(['ctr', 'initiate_checkout_rate', 'view_content_rate', 'lead_rate', 'purchase_rate']);
 const metricLabelMap = new Map(metricObjectiveOptions.map((option) => [option.value, option.label]));
 
 const inferThresholdType = (hypothesis) => {
@@ -127,7 +126,6 @@ const HypothesesDashboardPage = () => {
   const navigate = useNavigate();
   const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis } = useHypotheses();
   const [showForm, setShowForm] = useState(false);
-  const [expandedIds, setExpandedIds] = useState({});
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
   const [editForm, setEditForm] = useState(initialForm);
@@ -190,31 +188,6 @@ const HypothesesDashboardPage = () => {
     }
   };
 
-  const formatMetricValue = (metricKey, value) => {
-    if (value == null) return '-';
-    const metric = String(metricKey || '').toLowerCase();
-    if (percentageMetrics.has(metric)) return `${(Number(value) * 100).toFixed(2)}%`;
-    if (metric.includes('%') || metric === 'views_finish_pct' || metric === 'retencion_pct') return `${Number(value).toFixed(2)}%`;
-    if (metric === 'cpc' || metric === 'tiempo_prom_seg' || metric === 'engagement' || metric === 'viewers_prom') return Number(value).toFixed(2);
-    return Number(value).toFixed(0);
-  };
-
-  const audienceStatusClass = (status) => {
-    if (status === 'cumplio') return 'bg-emerald-100 text-emerald-700 border-emerald-300';
-    if (status === 'no_cumplio') return 'bg-red-100 text-red-700 border-red-300';
-    return 'bg-gray-100 text-gray-600 border-gray-300';
-  };
-
-  const audienceStatusLabel = (status) => {
-    if (status === 'cumplio') return 'Cumplió';
-    if (status === 'no_cumplio') return 'No cumplió';
-    return 'Sin datos';
-  };
-
-  const toggleExpanded = (hypothesisId) => {
-    setExpandedIds((prev) => ({ ...prev, [hypothesisId]: !prev[hypothesisId] }));
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-6">
       <Helmet><title>Hypotheses Dashboard</title></Helmet>
@@ -244,7 +217,6 @@ const HypothesesDashboardPage = () => {
           ) : (
             <div className="grid md:grid-cols-2 gap-4">
               {sortedHypotheses.map((hypothesis) => {
-                const isExpanded = Boolean(expandedIds[hypothesis.id]);
                 const isEditing = editingHypothesisId === hypothesis.id;
                 const metricLabel = metricLabelMap.get(hypothesis.metrica_objetivo_y) || hypothesis.metrica_objetivo_y || '-';
 
@@ -268,35 +240,12 @@ const HypothesesDashboardPage = () => {
                       </div>
                       <div className="flex gap-1">
                         <Button className="bg-blue-100 text-blue-700 px-3" onClick={() => startEdit(hypothesis)}><Edit className="w-4 h-4" /></Button>
-                        <Button className="bg-purple-100 text-purple-700 px-3" onClick={() => toggleExpanded(hypothesis.id)}>
-                          {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                        </Button>
                       </div>
                     </div>
 
                     <div className="mt-3">
                       <Link to={`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesis.id}`} className="text-sm text-purple-700 hover:underline">Abrir detalle →</Link>
                     </div>
-
-                    {isExpanded ? (
-                      <div className="mt-4 border-t pt-3">
-                        <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Por audiencia</p>
-                        <div className="space-y-2">
-                          {(hypothesis.audiences_breakdown || []).map((item) => (
-                            <div key={item.audience_id} className="rounded-lg border bg-white px-3 py-2 flex flex-wrap items-center gap-2 text-xs">
-                              <span className="font-medium text-gray-700">{item.audience_name || 'Sin nombre'}</span>
-                              <span className={`px-2 py-0.5 rounded-full border ${audienceStatusClass(item.status)}`}>{audienceStatusLabel(item.status)}</span>
-                              <span className="text-gray-600">{metricLabel}: <b>{formatMetricValue(item.metric_key, item.metric_value)}</b></span>
-                              <span className="text-gray-600">Umbral: <b>{item.threshold_operator} {item.threshold}</b></span>
-                              <span className="text-gray-600">n videos: <b>{item.videos_count || 0}</b></span>
-                            </div>
-                          ))}
-                          {!(hypothesis.audiences_breakdown || []).length ? (
-                            <div className="rounded-lg border bg-white px-3 py-2 text-xs text-gray-500">No hay audiencias en la campaña.</div>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
                 );
               })}
