@@ -6,6 +6,8 @@ import { useAuth } from '@/contexts/SupabaseAuthContext';
 
 const HypothesisContext = createContext();
 
+const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+
 export const useHypotheses = () => {
   const context = useContext(HypothesisContext);
   if (!context) {
@@ -65,6 +67,18 @@ export const HypothesisProvider = ({ children }) => {
     if (!currentUser) return [];
     setLoading(true);
     try {
+      const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+      const response = await fetch(`${apiBaseUrl}/api/campaigns/${campaignId}/hypotheses-with-audience-breakdown`, {
+        headers: { Authorization: `Bearer ${session?.access_token || ''}` },
+      });
+
+      if (response.ok) {
+        const json = await response.json();
+        const rows = json.data || [];
+        setHypotheses(rows);
+        return rows;
+      }
+
       const { data, error } = await supabase
         .from('hypotheses')
         .select('*')
@@ -75,7 +89,7 @@ export const HypothesisProvider = ({ children }) => {
       if (error) throw error;
 
       setHypotheses(data || []);
-      return data;
+      return data || [];
     } catch (error) {
       toast({
         title: 'Error',
@@ -140,6 +154,10 @@ export const HypothesisProvider = ({ children }) => {
         description: 'Hypothesis updated successfully',
       });
 
+      if (data?.campaign_id) {
+        await fetchHypotheses(data.campaign_id);
+      }
+
       return data;
     } catch (error) {
       toast({
@@ -151,7 +169,7 @@ export const HypothesisProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  }, [toast, currentUser]);
+  }, [toast, currentUser, fetchHypotheses]);
 
   const deleteHypothesis = useCallback(async (id, campaignId) => {
     if (!currentUser) return false;

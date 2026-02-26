@@ -12,12 +12,13 @@ const ProjectDetailPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { fetchProjectById } = useProjects();
-  const { createCampaign, deleteCampaign } = useCampaigns();
+  const { createCampaign, updateCampaign, deleteCampaign } = useCampaigns();
   
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [newCampaign, setNewCampaign] = useState({ name: '', description: '' });
+  const [editingCampaignId, setEditingCampaignId] = useState(null);
 
   const openInCloud = async () => {
     const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
@@ -45,16 +46,28 @@ const ProjectDetailPage = () => {
     e.preventDefault();
     if (!newCampaign.name.trim()) return;
 
-    const result = await createCampaign({
+    const payload = {
       ...newCampaign,
       project_id: id,
-    });
+    };
+
+    const result = editingCampaignId
+      ? await updateCampaign(editingCampaignId, payload)
+      : await createCampaign(payload);
 
     if (result) {
       setNewCampaign({ name: '', description: '' });
+      setEditingCampaignId(null);
       setIsCreating(false);
       loadProject();
     }
+  };
+
+
+  const handleEditCampaign = (campaign) => {
+    setEditingCampaignId(campaign.id);
+    setNewCampaign({ name: campaign.name || '', description: campaign.description || '' });
+    setIsCreating(true);
   };
 
   const handleDeleteCampaign = async (campaignId) => {
@@ -127,7 +140,7 @@ const ProjectDetailPage = () => {
                 className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white"
               >
                 <Plus className="w-5 h-5 mr-2" />
-                Add Campaign
+                {isCreating ? (editingCampaignId ? 'Edit Campaign' : 'Nueva campaña') : 'Add Campaign'}
               </Button>
             </div>
 
@@ -169,6 +182,7 @@ const ProjectDetailPage = () => {
                       type="button"
                       onClick={() => {
                         setIsCreating(false);
+                        setEditingCampaignId(null);
                         setNewCampaign({ name: '', description: '' });
                       }}
                       className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700"
@@ -179,7 +193,7 @@ const ProjectDetailPage = () => {
                       type="submit"
                       className="flex-1 bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white"
                     >
-                      Create Campaign
+                      {editingCampaignId ? 'Guardar campaña' : 'Create Campaign'}
                     </Button>
                   </div>
                 </div>
@@ -219,6 +233,12 @@ const ProjectDetailPage = () => {
                       >
                         <Eye className="w-4 h-4 mr-2" />
                         View Details
+                      </Button>
+                      <Button
+                        onClick={() => handleEditCampaign(campaign)}
+                        className="bg-blue-100 hover:bg-blue-200 text-blue-700 px-4"
+                      >
+                        <Edit className="w-4 h-4" />
                       </Button>
                       <Button
                         onClick={() => handleDeleteCampaign(campaign.id)}

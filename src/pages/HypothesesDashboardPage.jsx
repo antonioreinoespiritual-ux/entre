@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Lightbulb, Plus } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, Edit, Lightbulb, Plus, Save, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 
@@ -91,35 +91,128 @@ const thresholdTypeOptions = [
   { value: 'decimal', label: 'decimal' },
 ];
 
+const percentageMetrics = new Set(['ctr', 'initiate_checkout_rate', 'view_content_rate', 'lead_rate', 'purchase_rate']);
+const metricLabelMap = new Map(metricObjectiveOptions.map((option) => [option.value, option.label]));
+
+const inferThresholdType = (hypothesis) => {
+  if (String(hypothesis?.condition || '').includes('%')) return '%';
+  const value = Number(hypothesis?.umbral_valor ?? 0);
+  if (Number.isInteger(value)) return 'entero';
+  return 'decimal';
+};
+
+const parseThresholdValue = (hypothesis) => {
+  const explicit = Number(hypothesis?.umbral_valor);
+  if (Number.isFinite(explicit)) return explicit;
+  const parsed = String(hypothesis?.condition || '').match(/(>=|<=|>|<)\s*(-?[0-9]+(?:\.[0-9]+)?)/);
+  return parsed ? Number(parsed[2]) : 0;
+};
+
+const HypothesisFormFields = ({ form, setForm, projectId }) => (
+  <>
+    <div><label className="block text-sm font-medium mb-1">Project ID</label><input disabled className="w-full rounded-lg border p-2 bg-gray-100" value={projectId} /></div>
+    <div><label className="block text-sm font-medium mb-1">Tipo de hipótesis</label><select required className="w-full rounded-lg border p-2" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>{hypothesisTypeOptions.map((option) => <option key={option.value || option.label} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></div>
+    <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Hypothesis statement (Si X entonces Y)</label><textarea required className="w-full rounded-lg border p-2" rows="2" value={form.hypothesis_statement} onChange={(e) => setForm({ ...form, hypothesis_statement: e.target.value })} /></div>
+    <div><label className="block text-sm font-medium mb-1">Variable X</label><input className="w-full rounded-lg border p-2" value={form.variable_x} onChange={(e) => setForm({ ...form, variable_x: e.target.value })} /></div>
+    <div><label className="block text-sm font-medium mb-1">Métrica objetivo Y</label><select required className="w-full rounded-lg border p-2" value={form.metrica_objetivo_y} onChange={(e) => setForm({ ...form, metrica_objetivo_y: e.target.value })}>{metricObjectiveOptions.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select></div>
+    <div><label className="block text-sm font-medium mb-1">Umbral validación</label><div className="flex gap-2"><select required className="rounded-lg border p-2" value={form.umbral_operador} onChange={(e) => setForm({ ...form, umbral_operador: e.target.value })}>{thresholdOperatorOptions.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select><input type="number" className="flex-1 rounded-lg border p-2" value={form.umbral_valor} onChange={(e) => setForm({ ...form, umbral_valor: Number(e.target.value) })} /><select required className="rounded-lg border p-2" value={form.umbral_tipo} onChange={(e) => setForm({ ...form, umbral_tipo: e.target.value })}>{thresholdTypeOptions.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select></div></div>
+    <div><label className="block text-sm font-medium mb-1">Volumen mínimo</label><div className="flex gap-2"><input type="number" className="flex-1 rounded-lg border p-2" value={form.volumen_minimo} onChange={(e) => setForm({ ...form, volumen_minimo: Number(e.target.value) })} /><select required className="rounded-lg border p-2" value={form.volumen_unidad} onChange={(e) => setForm({ ...form, volumen_unidad: e.target.value })}>{volumeUnits.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select></div></div>
+    <div><label className="block text-sm font-medium mb-1">Canal principal</label><select className="w-full rounded-lg border p-2" value={form.canal_principal} onChange={(e) => setForm({ ...form, canal_principal: e.target.value })}><option value="paid">paid</option><option value="organic">organic</option><option value="live">live</option></select></div>
+    <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Contexto cualitativo</label><textarea className="w-full rounded-lg border p-2" rows="2" value={form.contexto_cualitativo} onChange={(e) => setForm({ ...form, contexto_cualitativo: e.target.value })} /></div>
+  </>
+);
+
 const HypothesesDashboardPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
-  const { hypotheses, fetchHypotheses, createHypothesis } = useHypotheses();
+  const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis } = useHypotheses();
   const [showForm, setShowForm] = useState(false);
+  const [expandedIds, setExpandedIds] = useState({});
+  const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
+  const [editForm, setEditForm] = useState(initialForm);
 
   useEffect(() => {
     fetchHypotheses(campaignId);
   }, [campaignId, fetchHypotheses]);
 
-  const onCreate = async (event) => {
-    event.preventDefault();
-    if (!form.type || !form.metrica_objetivo_y || !form.volumen_unidad || !form.umbral_operador || !form.umbral_tipo) {
-      return;
-    }
+  const sortedHypotheses = useMemo(() => hypotheses || [], [hypotheses]);
 
-    const thresholdSuffix = form.umbral_tipo === '%' ? '%' : '';
+  const buildPayload = (currentForm) => {
+    if (!currentForm.type || !currentForm.metrica_objetivo_y || !currentForm.volumen_unidad || !currentForm.umbral_operador || !currentForm.umbral_tipo) {
+      return null;
+    }
+    const thresholdSuffix = currentForm.umbral_tipo === '%' ? '%' : '';
     const payload = {
-      ...form,
+      ...currentForm,
       campaign_id: campaignId,
-      condition: `${form.metrica_objetivo_y} ${form.umbral_operador} ${form.umbral_valor}${thresholdSuffix}`,
+      condition: `${currentForm.metrica_objetivo_y} ${currentForm.umbral_operador} ${currentForm.umbral_valor}${thresholdSuffix}`,
     };
     delete payload.umbral_tipo;
+    return payload;
+  };
+
+  const onCreate = async (event) => {
+    event.preventDefault();
+    const payload = buildPayload(form);
+    if (!payload) return;
     const result = await createHypothesis(payload);
     if (result) {
       setForm(initialForm);
       setShowForm(false);
     }
+  };
+
+  const startEdit = (hypothesis) => {
+    setEditingHypothesisId(hypothesis.id);
+    setEditForm({
+      ...initialForm,
+      ...hypothesis,
+      umbral_operador: hypothesis.umbral_operador || (String(hypothesis.condition || '').match(/(>=|<=|>|<)/)?.[1] || ''),
+      umbral_valor: parseThresholdValue(hypothesis),
+      umbral_tipo: inferThresholdType(hypothesis),
+    });
+  };
+
+  const cancelEdit = () => {
+    setEditingHypothesisId(null);
+    setEditForm(initialForm);
+  };
+
+  const onSaveEdit = async (event) => {
+    event.preventDefault();
+    if (!editingHypothesisId) return;
+    const payload = buildPayload(editForm);
+    if (!payload) return;
+    const result = await updateHypothesis(editingHypothesisId, payload);
+    if (result) {
+      cancelEdit();
+    }
+  };
+
+  const formatMetricValue = (metricKey, value) => {
+    if (value == null) return '-';
+    const metric = String(metricKey || '').toLowerCase();
+    if (percentageMetrics.has(metric)) return `${(Number(value) * 100).toFixed(2)}%`;
+    if (metric.includes('%') || metric === 'views_finish_pct' || metric === 'retencion_pct') return `${Number(value).toFixed(2)}%`;
+    if (metric === 'cpc' || metric === 'tiempo_prom_seg' || metric === 'engagement' || metric === 'viewers_prom') return Number(value).toFixed(2);
+    return Number(value).toFixed(0);
+  };
+
+  const audienceStatusClass = (status) => {
+    if (status === 'cumplio') return 'bg-emerald-100 text-emerald-700 border-emerald-300';
+    if (status === 'no_cumplio') return 'bg-red-100 text-red-700 border-red-300';
+    return 'bg-gray-100 text-gray-600 border-gray-300';
+  };
+
+  const audienceStatusLabel = (status) => {
+    if (status === 'cumplio') return 'Cumplió';
+    if (status === 'no_cumplio') return 'No cumplió';
+    return 'Sin datos';
+  };
+
+  const toggleExpanded = (hypothesisId) => {
+    setExpandedIds((prev) => ({ ...prev, [hypothesisId]: !prev[hypothesisId] }));
   };
 
   return (
@@ -136,35 +229,77 @@ const HypothesesDashboardPage = () => {
         <div className="bg-white rounded-2xl shadow-xl p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-purple-600" />Hipótesis</h2>
-            <Button className="bg-purple-600 text-white" onClick={() => setShowForm((v) => !v)}><Plus className="w-4 h-4 mr-2" />Crear hipótesis</Button>
+            <Button className="bg-purple-600 text-white" onClick={() => { setShowForm((v) => !v); cancelEdit(); }}><Plus className="w-4 h-4 mr-2" />Crear hipótesis</Button>
           </div>
 
           {showForm && (
             <form onSubmit={onCreate} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-purple-50 mb-6">
-              <div><label className="block text-sm font-medium mb-1">Project ID</label><input disabled className="w-full rounded-lg border p-2 bg-gray-100" value={projectId} /></div>
-              <div><label className="block text-sm font-medium mb-1">Tipo de hipótesis</label><select required className="w-full rounded-lg border p-2" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>{hypothesisTypeOptions.map((option) => <option key={option.value || option.label} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></div>
-              <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Hypothesis statement (Si X entonces Y)</label><textarea required className="w-full rounded-lg border p-2" rows="2" value={form.hypothesis_statement} onChange={(e) => setForm({ ...form, hypothesis_statement: e.target.value })} /></div>
-              <div><label className="block text-sm font-medium mb-1">Variable X</label><input className="w-full rounded-lg border p-2" value={form.variable_x} onChange={(e) => setForm({ ...form, variable_x: e.target.value })} /></div>
-              <div><label className="block text-sm font-medium mb-1">Métrica objetivo Y</label><select required className="w-full rounded-lg border p-2" value={form.metrica_objetivo_y} onChange={(e) => setForm({ ...form, metrica_objetivo_y: e.target.value })}>{metricObjectiveOptions.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select></div>
-              <div><label className="block text-sm font-medium mb-1">Umbral validación</label><div className="flex gap-2"><select required className="rounded-lg border p-2" value={form.umbral_operador} onChange={(e) => setForm({ ...form, umbral_operador: e.target.value })}>{thresholdOperatorOptions.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select><input type="number" className="flex-1 rounded-lg border p-2" value={form.umbral_valor} onChange={(e) => setForm({ ...form, umbral_valor: Number(e.target.value) })} /><select required className="rounded-lg border p-2" value={form.umbral_tipo} onChange={(e) => setForm({ ...form, umbral_tipo: e.target.value })}>{thresholdTypeOptions.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select></div></div>
-              <div><label className="block text-sm font-medium mb-1">Volumen mínimo</label><div className="flex gap-2"><input type="number" className="flex-1 rounded-lg border p-2" value={form.volumen_minimo} onChange={(e) => setForm({ ...form, volumen_minimo: Number(e.target.value) })} /><select required className="rounded-lg border p-2" value={form.volumen_unidad} onChange={(e) => setForm({ ...form, volumen_unidad: e.target.value })}>{volumeUnits.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select></div></div>
-              <div><label className="block text-sm font-medium mb-1">Canal principal</label><select className="w-full rounded-lg border p-2" value={form.canal_principal} onChange={(e) => setForm({ ...form, canal_principal: e.target.value })}><option value="paid">paid</option><option value="organic">organic</option><option value="live">live</option></select></div>
-              <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Contexto cualitativo</label><textarea className="w-full rounded-lg border p-2" rows="2" value={form.contexto_cualitativo} onChange={(e) => setForm({ ...form, contexto_cualitativo: e.target.value })} /></div>
+              <HypothesisFormFields form={form} setForm={setForm} projectId={projectId} />
               <div className="md:col-span-2 flex gap-2"><Button type="submit" className="bg-purple-600 text-white">Guardar hipótesis</Button><Button type="button" className="bg-gray-200 text-gray-700" onClick={() => setShowForm(false)}>Cancelar</Button></div>
             </form>
           )}
 
-          {hypotheses.length === 0 ? (
+          {sortedHypotheses.length === 0 ? (
             <div className="text-center py-10 text-gray-500">No hay hipótesis todavía</div>
           ) : (
             <div className="grid md:grid-cols-2 gap-4">
-              {hypotheses.map((hypothesis) => (
-                <Link key={hypothesis.id} to={`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesis.id}`} className="block rounded-xl border bg-gray-50 p-4 hover:border-purple-300">
-                  <h3 className="font-semibold">{hypothesis.type}</h3>
-                  <p className="text-sm text-gray-700 mt-1">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
-                  <p className="text-xs text-gray-500 mt-2">Métrica: {hypothesis.metrica_objetivo_y || '-'}</p>
-                </Link>
-              ))}
+              {sortedHypotheses.map((hypothesis) => {
+                const isExpanded = Boolean(expandedIds[hypothesis.id]);
+                const isEditing = editingHypothesisId === hypothesis.id;
+                const metricLabel = metricLabelMap.get(hypothesis.metrica_objetivo_y) || hypothesis.metrica_objetivo_y || '-';
+
+                return (
+                  <div key={hypothesis.id} className="rounded-xl border bg-gray-50 p-4 hover:border-purple-300">
+                    {isEditing ? (
+                      <form onSubmit={onSaveEdit} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-blue-50 mb-4">
+                        <HypothesisFormFields form={editForm} setForm={setEditForm} projectId={projectId} />
+                        <div className="md:col-span-2 flex gap-2">
+                          <Button type="submit" className="bg-blue-600 text-white"><Save className="w-4 h-4 mr-2" />Guardar cambios</Button>
+                          <Button type="button" className="bg-gray-200 text-gray-700" onClick={cancelEdit}><X className="w-4 h-4 mr-2" />Cancelar</Button>
+                        </div>
+                      </form>
+                    ) : null}
+
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <h3 className="font-semibold">{hypothesis.type}</h3>
+                        <p className="text-sm text-gray-700 mt-1">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
+                        <p className="text-xs text-gray-500 mt-2">Métrica: {metricLabel}</p>
+                      </div>
+                      <div className="flex gap-1">
+                        <Button className="bg-blue-100 text-blue-700 px-3" onClick={() => startEdit(hypothesis)}><Edit className="w-4 h-4" /></Button>
+                        <Button className="bg-purple-100 text-purple-700 px-3" onClick={() => toggleExpanded(hypothesis.id)}>
+                          {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <Link to={`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesis.id}`} className="text-sm text-purple-700 hover:underline">Abrir detalle →</Link>
+                    </div>
+
+                    {isExpanded ? (
+                      <div className="mt-4 border-t pt-3">
+                        <p className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Por audiencia</p>
+                        <div className="space-y-2">
+                          {(hypothesis.audiences_breakdown || []).map((item) => (
+                            <div key={item.audience_id} className="rounded-lg border bg-white px-3 py-2 flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-medium text-gray-700">{item.audience_name || 'Sin nombre'}</span>
+                              <span className={`px-2 py-0.5 rounded-full border ${audienceStatusClass(item.status)}`}>{audienceStatusLabel(item.status)}</span>
+                              <span className="text-gray-600">{metricLabel}: <b>{formatMetricValue(item.metric_key, item.metric_value)}</b></span>
+                              <span className="text-gray-600">Umbral: <b>{item.threshold_operator} {item.threshold}</b></span>
+                              <span className="text-gray-600">n videos: <b>{item.videos_count || 0}</b></span>
+                            </div>
+                          ))}
+                          {!(hypothesis.audiences_breakdown || []).length ? (
+                            <div className="rounded-lg border bg-white px-3 py-2 text-xs text-gray-500">No hay audiencias en la campaña.</div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

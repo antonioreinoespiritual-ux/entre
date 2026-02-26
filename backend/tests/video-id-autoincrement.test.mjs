@@ -208,3 +208,79 @@ test('bulk update resolves by videos.video_id values', async () => {
     server.kill('SIGTERM');
   }
 });
+
+
+test('hypotheses endpoint returns per-audience cumplimiento breakdown', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-hyp-breakdown-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4107;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `breakdown-${Date.now()}@example.com`, password: 'secret123' }),
+    });
+    assert.equal(signupRes.status, 200);
+    const signupJson = await signupRes.json();
+    const token = signupJson?.session?.access_token;
+    assert.ok(token);
+
+    const project = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P', description: 'D' } });
+    const campaign = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: project[0].id, name: 'C', description: 'D' } });
+
+    const audienceA = await api(baseUrl, token, { table: 'audiences', operation: 'insert', payload: { campaign_id: campaign[0].id, name: 'A', description: '' } });
+    const audienceB = await api(baseUrl, token, { table: 'audiences', operation: 'insert', payload: { campaign_id: campaign[0].id, name: 'B', description: '' } });
+
+    const hypothesis = await api(baseUrl, token, {
+      table: 'hypotheses',
+      operation: 'insert',
+      payload: {
+        campaign_id: campaign[0].id,
+        type: 'Problema',
+        metrica_objetivo_y: 'clicks',
+        umbral_operador: '>=',
+        umbral_valor: 30,
+        condition: 'clicks >= 30',
+      },
+    });
+
+    await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: { hypothesis_id: hypothesis[0].id, audience_id: audienceA[0].id, video_type: 'organic', title: 'VA', clicks: 45, views: 500 },
+    });
+    await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: { hypothesis_id: hypothesis[0].id, audience_id: audienceB[0].id, video_type: 'organic', title: 'VB', clicks: 10, views: 500 },
+    });
+
+    const resp = await fetch(`${baseUrl}/api/campaigns/${campaign[0].id}/hypotheses-with-audience-breakdown`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(resp.status, 200);
+    const json = await resp.json();
+    const firstHypothesis = json.data?.[0];
+    assert.ok(firstHypothesis);
+    const byAudience = new Map((firstHypothesis.audiences_breakdown || []).map((row) => [row.audience_name, row]));
+    assert.equal(byAudience.get('A')?.status, 'cumplio');
+    assert.equal(byAudience.get('B')?.status, 'no_cumplio');
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

@@ -1059,6 +1059,126 @@ function metricFromVideo(video, metric) {
   return toNumber(video[resolvedField], 0);
 }
 
+function resolveHypothesisMetricConfig(hypothesis = {}) {
+  const primaryMetric = String(hypothesis.metrica_objetivo_y || 'views').trim();
+  const threshold = Number(hypothesis.umbral_valor ?? 0);
+  const directOperator = String(hypothesis.umbral_operador || '').trim();
+
+  if (directOperator) {
+    return { metric: primaryMetric, operator: directOperator, threshold: Number.isFinite(threshold) ? threshold : 0 };
+  }
+
+  const condition = String(hypothesis.condition || '');
+  const parsed = condition.match(/(>=|<=|>|<)\s*(-?[0-9]+(?:\.[0-9]+)?)/);
+  if (parsed) {
+    return {
+      metric: primaryMetric,
+      operator: parsed[1],
+      threshold: Number(parsed[2]),
+    };
+  }
+
+  return { metric: primaryMetric, operator: '>=', threshold: Number.isFinite(threshold) ? threshold : 0 };
+}
+
+function compareAgainstThreshold(value, operator, threshold) {
+  if (operator === '>=') return value >= threshold;
+  if (operator === '<=') return value <= threshold;
+  if (operator === '>') return value > threshold;
+  if (operator === '<') return value < threshold;
+  return value >= threshold;
+}
+
+function computeAudienceMetricValueFromAggregate(metric, aggregateRow = {}) {
+  const normalizedMetric = String(metric || '').trim().toLowerCase();
+  const countMetrics = new Set([
+    'clicks',
+    'views',
+    'views_profile',
+    'initiatest',
+    'initiate_checkouts',
+    'view_content',
+    'formulario_lead',
+    'purchase',
+    'likes',
+    'comments',
+    'shares',
+    'saves',
+    'nuevos_seguidores',
+    'pico_viewers',
+  ]);
+
+  const aliasMap = {
+    'views finish %': 'views_finish_pct',
+    'retention %': 'retencion_pct',
+    'avg watch time': 'tiempo_prom_seg',
+    'live peak viewers': 'pico_viewers',
+    'live avg viewers': 'viewers_prom',
+    'live new followers': 'nuevos_seguidores',
+  };
+  const resolvedMetric = aliasMap[normalizedMetric] || normalizedMetric;
+
+  if (countMetrics.has(resolvedMetric)) {
+    return toNumber(aggregateRow[`sum_${resolvedMetric}`], 0);
+  }
+
+  if (resolvedMetric === 'ctr') {
+    const clicks = toNumber(aggregateRow.sum_clicks, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? clicks / views : toNumber(aggregateRow.avg_ctr, 0);
+  }
+
+  if (resolvedMetric === 'cpc') {
+    return toNumber(aggregateRow.avg_cpc, 0);
+  }
+
+  if (resolvedMetric === 'initiate_checkout_rate') {
+    const initiateCheckouts = toNumber(aggregateRow.sum_initiate_checkouts, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? initiateCheckouts / views : 0;
+  }
+
+  if (resolvedMetric === 'view_content_rate') {
+    const viewContent = toNumber(aggregateRow.sum_view_content, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? viewContent / views : 0;
+  }
+
+  if (resolvedMetric === 'lead_rate') {
+    const leads = toNumber(aggregateRow.sum_formulario_lead, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? leads / views : 0;
+  }
+
+  if (resolvedMetric === 'purchase_rate') {
+    const purchases = toNumber(aggregateRow.sum_purchase, 0);
+    const viewContent = toNumber(aggregateRow.sum_view_content, 0);
+    return viewContent > 0 ? purchases / viewContent : 0;
+  }
+
+  if (resolvedMetric === 'retencion_pct') {
+    const weightedSum = toNumber(aggregateRow.weighted_retencion, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? weightedSum / views : toNumber(aggregateRow.avg_retencion_pct, 0);
+  }
+
+  if (resolvedMetric === 'views_finish_pct') {
+    const weightedSum = toNumber(aggregateRow.weighted_views_finish, 0);
+    const views = toNumber(aggregateRow.sum_views, 0);
+    return views > 0 ? weightedSum / views : toNumber(aggregateRow.avg_views_finish_pct, 0);
+  }
+
+  if (resolvedMetric === 'tiempo_prom_seg') {
+    return toNumber(aggregateRow.avg_tiempo_prom_seg, 0);
+  }
+
+  if (resolvedMetric === 'viewers_prom') {
+    return toNumber(aggregateRow.avg_viewers_prom, 0);
+  }
+
+  return toNumber(aggregateRow[`sum_${resolvedMetric}`] ?? aggregateRow[`avg_${resolvedMetric}`], 0);
+}
+
 function runFrequentistAnalysis(videos, config) {
   const metric = config.primary_metric || 'ctr';
   const alpha = Number(config.alpha || 0.05);
@@ -1915,6 +2035,128 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       sendJson(req, res, 200, { nodeId: node.id, parentId: node.parent_id, type: node.type });
+      return;
+    }
+
+    if (url.pathname.startsWith('/api/campaigns/') && url.pathname.endsWith('/hypotheses-with-audience-breakdown') && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const parts = url.pathname.split('/').filter(Boolean);
+      const campaignId = parts[2] || null;
+      if (!campaignId) {
+        sendJson(req, res, 400, { error: 'campaignId is required' });
+        return;
+      }
+
+      const [campaignRows] = await pool.query('SELECT id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      if (!campaignRows.length) {
+        sendJson(req, res, 404, { error: 'Campaign not found' });
+        return;
+      }
+
+      const [hypothesisRows] = await pool.query(
+        'SELECT * FROM hypotheses WHERE campaign_id = ? AND user_id = ? ORDER BY created_at DESC',
+        [campaignId, user.id],
+      );
+      const [audienceRows] = await pool.query(
+        'SELECT id, name FROM audiences WHERE campaign_id = ? AND user_id = ? ORDER BY created_at ASC',
+        [campaignId, user.id],
+      );
+
+      if (!hypothesisRows.length) {
+        sendJson(req, res, 200, { data: [] });
+        return;
+      }
+
+      const hypothesisIds = hypothesisRows.map((row) => row.id);
+      const hypothesisPlaceholders = hypothesisIds.map(() => '?').join(', ');
+      const [aggregatedRows] = await pool.query(
+        `SELECT
+          hypothesis_id,
+          audience_id,
+          COUNT(*) AS videos_count,
+          SUM(clicks) AS sum_clicks,
+          SUM(views) AS sum_views,
+          SUM(views_profile) AS sum_views_profile,
+          SUM(initiatest) AS sum_initiatest,
+          SUM(initiate_checkouts) AS sum_initiate_checkouts,
+          SUM(view_content) AS sum_view_content,
+          SUM(formulario_lead) AS sum_formulario_lead,
+          SUM(purchase) AS sum_purchase,
+          SUM(likes) AS sum_likes,
+          SUM(comments) AS sum_comments,
+          SUM(shares) AS sum_shares,
+          SUM(saves) AS sum_saves,
+          SUM(nuevos_seguidores) AS sum_nuevos_seguidores,
+          SUM(pico_viewers) AS sum_pico_viewers,
+          AVG(cpc) AS avg_cpc,
+          AVG(ctr) AS avg_ctr,
+          AVG(retencion_pct) AS avg_retencion_pct,
+          AVG(views_finish_pct) AS avg_views_finish_pct,
+          AVG(tiempo_prom_seg) AS avg_tiempo_prom_seg,
+          AVG(viewers_prom) AS avg_viewers_prom,
+          SUM(retencion_pct * CASE WHEN views > 0 THEN views ELSE 0 END) AS weighted_retencion,
+          SUM(views_finish_pct * CASE WHEN views > 0 THEN views ELSE 0 END) AS weighted_views_finish
+         FROM videos
+         WHERE user_id = ?
+           AND audience_id IS NOT NULL
+           AND hypothesis_id IN (${hypothesisPlaceholders})
+         GROUP BY hypothesis_id, audience_id`,
+        [user.id, ...hypothesisIds],
+      );
+
+      const aggregateByHypothesis = new Map();
+      for (const row of aggregatedRows) {
+        if (!aggregateByHypothesis.has(row.hypothesis_id)) {
+          aggregateByHypothesis.set(row.hypothesis_id, new Map());
+        }
+        aggregateByHypothesis.get(row.hypothesis_id).set(row.audience_id, row);
+      }
+
+      const data = hypothesisRows.map((hypothesis) => {
+        const config = resolveHypothesisMetricConfig(hypothesis);
+        const perAudienceAgg = aggregateByHypothesis.get(hypothesis.id) || new Map();
+
+        const audiencesBreakdown = audienceRows.map((audience) => {
+          const aggregate = perAudienceAgg.get(audience.id);
+          if (!aggregate || Number(aggregate.videos_count || 0) <= 0) {
+            return {
+              audience_id: audience.id,
+              audience_name: audience.name,
+              status: 'sin_datos',
+              metric_value: null,
+              metric_key: config.metric,
+              threshold: config.threshold,
+              threshold_operator: config.operator,
+              videos_count: 0,
+            };
+          }
+
+          const metricValue = computeAudienceMetricValueFromAggregate(config.metric, aggregate);
+          const status = compareAgainstThreshold(metricValue, config.operator, config.threshold) ? 'cumplio' : 'no_cumplio';
+          return {
+            audience_id: audience.id,
+            audience_name: audience.name,
+            status,
+            metric_value: metricValue,
+            metric_key: config.metric,
+            threshold: config.threshold,
+            threshold_operator: config.operator,
+            videos_count: Number(aggregate.videos_count || 0),
+          };
+        });
+
+        return {
+          ...hypothesis,
+          audiences_breakdown: audiencesBreakdown,
+        };
+      });
+
+      sendJson(req, res, 200, { data });
       return;
     }
 
