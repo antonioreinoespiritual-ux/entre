@@ -64,9 +64,7 @@ test('assigns next video_id as max+1 when creating video without video_id', asyn
     assert.equal(signupRes.status, 200);
     const signupJson = await signupRes.json();
     const token = signupJson?.session?.access_token;
-    const userId = signupJson?.user?.id;
     assert.ok(token, 'token should be returned');
-    assert.ok(userId, 'user id should be returned');
 
     const project = await api(baseUrl, token, {
       table: 'projects',
@@ -78,14 +76,14 @@ test('assigns next video_id as max+1 when creating video without video_id', asyn
     const campaign = await api(baseUrl, token, {
       table: 'campaigns',
       operation: 'insert',
-      payload: { project_id: projectId, user_id: userId, name: 'C', description: 'D' },
+      payload: { project_id: projectId, name: 'C', description: 'D' },
     });
     const campaignId = campaign[0].id;
 
     const hypothesis = await api(baseUrl, token, {
       table: 'hypotheses',
       operation: 'insert',
-      payload: { campaign_id: campaignId, user_id: userId, type: 'test', condition: 'views > 0' },
+      payload: { campaign_id: campaignId, type: 'test', condition: 'views > 0' },
     });
     const hypothesisId = hypothesis[0].id;
 
@@ -142,18 +140,16 @@ test('bulk update resolves by videos.video_id values', async () => {
     assert.equal(signupRes.status, 200);
     const signupJson = await signupRes.json();
     const token = signupJson?.session?.access_token;
-    const userId = signupJson?.user?.id;
     assert.ok(token);
-    assert.ok(userId);
 
     const project = await api(baseUrl, token, {
       table: 'projects', operation: 'insert', payload: { name: 'P', description: 'D' },
     });
     const campaign = await api(baseUrl, token, {
-      table: 'campaigns', operation: 'insert', payload: { project_id: project[0].id, user_id: userId, name: 'C', description: 'D' },
+      table: 'campaigns', operation: 'insert', payload: { project_id: project[0].id, name: 'C', description: 'D' },
     });
     const hypothesis = await api(baseUrl, token, {
-      table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, user_id: userId, type: 'test', condition: 'views > 0' },
+      table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, type: 'test', condition: 'views > 0' },
     });
 
     const video = await api(baseUrl, token, {

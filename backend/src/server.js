@@ -1455,13 +1455,11 @@ async function executeCrudQuery(body, currentUserId) {
   if (operation === 'insert') {
     const row = Array.isArray(payload) ? payload[0] : payload;
     const writeRow = { ...row, id: row?.id || uuid() };
-    if (table === 'projects') {
+    if (table !== 'users') {
       delete writeRow.user_id;
       writeRow.user_id = currentUserId;
     }
     if (table === 'videos') {
-      delete writeRow.user_id;
-      writeRow.user_id = currentUserId;
       if (!writeRow.hypothesis_id) {
         throw new Error('videos.hypothesis_id is required');
       }
