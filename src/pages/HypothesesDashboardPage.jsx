@@ -93,6 +93,24 @@ const thresholdTypeOptions = [
 
 const metricLabelMap = new Map(metricObjectiveOptions.map((option) => [option.value, option.label]));
 
+
+const getHypothesisRawStatus = (hypothesis) => (
+  hypothesis?.validation_status
+  ?? hypothesis?.status
+  ?? hypothesis?.state
+  ?? hypothesis?.outcome
+  ?? ''
+);
+
+const isValidatedStatus = (statusValue) => {
+  const normalized = String(statusValue || '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized.includes('no valid') || normalized.includes('invalid') || normalized.includes('fail') || normalized.includes('draft') || normalized.includes('testing') || normalized.includes('in-progress')) {
+    return false;
+  }
+  return normalized.includes('validada') || normalized.includes('validated') || normalized.includes('valid') || normalized.includes('approved') || normalized.includes('passed') || normalized.includes('completed');
+};
+
 const inferThresholdType = (hypothesis) => {
   if (String(hypothesis?.condition || '').includes('%')) return '%';
   const value = Number(hypothesis?.umbral_valor ?? 0);
@@ -129,12 +147,46 @@ const HypothesesDashboardPage = () => {
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
   const [editForm, setEditForm] = useState(initialForm);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [validationFilter, setValidationFilter] = useState('all');
+  const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
     fetchHypotheses(campaignId);
   }, [campaignId, fetchHypotheses]);
 
   const sortedHypotheses = useMemo(() => hypotheses || [], [hypotheses]);
+
+  const availableStatuses = useMemo(() => {
+    const values = new Set();
+    sortedHypotheses.forEach((item) => {
+      const raw = getHypothesisRawStatus(item);
+      if (raw) values.add(String(raw));
+    });
+    return [...values];
+  }, [sortedHypotheses]);
+
+  const filteredHypotheses = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return sortedHypotheses.filter((hypothesis) => {
+      const rawStatus = getHypothesisRawStatus(hypothesis);
+      const validated = isValidatedStatus(rawStatus);
+
+      if (statusFilter !== 'all' && String(rawStatus || '') !== statusFilter) return false;
+      if (validationFilter === 'validada' && !validated) return false;
+      if (validationFilter === 'no_validada' && validated) return false;
+
+      if (!q) return true;
+      const haystack = [
+        hypothesis.type,
+        hypothesis.hypothesis_statement,
+        hypothesis.condition,
+        hypothesis.variable_x,
+        hypothesis.contexto_cualitativo,
+      ].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [sortedHypotheses, searchTerm, statusFilter, validationFilter]);
 
   const buildPayload = (currentForm) => {
     if (!currentForm.type || !currentForm.metrica_objetivo_y || !currentForm.volumen_unidad || !currentForm.umbral_operador || !currentForm.umbral_tipo) {
@@ -220,11 +272,36 @@ const HypothesesDashboardPage = () => {
             </form>
           )}
 
+
+          <div className="mb-4 rounded-xl border bg-gray-50 p-3">
+            <div className="grid md:grid-cols-4 gap-2">
+              <input
+                className="rounded-lg border p-2"
+                placeholder="Buscar hipótesis..."
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+              />
+              <select className="rounded-lg border p-2" value={validationFilter} onChange={(event) => setValidationFilter(event.target.value)}>
+                <option value="all">Todas (Validada / No validada)</option>
+                <option value="validada">Validada</option>
+                <option value="no_validada">No validada</option>
+              </select>
+              <select className="rounded-lg border p-2" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                <option value="all">Estado (todos)</option>
+                {availableStatuses.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+              <Button className="bg-gray-200 text-gray-700" onClick={() => { setSearchTerm(''); setValidationFilter('all'); setStatusFilter('all'); }}>Limpiar filtros</Button>
+            </div>
+          </div>
+
           {sortedHypotheses.length === 0 ? (
+
             <div className="text-center py-10 text-gray-500">No hay hipótesis todavía</div>
+          ) : filteredHypotheses.length === 0 ? (
+            <div className="text-center py-10 text-gray-500">No hay resultados con los filtros aplicados.</div>
           ) : (
             <div className="grid md:grid-cols-2 gap-4">
-              {sortedHypotheses.map((hypothesis) => {
+              {filteredHypotheses.map((hypothesis) => {
                 const isEditing = editingHypothesisId === hypothesis.id;
                 const metricLabel = metricLabelMap.get(hypothesis.metrica_objetivo_y) || hypothesis.metrica_objetivo_y || '-';
 
@@ -245,6 +322,16 @@ const HypothesesDashboardPage = () => {
                         <h3 className="font-semibold">{hypothesis.type}</h3>
                         <p className="text-sm text-gray-700 mt-1">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
                         <p className="text-xs text-gray-500 mt-2">Métrica: {metricLabel}</p>
+                        {(() => {
+                          const rawStatus = getHypothesisRawStatus(hypothesis);
+                          const validated = isValidatedStatus(rawStatus);
+                          return (
+                            <div className="mt-2 flex items-center gap-2">
+                              <span className={`text-xs px-2 py-0.5 rounded-full border ${validated ? 'bg-emerald-100 text-emerald-700 border-emerald-300' : 'bg-red-100 text-red-700 border-red-300'}`}>{validated ? 'VALIDADA' : 'NO VALIDADA'}</span>
+                              {rawStatus ? <span className="text-xs text-gray-500" title={`Estado original: ${rawStatus}`}>({rawStatus})</span> : null}
+                            </div>
+                          );
+                        })()}
                       </div>
                       <div className="flex gap-1">
                         <Button className="bg-blue-100 text-blue-700 px-3" onClick={() => startEdit(hypothesis)}><Edit className="w-4 h-4" /></Button>

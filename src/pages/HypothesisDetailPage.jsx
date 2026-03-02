@@ -47,6 +47,8 @@ const HypothesisDetailPage = () => {
   const [form, setForm] = useState(baseVideo);
   const [editingVideo, setEditingVideo] = useState(null);
   const [editForm, setEditForm] = useState(baseVideo);
+  const [videoSearchTerm, setVideoSearchTerm] = useState('');
+  const [sessionFilter, setSessionFilter] = useState('all');
 
   const openInCloud = async () => {
     const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
@@ -67,6 +69,26 @@ const HypothesisDetailPage = () => {
 
   const hypothesis = useMemo(() => hypotheses.find((h) => h.id === hypothesisId), [hypotheses, hypothesisId]);
   const tabVideos = useMemo(() => videos.filter((video) => (video.video_type || 'organic') === activeTab), [videos, activeTab]);
+  const availableSessions = useMemo(() => {
+    const values = new Set();
+    tabVideos.forEach((video) => {
+      const sessionValue = video.session_id ?? video.external_id;
+      if (sessionValue !== null && sessionValue !== undefined && String(sessionValue).trim() !== '') {
+        values.add(String(sessionValue));
+      }
+    });
+    return [...values];
+  }, [tabVideos]);
+  const filteredTabVideos = useMemo(() => {
+    const q = videoSearchTerm.trim().toLowerCase();
+    return tabVideos.filter((video) => {
+      const sessionValue = String(video.session_id ?? video.external_id ?? '').trim();
+      if (sessionFilter !== 'all' && sessionValue !== sessionFilter) return false;
+      if (!q) return true;
+      const haystack = [video.title, video.name, video.hook_texto, video.contexto_cualitativo].join(' ').toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [tabVideos, videoSearchTerm, sessionFilter]);
   const volume = useMemo(() => buildVolumeSnapshot({
     videos,
     minimum: hypothesis?.volumen_minimo || 0,
@@ -170,6 +192,22 @@ const HypothesisDetailPage = () => {
 
           <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab===tab? 'bg-purple-600 text-white':'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
 
+          <div className="mb-4 rounded-xl border bg-gray-50 p-3">
+            <div className="grid md:grid-cols-3 gap-2">
+              <input
+                className="rounded-lg border p-2"
+                placeholder="Buscar videos..."
+                value={videoSearchTerm}
+                onChange={(event) => setVideoSearchTerm(event.target.value)}
+              />
+              <select className="rounded-lg border p-2" value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}>
+                <option value="all">Session ID (todas)</option>
+                {availableSessions.map((sessionValue) => <option key={sessionValue} value={sessionValue}>{sessionValue}</option>)}
+              </select>
+              <Button className="bg-gray-200 text-gray-700" onClick={() => { setVideoSearchTerm(''); setSessionFilter('all'); }}>Limpiar filtros</Button>
+            </div>
+          </div>
+
           {showForm && (
             <form onSubmit={onCreateVideo} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-purple-50 mb-6">
               {fieldMapByType[activeTab].map((field) => (
@@ -199,12 +237,15 @@ const HypothesisDetailPage = () => {
 
           {tabVideos.length === 0 ? (
             <div className="text-center py-10 text-gray-500">No hay videos {activeTab} todavía</div>
+          ) : filteredTabVideos.length === 0 ? (
+            <div className="text-center py-10 text-gray-500">No hay resultados con los filtros aplicados.</div>
           ) : (
             <div className="space-y-3">
-              {tabVideos.map((video) => (
+              {filteredTabVideos.map((video) => (
                 <div key={video.id} className="rounded-xl border bg-gray-50 p-4 flex justify-between gap-3 cursor-pointer" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesisId}/videos/${video.id}`)}>
                   <div>
                     <h3 className="font-semibold">{video.title}</h3>
+                    <p className="text-sm text-gray-600">Session #{video.session_id ?? video.external_id ?? '—'}</p>
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
                   <div className="flex gap-2">
