@@ -16,6 +16,7 @@ import AudienceAbTestPage from '@/pages/AudienceAbTestPage';
 import HypothesesDashboardPage from '@/pages/HypothesesDashboardPage';
 import HypothesisDetailPage from '@/pages/HypothesisDetailPage';
 import HypothesisAdvancedAnalysisPage from '@/pages/HypothesisAdvancedAnalysisPage';
+import HypothesisMindMapPage from '@/pages/HypothesisMindMapPage';
 import VideoDetailPage from '@/pages/VideoDetailPage';
 import AbTestPage from '@/pages/AbTestPage';
 import CloudPage from '@/pages/CloudPage';
@@ -64,6 +65,7 @@ const ProtectedApp = () => (
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses" element={<HypothesesDashboardPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId" element={<HypothesisDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/analysis" element={<HypothesisAdvancedAnalysisPage />} />
+              <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/mapa-mental" element={<HypothesisMindMapPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/videos/:videoId" element={<VideoDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/ab-test" element={<AbTestPage />} />
               <Route path="/cloud" element={<CloudPage />} />

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Edit, Lightbulb, Plus, Save, X } from 'lucide-react';
+import { ArrowLeft, Brain, Edit, Lightbulb, Plus, Save, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 
@@ -338,8 +338,14 @@ const HypothesesDashboardPage = () => {
                       </div>
                     </div>
 
-                    <div className="mt-3">
+                    <div className="mt-3 flex items-center gap-4">
                       <Link to={`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesis.id}`} className="text-sm text-purple-700 hover:underline">Abrir detalle →</Link>
+                      <Link
+                        to={`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesis.id}/mapa-mental`}
+                        className="inline-flex items-center gap-1 text-sm text-indigo-700 hover:underline"
+                      >
+                        <Brain className="w-4 h-4" />Mapa mental
+                      </Link>
                     </div>
                   </div>
                 );
