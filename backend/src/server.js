@@ -1936,13 +1936,6 @@ const hypothesisContextOnlyFields = new Set(['audience_id']);
 
 const videoGlobalForbiddenFields = new Set(['audience_id', 'audience', 'hypothesis_id', 'campaign_id']);
 
-function compatibilityVideoLegacyColumns(videoPayload = {}) {
-  const legacy = {};
-  if (!('hypothesis_id' in videoPayload)) legacy.hypothesis_id = '';
-  if (!('audience_id' in videoPayload)) legacy.audience_id = '';
-  return legacy;
-}
-
 async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
   const hypothesis = await fetchOwnedHypothesisById(hypothesisId, userId);
   if (!hypothesis) throw new Error('Hypothesis not found');
@@ -2886,7 +2879,6 @@ const server = http.createServer(async (req, res) => {
       }
       const payload = {
         ...body,
-        ...compatibilityVideoLegacyColumns(body),
       };
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
       sendJson(req, res, 200, { data: rows });
@@ -2967,7 +2959,6 @@ const server = http.createServer(async (req, res) => {
       const payload = {
         ...body,
         project_id: projectId,
-        ...compatibilityVideoLegacyColumns(body),
       };
 
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
