@@ -75,7 +75,7 @@ export const HypothesisProvider = ({ children }) => {
       if (error) throw error;
 
       setHypotheses(data || []);
-      return data;
+      return data || [];
     } catch (error) {
       toast({
         title: 'Error',
@@ -125,9 +125,14 @@ export const HypothesisProvider = ({ children }) => {
     if (!currentUser) return null;
     setLoading(true);
     try {
+      const sanitizedPayload = { ...hypothesisData };
+      delete sanitizedPayload.audiences_breakdown;
+      delete sanitizedPayload.audience_breakdown;
+      delete sanitizedPayload.breakdown_config;
+
       const { data, error } = await supabase
         .from('hypotheses')
-        .update(hypothesisData)
+        .update(sanitizedPayload)
         .eq('id', id)
         .eq('user_id', currentUser.id)
         .select()
@@ -140,6 +145,10 @@ export const HypothesisProvider = ({ children }) => {
         description: 'Hypothesis updated successfully',
       });
 
+      if (data?.campaign_id) {
+        await fetchHypotheses(data.campaign_id);
+      }
+
       return data;
     } catch (error) {
       toast({
@@ -151,7 +160,7 @@ export const HypothesisProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  }, [toast, currentUser]);
+  }, [toast, currentUser, fetchHypotheses]);
 
   const deleteHypothesis = useCallback(async (id, campaignId) => {
     if (!currentUser) return false;

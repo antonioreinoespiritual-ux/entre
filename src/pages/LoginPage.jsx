@@ -20,7 +20,11 @@ const LoginPage = () => {
     setSubmitting(false);
 
     if (signInError) {
-      setError(signInError.message || 'No se pudo iniciar sesión');
+      const message = signInError.message || 'No se pudo iniciar sesión';
+      const hint = message.toLowerCase().includes('load failed') || message.toLowerCase().includes('connect')
+        ? ' No se pudo conectar al backend. Revisa que backend:dev esté corriendo en el puerto 4000.'
+        : '';
+      setError(`${message}${hint}`.trim());
       return;
     }
 

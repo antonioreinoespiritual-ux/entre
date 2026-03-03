@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { useProjects } from '@/contexts/ProjectContext';
 import ProjectForm from '@/components/ProjectForm';
 import { useAuth } from '@/contexts/SupabaseAuthContext';
+import BulkVideoUpdateModal from '@/components/BulkVideoUpdateModal';
 
 const ProjectsPage = () => {
   const navigate = useNavigate();
@@ -76,6 +77,7 @@ const ProjectsPage = () => {
                   <LogOut className="w-4 h-4 mr-2" />
                   Cerrar sesión
                 </Button>
+                <BulkVideoUpdateModal triggerClassName="bg-slate-900 text-cyan-300 border border-cyan-600 hover:bg-slate-800" />
                 <Button
                   onClick={() => setIsFormOpen(true)}
                   className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white shadow-lg"

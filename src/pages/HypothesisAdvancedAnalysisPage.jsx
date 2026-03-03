@@ -62,6 +62,7 @@ const HypothesisAdvancedAnalysisPage = () => {
   const [runs, setRuns] = useState([]);
   const [results, setResults] = useState(null);
   const [volume, setVolume] = useState(null);
+  const [audienceBreakdown, setAudienceBreakdown] = useState([]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -71,6 +72,9 @@ const HypothesisAdvancedAnalysisPage = () => {
       if (config.video_type) query.set('video_type', config.video_type);
       if (config.date_from) query.set('date_from', config.date_from);
       if (config.date_to) query.set('date_to', config.date_to);
+      if (config.primary_metric) query.set('primary_metric', config.primary_metric);
+      if (config.threshold_operator) query.set('threshold_operator', config.threshold_operator);
+      query.set('threshold_value', String(Number(config.threshold_value || 0)));
       const suffix = query.toString() ? `?${query.toString()}` : '';
       const data = await apiRequest(`/api/hypotheses/${hypothesisId}/analysis-data${suffix}`, { method: 'GET' });
       setHypothesis(data.hypothesis);
@@ -82,12 +86,13 @@ const HypothesisAdvancedAnalysisPage = () => {
         unit: data.hypothesis?.volumen_unidad || 'videos',
         hypothesisId,
       }));
+      setAudienceBreakdown(data.audience_breakdown || []);
     } catch (loadError) {
       setError(loadError.message);
     } finally {
       setLoading(false);
     }
-  }, [hypothesisId, config.video_type, config.date_from, config.date_to]);
+  }, [hypothesisId, config.video_type, config.date_from, config.date_to, config.primary_metric, config.threshold_operator, config.threshold_value]);
 
   useEffect(() => {
     loadData();
@@ -134,6 +139,34 @@ const HypothesisAdvancedAnalysisPage = () => {
     }),
     [volume, videos, hypothesis, hypothesisId],
   );
+
+
+  const formatMetricValue = (metricKey, value) => {
+    if (value == null) return '-';
+    const metric = String(metricKey || '').toLowerCase();
+    if (['ctr', 'initiate_checkout_rate', 'view_content_rate', 'lead_rate', 'purchase_rate'].includes(metric)) {
+      return `${(Number(value) * 100).toFixed(2)}%`;
+    }
+    if (['retencion_pct', 'retention_pct', 'views_finish_pct'].includes(metric)) {
+      return `${Number(value).toFixed(2)}%`;
+    }
+    if (['cpc', 'tiempo_prom_seg', 'engagement', 'viewers_prom'].includes(metric)) {
+      return Number(value).toFixed(2);
+    }
+    return Number(value).toFixed(0);
+  };
+
+  const breakdownLabel = (status) => {
+    if (status === 'pass') return 'Cumplió';
+    if (status === 'fail') return 'No cumplió';
+    return 'Sin datos';
+  };
+
+  const breakdownClass = (status) => {
+    if (status === 'pass') return 'bg-emerald-100 text-emerald-700';
+    if (status === 'fail') return 'bg-red-100 text-red-700';
+    return 'bg-gray-200 text-gray-700';
+  };
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-slate-900 to-gray-800 text-white"><div className="animate-spin rounded-full h-12 w-12 border-4 border-indigo-400 border-t-transparent" /></div>;
@@ -244,6 +277,28 @@ const HypothesisAdvancedAnalysisPage = () => {
               </div>
             ) : <p className="text-gray-400">Sin resultados</p>}
           </div>
+        </section>
+
+
+        <section className="rounded-2xl bg-gray-800/80 border border-gray-700 p-5">
+          <h3 className="text-lg font-semibold mb-3">Desglose por público</h3>
+          {videos.length === 0 ? (
+            <p className="text-gray-400">Sin datos</p>
+          ) : audienceBreakdown.length === 0 ? (
+            <p className="text-gray-400">Sin datos</p>
+          ) : (
+            <div className="space-y-2">
+              {audienceBreakdown.map((row) => (
+                <div key={row.audience_id || 'sin-publico'} className="rounded-lg border border-gray-700 bg-gray-900/40 px-3 py-2 text-sm flex flex-wrap items-center gap-3">
+                  <span className="font-medium text-gray-200 min-w-[160px]">{row.audience_name || 'Sin público'}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-xs ${breakdownClass(row.status)}`}>{breakdownLabel(row.status)}</span>
+                  <span className="text-gray-300">Videos: <b>{row.videos_count || 0}</b></span>
+                  <span className="text-gray-300">Valor: <b>{formatMetricValue(config.primary_metric, row.metric_value)}</b></span>
+                  <span className="text-gray-300">Umbral: <b>{config.threshold_operator} {Number(config.threshold_value || 0)}</b></span>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="rounded-2xl bg-gray-800/80 border border-gray-700 p-5">
