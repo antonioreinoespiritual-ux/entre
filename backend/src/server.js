@@ -2456,15 +2456,34 @@ const server = http.createServer(async (req, res) => {
       }
       const campaignId = campaignCreateVideoMatch[1];
       const body = await readBody(req);
-      if (!body?.hypothesis_id) {
-        sendJson(req, res, 400, { error: 'hypothesis_id is required' });
-        return;
+      const hypothesisId = String(body?.hypothesis_id || '').trim();
+
+      if (hypothesisId) {
+        const [hypothesisRows] = await pool.query(
+          'SELECT id FROM hypotheses WHERE id = ? AND campaign_id = ? AND user_id = ? LIMIT 1',
+          [hypothesisId, campaignId, user.id],
+        );
+        if (!hypothesisRows.length) {
+          sendJson(req, res, 400, { error: 'hypothesis_id is invalid for this campaign' });
+          return;
+        }
       }
+
       const payload = {
         ...body,
         campaign_id: campaignId,
+        hypothesis_id: hypothesisId || null,
       };
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
+      const created = Array.isArray(rows) ? rows[0] : null;
+
+      if (created?.id && hypothesisId) {
+        await pool.query(
+          'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
+          [uuid(), hypothesisId, created.id, user.id],
+        );
+      }
+
       sendJson(req, res, 200, { data: rows });
       return;
     }

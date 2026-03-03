@@ -9,30 +9,10 @@ import { useAudiences } from '@/contexts/AudienceContext';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
 import { useToast } from '@/components/ui/use-toast';
 import BulkVideoUpdateModal from '@/components/BulkVideoUpdateModal';
+import VideoCreateModal from '@/components/VideoCreateModal';
+import { baseVideo, fieldMapByType, labels, numericFields } from '@/components/videoFormConfig';
 
 const tabs = ['paid', 'organic', 'live'];
-const baseVideo = {
-  title: '', audience_id: '', external_id: '', hook_texto: '', hook_tipo: '', cta_texto: '', cta_tipo: '', creative_id: '',
-  contexto_cualitativo: '', clicks: 0, views: 0, views_profile: 0, initiatest: 0, initiate_checkouts: 0, view_content: 0, formulario_lead: 0,
-  purchase: 0, likes: 0, comments: 0, shares: 0, saves: 0, nuevos_seguidores: 0, cpc: 0, ctr: 0, pico_viewers: 0, viewers_prom: 0,
-  duracion_min: 0, duracion_seg: 0, duracion_del_video_seg: 0, organic_piece_type: '', url: '', views_finish_pct: 0, retencion_pct: 0,
-  tiempo_prom_seg: 0, campaign_id_ref: '', ad_set_id: '',
-};
-
-const numericFields = ['clicks', 'views', 'views_profile', 'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'likes', 'comments', 'shares', 'saves', 'nuevos_seguidores', 'cpc', 'ctr', 'pico_viewers', 'viewers_prom', 'duracion_min', 'duracion_seg', 'duracion_del_video_seg', 'views_finish_pct', 'retencion_pct', 'tiempo_prom_seg'];
-
-const fieldMapByType = {
-  live: ['external_id', 'title', 'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views', 'views_profile', 'initiatest', 'pico_viewers', 'viewers_prom', 'duracion_min', 'nuevos_seguidores', 'likes', 'comments', 'shares', 'saves'],
-  organic: ['external_id', 'title', 'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views', 'views_profile', 'nuevos_seguidores', 'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'organic_piece_type', 'likes', 'comments', 'shares', 'saves', 'url', 'views_finish_pct', 'retencion_pct', 'tiempo_prom_seg', 'duracion_seg'],
-  paid: ['external_id', 'title', 'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views', 'views_profile', 'nuevos_seguidores', 'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'cpc', 'ctr', 'duracion_del_video_seg', 'campaign_id_ref', 'ad_set_id'],
-};
-
-const labels = {
-  external_id: 'session_id / ad_id / live_id', title: 'Nombre del video', audience_id: 'Público (audiencia opcional)', hook_texto: 'Hook texto', hook_tipo: 'Hook tipo', cta_texto: 'CTA texto', cta_tipo: 'CTA tipo', creative_id: 'Creative ID', contexto_cualitativo: 'Contexto cualitativo',
-  clicks: 'Clicks', views: 'Views', views_profile: 'Views profile', initiatest: 'Initiatest', initiate_checkouts: 'Initiate checkouts', view_content: 'View content', formulario_lead: 'Formulario lead', purchase: 'Purchase', likes: 'Likes', comments: 'Comments', shares: 'Shares', saves: 'Saves', nuevos_seguidores: 'Nuevos seguidores',
-  cpc: 'CPC', ctr: 'CTR', pico_viewers: 'Pico viewers', viewers_prom: 'Viewers prom', duracion_min: 'Duración (min)', duracion_seg: 'Duración (seg)', duracion_del_video_seg: 'Duración del video (seg)', organic_piece_type: 'Organic piece type', url: 'URL del video', views_finish_pct: '% views finish', retencion_pct: '% retención', tiempo_prom_seg: 'Tiempo prom (seg)',
-  campaign_id_ref: 'Campaign ID (ad platform)', ad_set_id: 'Ad set ID',
-};
 
 const backendBaseUrl = () => import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const token = () => JSON.parse(localStorage.getItem('mysql_backend_session') || 'null')?.access_token || '';
@@ -42,12 +22,11 @@ const HypothesisDetailPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { hypotheses, fetchHypotheses } = useHypotheses();
-  const { videos, fetchVideos, createVideo, deleteVideo, fetchCampaignVideos, linkVideosToHypothesis } = useVideos();
+  const { videos, fetchVideos, deleteVideo, fetchCampaignVideos, linkVideosToHypothesis } = useVideos();
   const { audiences, fetchAudiences } = useAudiences();
 
   const [activeTab, setActiveTab] = useState('paid');
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState(baseVideo);
+  const [showVideoCreateModal, setShowVideoCreateModal] = useState(false);
   const [editingVideo, setEditingVideo] = useState(null);
   const [editForm, setEditForm] = useState(baseVideo);
   const [videoSearchTerm, setVideoSearchTerm] = useState('');
@@ -136,17 +115,6 @@ const HypothesisDetailPage = () => {
     hypothesisId,
   }), [videos, hypothesis, hypothesisId]);
 
-  const onCreateVideo = async (event) => {
-    event.preventDefault();
-    const payload = { ...form, hypothesis_id: hypothesisId, video_type: activeTab };
-    numericFields.forEach((field) => { payload[field] = Number(payload[field] || 0); });
-    const result = await createVideo(payload);
-    if (result) {
-      setForm(baseVideo);
-      setShowForm(false);
-    }
-  };
-
   const openCreateVideoModal = async () => {
     setShowCreateModal(true);
     setCreateMode('menu');
@@ -183,8 +151,8 @@ const HypothesisDetailPage = () => {
   };
 
   const renderInput = (field) => {
-    const source = editingVideo ? editForm : form;
-    const setter = editingVideo ? setEditForm : setForm;
+    const source = editForm;
+    const setter = setEditForm;
     if (field === 'audience_id') {
       return (
         <select className="w-full rounded-lg border p-2" value={source.audience_id} onChange={(e) => setter({ ...source, audience_id: e.target.value })}>
@@ -277,18 +245,6 @@ const HypothesisDetailPage = () => {
             </div>
           </div>
 
-          {showForm && (
-            <form onSubmit={onCreateVideo} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-purple-50 mb-6">
-              {fieldMapByType[activeTab].map((field) => (
-                <div key={field} className={field === 'contexto_cualitativo' ? 'md:col-span-2' : ''}>
-                  <label className="block text-sm font-medium mb-1">{labels[field] || field}</label>
-                  {renderInput(field)}
-                </div>
-              ))}
-              <div className="md:col-span-2 flex gap-2"><Button type="submit" className="bg-purple-600 text-white">Crear video {activeTab}</Button><Button type="button" className="bg-gray-200 text-gray-700" onClick={() => setShowForm(false)}>Cancelar</Button></div>
-            </form>
-          )}
-
           {editingVideo && (
             <form onSubmit={saveEdit} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-blue-50 mb-6">
               {fieldMapByType[editingVideo.video_type || activeTab].map((field) => (
@@ -339,7 +295,7 @@ const HypothesisDetailPage = () => {
 
             {createMode === 'menu' && (
               <div className="grid md:grid-cols-2 gap-3">
-                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowForm(true); }}>
+                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowVideoCreateModal(true); }}>
                   <p className="font-semibold">Crear nuevo</p>
                   <p className="text-sm text-gray-600">Abrir el formulario actual de creación para {activeTab.toUpperCase()}.</p>
                 </button>
@@ -382,6 +338,18 @@ const HypothesisDetailPage = () => {
           </div>
         </div>
       )}
+
+      <VideoCreateModal
+        isOpen={showVideoCreateModal}
+        onClose={() => setShowVideoCreateModal(false)}
+        defaultType={activeTab}
+        campaignId={campaignId}
+        hypothesisId={hypothesisId}
+        audiences={audiences}
+        onCreated={async () => {
+          await fetchVideos(hypothesisId);
+        }}
+      />
     </div>
   );
 };

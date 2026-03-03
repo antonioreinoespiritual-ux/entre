@@ -7,6 +7,7 @@ import { useVideos } from '@/contexts/VideoContext';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useAudiences } from '@/contexts/AudienceContext';
 import { useToast } from '@/components/ui/use-toast';
+import VideoCreateModal from '@/components/VideoCreateModal';
 
 const typeOptions = ['all', 'paid', 'organic', 'live'];
 
@@ -14,7 +15,7 @@ const CampaignVideosLibraryPage = () => {
   const { campaignId } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { fetchCampaignVideos, createCampaignVideo, linkVideoToHypotheses } = useVideos();
+  const { fetchCampaignVideos, linkVideoToHypotheses } = useVideos();
   const { hypotheses, fetchHypotheses } = useHypotheses();
   const { audiences, fetchAudiences } = useAudiences();
 
@@ -28,7 +29,6 @@ const CampaignVideosLibraryPage = () => {
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [selectedHypothesisIds, setSelectedHypothesisIds] = useState([]);
-  const [newVideo, setNewVideo] = useState({ hypothesis_id: '', title: '', video_type: 'organic', external_id: '' });
 
   const audienceById = useMemo(() => new Map((audiences || []).map((aud) => [aud.id, aud.name || '—'])), [audiences]);
 
@@ -52,19 +52,6 @@ const CampaignVideosLibraryPage = () => {
     loadVideos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaignId, videoType, usageFilter]);
-
-  const onCreateVideo = async (event) => {
-    event.preventDefault();
-    try {
-      await createCampaignVideo(campaignId, newVideo);
-      toast({ title: 'Video creado', description: 'Video agregado a la biblioteca de campaña.' });
-      setShowCreate(false);
-      setNewVideo({ hypothesis_id: '', title: '', video_type: 'organic', external_id: '' });
-      await loadVideos();
-    } catch (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-    }
-  };
 
   const openLinkModal = (video) => {
     setSelectedVideo(video);
@@ -140,26 +127,16 @@ const CampaignVideosLibraryPage = () => {
         </div>
       </div>
 
-      {showCreate && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="w-full max-w-xl bg-white rounded-2xl p-5">
-            <h3 className="text-lg font-semibold mb-3">Crear video global en campaña</h3>
-            <form onSubmit={onCreateVideo} className="space-y-3">
-              <select className="w-full rounded-lg border p-2" required value={newVideo.hypothesis_id} onChange={(e) => setNewVideo({ ...newVideo, hypothesis_id: e.target.value })}>
-                <option value="">Hipótesis de origen (legacy)</option>
-                {hypotheses.map((hyp) => <option key={hyp.id} value={hyp.id}>{hyp.type} · {hyp.hypothesis_statement || hyp.condition || hyp.id}</option>)}
-              </select>
-              <input className="w-full rounded-lg border p-2" required placeholder="Nombre del video" value={newVideo.title} onChange={(e) => setNewVideo({ ...newVideo, title: e.target.value })} />
-              <select className="w-full rounded-lg border p-2" value={newVideo.video_type} onChange={(e) => setNewVideo({ ...newVideo, video_type: e.target.value })}>{['paid', 'organic', 'live'].map((t) => <option key={t} value={t}>{t.toUpperCase()}</option>)}</select>
-              <input className="w-full rounded-lg border p-2" placeholder="session/ad/live id (opcional)" value={newVideo.external_id} onChange={(e) => setNewVideo({ ...newVideo, external_id: e.target.value })} />
-              <div className="flex justify-end gap-2">
-                <Button type="button" className="bg-gray-200 text-gray-700" onClick={() => setShowCreate(false)}>Cancelar</Button>
-                <Button type="submit" className="bg-purple-600 text-white">Crear video</Button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <VideoCreateModal
+        isOpen={showCreate}
+        onClose={() => setShowCreate(false)}
+        defaultType={videoType === 'all' ? 'organic' : videoType}
+        campaignId={campaignId}
+        audiences={audiences}
+        onCreated={async () => {
+          await loadVideos();
+        }}
+      />
 
       {showLinkModal && selectedVideo && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
