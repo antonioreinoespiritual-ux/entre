@@ -967,6 +967,65 @@ async function rebuildVideosTableWithNullableContextColumns() {
   }
 }
 
+async function ensureHypothesisVideosVideoForeignKeyTarget() {
+  if (!(await tableExists('hypothesis_videos'))) return;
+
+  const [fkRows] = await pool.query('PRAGMA foreign_key_list(hypothesis_videos)');
+  const videoFk = fkRows.find((row) => String(row.from) === 'video_id');
+  if (!videoFk || String(videoFk.table) === 'videos') return;
+
+  const legacyTableName = `hypothesis_videos_legacy_fk_fix_${Date.now()}`;
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE hypothesis_videos RENAME TO ${normalizeIdentifier(legacyTableName)}`);
+    await pool.query(`CREATE TABLE hypothesis_videos (
+      id TEXT PRIMARY KEY,
+      hypothesis_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      audience_id TEXT,
+      hook_texto TEXT,
+      hook_tipo TEXT,
+      cta_texto TEXT,
+      cta_tipo TEXT,
+      video_type TEXT DEFAULT 'organic',
+      contexto_cualitativo TEXT,
+      FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+      FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(hypothesis_id, video_id)
+    )`);
+
+    const [oldInfo] = await pool.query(`PRAGMA table_info(${normalizeIdentifier(legacyTableName)})`);
+    const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+    const targetColumns = [
+      'id', 'hypothesis_id', 'video_id', 'user_id', 'created_at',
+      'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'video_type', 'contexto_cualitativo',
+    ];
+    const selectExpr = targetColumns.map((col) => {
+      if (oldColumns.has(col)) return normalizeIdentifier(col);
+      if (col === 'created_at') return `CURRENT_TIMESTAMP AS ${normalizeIdentifier(col)}`;
+      if (col === 'video_type') return `'organic' AS ${normalizeIdentifier(col)}`;
+      return `NULL AS ${normalizeIdentifier(col)}`;
+    });
+
+    await pool.query(
+      `INSERT INTO hypothesis_videos (${targetColumns.map((column) => normalizeIdentifier(column)).join(', ')})
+       SELECT ${selectExpr.join(', ')} FROM ${normalizeIdentifier(legacyTableName)}`,
+    );
+
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTableName)}`);
+  } catch (error) {
+    if (!(await tableExists('hypothesis_videos')) && (await tableExists(legacyTableName))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(legacyTableName)} RENAME TO hypothesis_videos`);
+    }
+    throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
 
 async function ensureVideoHierarchyMigration() {
   if (!(await hasColumn('videos', 'hypothesis_id'))) {
@@ -1092,6 +1151,8 @@ async function ensureVideoHierarchyMigration() {
       await pool.query(`ALTER TABLE hypothesis_videos ADD COLUMN ${columnName} ${columnType}`);
     }
   }
+
+  await ensureHypothesisVideosVideoForeignKeyTarget();
   await pool.query(`CREATE TABLE IF NOT EXISTS cloud_edges (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
