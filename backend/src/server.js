@@ -110,7 +110,7 @@ const schemaSql = [
   'CREATE INDEX IF NOT EXISTS idx_hypotheses_user_id ON hypotheses(user_id)',
   `CREATE TABLE IF NOT EXISTS videos (
     id TEXT PRIMARY KEY,
-    hypothesis_id TEXT NOT NULL,
+    hypothesis_id TEXT,
     audience_id TEXT,
     user_id TEXT NOT NULL,
     video_type TEXT NOT NULL DEFAULT 'organic',
@@ -817,9 +817,153 @@ async function hasColumn(tableName, columnName) {
   return rows.some((row) => row.name === columnName);
 }
 
+async function hasNotNullColumn(tableName, columnName) {
+  const [rows] = await pool.query(`PRAGMA table_info(${tableName})`);
+  const column = rows.find((row) => row.name === columnName);
+  return Boolean(column && Number(column.notnull) === 1);
+}
+
+async function rebuildVideosTableWithNullableContextColumns() {
+  await pool.query('BEGIN IMMEDIATE');
+  try {
+    await pool.query('PRAGMA foreign_keys = OFF');
+    const [oldInfo] = await pool.query('PRAGMA table_info(videos)');
+    const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+
+    await pool.query('ALTER TABLE videos RENAME TO videos_legacy_before_nullable_context_fix');
+    await pool.query(`CREATE TABLE videos (
+      id TEXT PRIMARY KEY,
+      hypothesis_id TEXT,
+      audience_id TEXT,
+      user_id TEXT NOT NULL,
+      video_type TEXT NOT NULL DEFAULT 'organic',
+      title TEXT NOT NULL,
+      url TEXT,
+      external_id TEXT,
+      external_id_type TEXT,
+      hook_texto TEXT,
+      hook_tipo TEXT,
+      cta_texto TEXT,
+      cta_tipo TEXT,
+      creative_id TEXT,
+      contexto_cualitativo TEXT,
+      clicks INTEGER DEFAULT 0,
+      views_profile INTEGER DEFAULT 0,
+      initiatest INTEGER DEFAULT 0,
+      initiate_checkouts INTEGER DEFAULT 0,
+      view_content INTEGER DEFAULT 0,
+      formulario_lead INTEGER DEFAULT 0,
+      purchase INTEGER DEFAULT 0,
+      pico_viewers INTEGER DEFAULT 0,
+      viewers_prom REAL DEFAULT 0,
+      duracion_min REAL DEFAULT 0,
+      nuevos_seguidores INTEGER DEFAULT 0,
+      saves INTEGER DEFAULT 0,
+      organic_piece_type TEXT,
+      views_finish_pct REAL DEFAULT 0,
+      retencion_pct REAL DEFAULT 0,
+      tiempo_prom_seg REAL DEFAULT 0,
+      duracion_seg REAL DEFAULT 0,
+      campaign_id_ref TEXT,
+      ad_set_id TEXT,
+      cpc REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      duracion_del_video_seg REAL DEFAULT 0,
+      views INTEGER DEFAULT 0,
+      engagement REAL DEFAULT 0,
+      likes INTEGER DEFAULT 0,
+      shares INTEGER DEFAULT 0,
+      comments INTEGER DEFAULT 0,
+      campaign_id TEXT,
+      project_id TEXT,
+      ad_id TEXT,
+      video_id INTEGER,
+      cloud_folder_id TEXT,
+      metrics_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+      FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )`);
+
+    const targetColumns = [
+      'id', 'hypothesis_id', 'audience_id', 'user_id', 'video_type', 'title', 'url', 'external_id', 'external_id_type',
+      'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views_profile',
+      'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'pico_viewers', 'viewers_prom',
+      'duracion_min', 'nuevos_seguidores', 'saves', 'organic_piece_type', 'views_finish_pct', 'retencion_pct',
+      'tiempo_prom_seg', 'duracion_seg', 'campaign_id_ref', 'ad_set_id', 'cpc', 'ctr', 'duracion_del_video_seg', 'views',
+      'engagement', 'likes', 'shares', 'comments', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
+      'metrics_json', 'created_at', 'updated_at',
+    ];
+
+    const fallbackByColumn = {
+      hypothesis_id: 'NULL',
+      audience_id: 'NULL',
+      video_type: "'organic'",
+      title: "''",
+      clicks: '0',
+      views_profile: '0',
+      initiatest: '0',
+      initiate_checkouts: '0',
+      view_content: '0',
+      formulario_lead: '0',
+      purchase: '0',
+      pico_viewers: '0',
+      viewers_prom: '0',
+      duracion_min: '0',
+      nuevos_seguidores: '0',
+      saves: '0',
+      views_finish_pct: '0',
+      retencion_pct: '0',
+      tiempo_prom_seg: '0',
+      duracion_seg: '0',
+      cpc: '0',
+      ctr: '0',
+      duracion_del_video_seg: '0',
+      views: '0',
+      engagement: '0',
+      likes: '0',
+      shares: '0',
+      comments: '0',
+      created_at: 'CURRENT_TIMESTAMP',
+      updated_at: 'CURRENT_TIMESTAMP',
+    };
+
+    const selectExpressions = targetColumns.map((column) => {
+      if (oldColumns.has(column)) return normalizeIdentifier(column);
+      return `${fallbackByColumn[column] || 'NULL'} AS ${normalizeIdentifier(column)}`;
+    });
+
+    await pool.query(
+      `INSERT INTO videos (${targetColumns.map((column) => normalizeIdentifier(column)).join(', ')})
+       SELECT ${selectExpressions.join(', ')}
+       FROM videos_legacy_before_nullable_context_fix`,
+    );
+
+    await pool.query('DROP TABLE videos_legacy_before_nullable_context_fix');
+    await pool.query('PRAGMA foreign_keys = ON');
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    try {
+      await pool.query('PRAGMA foreign_keys = ON');
+    } catch {
+      // ignore restoration failure
+    }
+    throw error;
+  }
+}
+
 async function ensureVideoHierarchyMigration() {
   if (!(await hasColumn('videos', 'hypothesis_id'))) {
     await pool.query('ALTER TABLE videos ADD COLUMN hypothesis_id TEXT');
+  }
+
+  const videosHypothesisNotNull = await hasNotNullColumn('videos', 'hypothesis_id');
+  const videosAudienceNotNull = await hasNotNullColumn('videos', 'audience_id');
+  if (videosHypothesisNotNull || videosAudienceNotNull) {
+    await rebuildVideosTableWithNullableContextColumns();
   }
 
   if (!(await hasColumn('videos', 'video_type'))) {
