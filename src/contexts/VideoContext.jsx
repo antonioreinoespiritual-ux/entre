@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
-import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/contexts/SupabaseAuthContext';
 
@@ -180,13 +179,14 @@ export const VideoProvider = ({ children }) => {
     if (!currentUser) return false;
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('videos')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', currentUser.id);
-
-      if (error) throw error;
+      const response = await fetch(`${backendBaseUrl()}/api/videos/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${sessionToken()}`,
+        },
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || 'Failed to delete video');
 
       toast({ title: 'Success', description: 'Video deleted successfully' });
 

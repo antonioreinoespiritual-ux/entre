@@ -293,6 +293,43 @@ async function unlinkCloudEdge(userId, parentId, childId) {
   await pool.query('DELETE FROM cloud_edges WHERE user_id = ? AND parent_id = ? AND child_id = ?', [userId, parentId, childId]);
 }
 
+async function deleteCloudNodeTree(userId, nodeId, visited = new Set()) {
+  const key = String(nodeId || '');
+  if (!key || visited.has(key)) return;
+  visited.add(key);
+
+  const node = await getCloudNodeById(nodeId, userId);
+  if (!node) return;
+
+  const [directChildren] = await pool.query('SELECT id FROM cloud_nodes WHERE user_id = ? AND parent_id = ?', [userId, nodeId]);
+  const [linkedChildren] = await pool.query(
+    'SELECT child_id AS id FROM cloud_edges WHERE user_id = ? AND parent_id = ?',
+    [userId, nodeId],
+  );
+  const childIds = [...new Set([...directChildren, ...linkedChildren].map((row) => String(row.id || '')).filter(Boolean))];
+  for (const childId of childIds) {
+    await deleteCloudNodeTree(userId, childId, visited);
+  }
+
+  if (node.type === 'file' && node.storage_path) {
+    try { fs.unlinkSync(node.storage_path); } catch {}
+  }
+
+  await pool.query('DELETE FROM cloud_edges WHERE user_id = ? AND (parent_id = ? OR child_id = ?)', [userId, nodeId, nodeId]);
+  await pool.query('DELETE FROM cloud_nodes WHERE id = ? AND user_id = ?', [nodeId, userId]);
+}
+
+async function purgeVideoCloudArtifacts(userId, videoId) {
+  const [nodes] = await pool.query(
+    `SELECT id FROM cloud_nodes WHERE user_id = ? AND target_type = 'video' AND target_id = ?`,
+    [userId, String(videoId)],
+  );
+  const visited = new Set();
+  for (const node of nodes) {
+    await deleteCloudNodeTree(userId, node.id, visited);
+  }
+}
+
 async function listCloudChildren(userId, parentId) {
   if (parentId == null) {
     const [rows] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id IS NULL ORDER BY name COLLATE NOCASE ASC', [userId]);
@@ -3076,6 +3113,29 @@ const server = http.createServer(async (req, res) => {
       await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, existing.id, user.id]);
       const updated = await fetchOwnedVideoById(existing.id, user.id);
       sendJson(req, res, 200, { video: updated });
+      return;
+    }
+
+    if (videoMatch && req.method === 'DELETE') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const existing = await fetchOwnedVideoById(videoMatch[1], user.id);
+      if (!existing) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+
+      try {
+        await purgeVideoCloudArtifacts(user.id, existing.id);
+        await pool.query('DELETE FROM videos WHERE id = ? AND user_id = ?', [existing.id, user.id]);
+        await syncCloudForUser(user.id);
+        sendJson(req, res, 200, { ok: true, deleted_video_id: existing.id });
+      } catch (error) {
+        sendJson(req, res, 500, { error: error?.message || String(error) });
+      }
       return;
     }
 
