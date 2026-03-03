@@ -16,7 +16,6 @@ const VideoCreateModal = ({
   context = 'hypothesis',
   defaultType = 'organic',
   projectId,
-  campaignId,
   hypothesisId,
   initialVideo = null,
   onCreated,
@@ -24,7 +23,7 @@ const VideoCreateModal = ({
   audiences = [],
 }) => {
   const { toast } = useToast();
-  const { createCampaignVideo, createProjectVideo, updateVideo, updateHypothesisVideoContext } = useVideos();
+  const { createGlobalVideo, updateVideo, updateHypothesisVideoContext, linkVideosToHypothesis } = useVideos();
   const isEditMode = mode === 'edit';
   const isLibraryContext = context === 'library';
   const [activeTab, setActiveTab] = useState(defaultType || 'organic');
@@ -81,12 +80,8 @@ const VideoCreateModal = ({
       toast({ title: 'Error', description: 'projectId es obligatorio para biblioteca', variant: 'destructive' });
       return;
     }
-    if (!isEditMode && !isLibraryContext && !campaignId) {
-      toast({ title: 'Error', description: 'campaignId es obligatorio para hipótesis', variant: 'destructive' });
-      return;
-    }
-    if (!isLibraryContext && !hypothesisId) {
-      toast({ title: 'Error', description: 'hypothesisId es obligatorio para contexto hipótesis', variant: 'destructive' });
+    if (!isLibraryContext && (!hypothesisId || !projectId)) {
+      toast({ title: 'Error', description: 'projectId e hypothesisId son obligatorios para contexto hipótesis', variant: 'destructive' });
       return;
     }
 
@@ -107,19 +102,21 @@ const VideoCreateModal = ({
         if (onSaved) await onSaved(updated);
       } else if (isLibraryContext) {
         const createPayload = Object.fromEntries(Object.entries(payload).filter(([field]) => !libraryForbiddenPayloadFields.has(field)));
-        const created = await createProjectVideo(projectId, createPayload);
+        const created = await createGlobalVideo({ ...createPayload, project_id: projectId });
         toast({ title: 'Video creado', description: `Video ${activeTab.toUpperCase()} creado correctamente.` });
         if (onCreated) await onCreated(created);
       } else {
         const createPayload = {
           title: payload.title,
           external_id: payload.external_id,
-          hypothesis_id: hypothesisId,
-          audience_id: payload.audience_id,
           video_type: activeTab,
+          project_id: projectId,
         };
-        const created = await createCampaignVideo(campaignId, createPayload);
-        toast({ title: 'Video creado', description: `Video ${activeTab.toUpperCase()} creado y vinculado.` });
+        const created = await createGlobalVideo(createPayload);
+        if (!created?.id) throw new Error('No se pudo crear el video global');
+        await linkVideosToHypothesis(hypothesisId, [created.id]);
+        await updateHypothesisVideoContext(hypothesisId, created.id, { audience_id: payload.audience_id || null });
+        toast({ title: 'Video creado', description: `Video ${activeTab.toUpperCase()} creado en biblioteca y vinculado a hipótesis.` });
         if (onCreated) await onCreated(created);
       }
       onClose();

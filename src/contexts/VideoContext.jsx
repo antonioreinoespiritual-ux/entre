@@ -141,6 +141,22 @@ export const VideoProvider = ({ children }) => {
     return Array.isArray(json.data) ? json.data[0] : null;
   }, [currentUser]);
 
+
+  const createGlobalVideo = useCallback(async (payload) => {
+    if (!currentUser) return null;
+    const response = await fetch(`${backendBaseUrl()}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionToken()}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error || 'Failed to create video');
+    return Array.isArray(json.data) ? json.data[0] : null;
+  }, [currentUser]);
+
   const updateVideo = useCallback(async (videoId, payload) => {
     if (!currentUser || !videoId) return null;
     const response = await fetch(`${backendBaseUrl()}/api/videos/${videoId}`, {
@@ -167,7 +183,12 @@ export const VideoProvider = ({ children }) => {
       body: JSON.stringify(payload),
     });
     const json = await response.json();
-    if (!response.ok) throw new Error(json.error || 'Failed to update hypothesis video context');
+    if (!response.ok) {
+      const error = new Error(json.error || 'Failed to update hypothesis video context');
+      if (json.code) error.code = json.code;
+      if (json.fields) error.fields = json.fields;
+      throw error;
+    }
     return json.video || null;
   }, [currentUser]);
 
@@ -272,6 +293,7 @@ export const VideoProvider = ({ children }) => {
     fetchProjectVideos,
     createCampaignVideo,
     createProjectVideo,
+    createGlobalVideo,
     updateVideo,
     updateHypothesisVideoContext,
     fetchProjectHypotheses,

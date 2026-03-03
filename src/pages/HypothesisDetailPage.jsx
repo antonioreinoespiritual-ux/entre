@@ -410,7 +410,7 @@ const HypothesisDetailPage = () => {
         context="hypothesis"
         initialVideo={editingVideo}
         defaultType={activeTab}
-        campaignId={campaignId}
+        projectId={projectId}
         hypothesisId={hypothesisId}
         audiences={audiences}
         onCreated={async () => {

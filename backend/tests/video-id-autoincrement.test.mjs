@@ -734,6 +734,47 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
     const contextPatchJson = await contextPatchRes.json();
     assert.equal(contextPatchJson.video.audience_id, 'aud-b');
     assert.equal(contextPatchJson.video.views, 777);
+
+    const forbiddenContextRes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisB[0].id}/videos/${videoId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        audience_id: 'aud-b2',
+        views: 999,
+      }),
+    });
+    assert.equal(forbiddenContextRes.status, 400);
+    const forbiddenContextJson = await forbiddenContextRes.json();
+    assert.equal(forbiddenContextJson.code, 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS');
+    assert.deepEqual(forbiddenContextJson.fields, ['views']);
+
+    const checkVideoRes = await fetch(`${baseUrl}/api/videos/${videoId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(checkVideoRes.status, 200);
+    const checkVideoJson = await checkVideoRes.json();
+    assert.equal(checkVideoJson.video.views, 777);
+
+    const forbiddenGlobalCreateRes = await fetch(`${baseUrl}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        project_id: project[0].id,
+        title: 'bad payload',
+        video_type: 'paid',
+        audience_id: 'aud-legacy',
+      }),
+    });
+    assert.equal(forbiddenGlobalCreateRes.status, 400);
+    const forbiddenGlobalCreateJson = await forbiddenGlobalCreateRes.json();
+    assert.equal(forbiddenGlobalCreateJson.code, 'VIDEO_GLOBAL_FORBIDDEN_FIELDS');
+    assert.deepEqual(forbiddenGlobalCreateJson.fields, ['audience_id']);
   } finally {
     server.kill('SIGTERM');
   }

@@ -1781,16 +1781,10 @@ async function listVideosLinkedToHypothesis(hypothesisId, userId) {
   const [rows] = await pool.query(
     `SELECT DISTINCT v.*
      FROM videos v
+     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id
      WHERE v.user_id = ?
-       AND (
-         v.hypothesis_id = ?
-         OR EXISTS (
-           SELECT 1
-           FROM hypothesis_videos hv
-           WHERE hv.user_id = ? AND hv.hypothesis_id = ? AND hv.video_id = v.id
-         )
-       )`,
-    [userId, hypothesisId, userId, hypothesisId],
+       AND (hv.hypothesis_id = ? OR v.hypothesis_id = ?)`,
+    [userId, hypothesisId, hypothesisId],
   );
   return rows;
 }
@@ -1807,12 +1801,8 @@ async function countOtherUsageInCampaign(videoId, sourceCampaignId, hypothesisId
            SELECT 1 FROM hypothesis_videos hv
            WHERE hv.user_id = ? AND hv.hypothesis_id = h.id AND hv.video_id = ?
          )
-         OR EXISTS (
-           SELECT 1 FROM videos v
-           WHERE v.user_id = ? AND v.id = ? AND v.hypothesis_id = h.id
-         )
        )`,
-    [userId, sourceCampaignId, hypothesisId, userId, videoId, userId, videoId],
+    [userId, sourceCampaignId, hypothesisId, userId, videoId],
   );
   return Number(rows[0]?.total || 0);
 }
@@ -1839,13 +1829,7 @@ async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
 
   const [rows] = await pool.query(
     `SELECT v.*,
-      COALESCE(hv.video_type, v.video_type) AS video_type,
-      COALESCE(hv.audience_id, v.audience_id) AS audience_id,
-      COALESCE(hv.hook_texto, v.hook_texto) AS hook_texto,
-      COALESCE(hv.hook_tipo, v.hook_tipo) AS hook_tipo,
-      COALESCE(hv.cta_texto, v.cta_texto) AS cta_texto,
-      COALESCE(hv.cta_tipo, v.cta_tipo) AS cta_tipo,
-      COALESCE(hv.contexto_cualitativo, v.contexto_cualitativo) AS contexto_cualitativo,
+      COALESCE(hv.audience_id, NULLIF(v.audience_id, '')) AS audience_id,
       hv.hypothesis_id AS context_hypothesis_id,
       CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN 1 ELSE 0 END AS is_reused_for_hypothesis,
       CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN v.hypothesis_id ELSE NULL END AS source_hypothesis_id,
@@ -1945,6 +1929,18 @@ async function listVideosForCampaign(campaignId, userId, options = {}) {
     used_in_hypotheses: Number(row.used_in_hypotheses || 0),
     linked_hypotheses: row.linked_hypotheses ? String(row.linked_hypotheses).split(',') : [],
   }));
+}
+
+
+const hypothesisContextOnlyFields = new Set(['audience_id']);
+
+const videoGlobalForbiddenFields = new Set(['audience_id', 'audience', 'hypothesis_id', 'campaign_id']);
+
+function compatibilityVideoLegacyColumns(videoPayload = {}) {
+  const legacy = {};
+  if (!('hypothesis_id' in videoPayload)) legacy.hypothesis_id = '';
+  if (!('audience_id' in videoPayload)) legacy.audience_id = '';
+  return legacy;
 }
 
 async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
@@ -2345,7 +2341,7 @@ async function executeCrudQuery(body, currentUserId) {
       await insertRow();
     }
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
-    if (table === 'videos') {
+    if (table === 'videos' && writeRow.hypothesis_id) {
       await pool.query(
         `INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id)
          VALUES (?, ?, ?, ?)`,
@@ -2820,14 +2816,14 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readBody(req);
-      if ('hypothesis_id' in body) {
-        sendJson(req, res, 400, { error: 'hypothesis_id cannot be changed' });
+      const forbidden = Object.keys(body || {}).filter((field) => videoGlobalForbiddenFields.has(field));
+      if (forbidden.length) {
+        sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
         return;
       }
 
-      const contextFields = new Set(['audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'video_type', 'type', 'contexto_cualitativo']);
       const disallowed = new Set(['id', 'user_id', 'created_at', 'video_id', 'campaign_id', 'project_id']);
-      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key) && !contextFields.has(key));
+      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key));
       if (!entries.length) {
         sendJson(req, res, 400, { error: 'No editable fields provided' });
         return;
@@ -2838,6 +2834,31 @@ const server = http.createServer(async (req, res) => {
       await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, existing.id, user.id]);
       const updated = await fetchOwnedVideoById(existing.id, user.id);
       sendJson(req, res, 200, { video: updated });
+      return;
+    }
+
+    if (url.pathname === '/api/videos' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(req);
+      const forbidden = Object.keys(body || {}).filter((field) => videoGlobalForbiddenFields.has(field));
+      if (forbidden.length) {
+        sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
+        return;
+      }
+      if (!body?.project_id) {
+        sendJson(req, res, 400, { error: 'project_id is required' });
+        return;
+      }
+      const payload = {
+        ...body,
+        ...compatibilityVideoLegacyColumns(body),
+      };
+      const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
+      sendJson(req, res, 200, { data: rows });
       return;
     }
 
@@ -2907,23 +2928,15 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readBody(req);
-      if ('audience_id' in (body || {}) || 'hypothesis_id' in (body || {})) {
-        sendJson(req, res, 400, { error: 'audience_id and hypothesis_id are not allowed for global library videos' });
+      const forbidden = Object.keys(body || {}).filter((field) => videoGlobalForbiddenFields.has(field));
+      if (forbidden.length) {
+        sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
         return;
       }
       const payload = {
         ...body,
         project_id: projectId,
-        campaign_id: body?.campaign_id || null,
-        // Keep empty-string compatibility for legacy DBs that still have NOT NULL constraints
-        // on old video-context columns while we migrate toward strict project-global videos.
-        hypothesis_id: '',
-        audience_id: '',
-        hook_texto: null,
-        hook_tipo: null,
-        cta_texto: null,
-        cta_tipo: null,
-        video_type: 'organic',
+        ...compatibilityVideoLegacyColumns(body),
       };
 
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
@@ -2948,23 +2961,12 @@ const server = http.createServer(async (req, res) => {
       const hypothesisId = String(body?.hypothesis_id || '').trim();
 
       if (hypothesisId) {
-        const [hypothesisRows] = await pool.query(
-          'SELECT id FROM hypotheses WHERE id = ? AND campaign_id = ? AND user_id = ? LIMIT 1',
-          [hypothesisId, campaignId, user.id],
-        );
-        if (!hypothesisRows.length) {
-          sendJson(req, res, 400, { error: 'hypothesis_id is invalid for this campaign' });
-          return;
-        }
-      }
-
-      if (hypothesisId) {
-        const metricFields = new Set(['clicks','views','views_profile','initiatest','initiate_checkouts','view_content','formulario_lead','purchase','likes','comments','shares','saves','nuevos_seguidores','cpc','ctr','pico_viewers','viewers_prom','duracion_min','duracion_seg','duracion_del_video_seg','views_finish_pct','retencion_pct','tiempo_prom_seg']);
-        const invalidMetricPayload = Object.keys(body || {}).some((key) => metricFields.has(key));
-        if (invalidMetricPayload) {
-          sendJson(req, res, 400, { error: 'Metrics are not editable from hypothesis context' });
-          return;
-        }
+        sendJson(req, res, 400, {
+          error: 'Legacy hypothesis payload is not supported in /api/campaigns/:id/videos. Use /api/videos + /api/hypotheses/:id/videos/link + PATCH context.',
+          code: 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS',
+          fields: ['hypothesis_id'],
+        });
+        return;
       }
 
       const payload = {
@@ -3127,10 +3129,13 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readBody(req);
       const keys = Object.keys(body || {});
-      const allowed = new Set(['audience_id']);
-      const invalid = keys.filter((key) => !allowed.has(key));
+      const invalid = keys.filter((key) => !hypothesisContextOnlyFields.has(key));
       if (invalid.length) {
-        sendJson(req, res, 400, { error: `Only audience_id can be edited in hypothesis context. Invalid fields: ${invalid.join(',')}` });
+        sendJson(req, res, 400, {
+          error: 'No se permite actualizar métricas ni campos globales desde hipótesis',
+          code: 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS',
+          fields: invalid,
+        });
         return;
       }
       if (!('audience_id' in (body || {}))) {
@@ -3177,12 +3182,11 @@ const server = http.createServer(async (req, res) => {
 
       const placeholders = requestedVideoIds.map(() => '?').join(', ');
       const [candidateVideos] = await pool.query(
-        `SELECT v.id, v.hypothesis_id, v.campaign_id, v.title, v.video_id, c.project_id
+        `SELECT v.id, v.title, v.video_id, COALESCE(v.project_id, c.project_id) AS project_id
          FROM videos v
-         JOIN campaigns c ON c.id = v.campaign_id
-         JOIN projects p ON p.id = c.project_id
-         WHERE v.user_id = ? AND c.user_id = ? AND p.user_id = ? AND v.id IN (${placeholders})`,
-        [user.id, user.id, user.id, ...requestedVideoIds],
+         LEFT JOIN campaigns c ON c.id = v.campaign_id
+         WHERE v.user_id = ? AND v.id IN (${placeholders})`,
+        [user.id, ...requestedVideoIds],
       );
 
       const byId = new Map(candidateVideos.map((row) => [String(row.id), row]));
