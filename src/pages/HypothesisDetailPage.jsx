@@ -22,7 +22,7 @@ const HypothesisDetailPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { hypotheses, fetchHypotheses } = useHypotheses();
-  const { videos, fetchVideos, deleteVideo, fetchCampaignVideos, linkVideosToHypothesis } = useVideos();
+  const { videos, fetchVideos, deleteVideo, linkVideosToHypothesis } = useVideos();
   const { audiences, fetchAudiences } = useAudiences();
 
   const [activeTab, setActiveTab] = useState('paid');
@@ -31,13 +31,6 @@ const HypothesisDetailPage = () => {
   const [audienceVideo, setAudienceVideo] = useState(null);
   const [videoSearchTerm, setVideoSearchTerm] = useState('');
   const [sessionFilter, setSessionFilter] = useState('all');
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [createMode, setCreateMode] = useState('menu');
-  const [libraryVideos, setLibraryVideos] = useState([]);
-  const [selectedReuseVideoIds, setSelectedReuseVideoIds] = useState([]);
-  const [reuseSearchTerm, setReuseSearchTerm] = useState('');
-  const [reuseSessionFilter, setReuseSessionFilter] = useState('all');
-  const [linking, setLinking] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [projectsOptions, setProjectsOptions] = useState([]);
@@ -68,17 +61,7 @@ const HypothesisDetailPage = () => {
     fetchVideos(hypothesisId);
   }, [campaignId, hypothesisId, fetchHypotheses, fetchAudiences, fetchVideos]);
 
-  useEffect(() => {
-    if (!showCreateModal || createMode !== 'reuse') return;
-    (async () => {
-      try {
-        const result = await fetchCampaignVideos(campaignId, { video_type: activeTab });
-        setLibraryVideos(result.data || []);
-      } catch {
-        setLibraryVideos([]);
-      }
-    })();
-  }, [showCreateModal, createMode, campaignId, activeTab, fetchCampaignVideos]);
+
 
   const hypothesis = useMemo(() => hypotheses.find((h) => h.id === hypothesisId), [hypotheses, hypothesisId]);
   const tabVideos = useMemo(() => videos.filter((video) => (video.video_type || 'organic') === activeTab), [videos, activeTab]);
@@ -102,24 +85,7 @@ const HypothesisDetailPage = () => {
     });
   }, [tabVideos, videoSearchTerm, sessionFilter]);
 
-  const reuseAvailableSessions = useMemo(() => {
-    const values = new Set();
-    libraryVideos.forEach((video) => {
-      const sessionValue = video.session_id ?? video.external_id;
-      if (sessionValue != null && String(sessionValue).trim() !== '') values.add(String(sessionValue));
-    });
-    return [...values];
-  }, [libraryVideos]);
 
-  const filteredSourceVideos = useMemo(() => {
-    const q = reuseSearchTerm.trim().toLowerCase();
-    return libraryVideos.filter((video) => {
-      const sessionValue = String(video.session_id ?? video.external_id ?? '').trim();
-      if (reuseSessionFilter !== 'all' && sessionValue !== reuseSessionFilter) return false;
-      if (!q) return true;
-      return [video.title, video.name, video.hook_texto, video.cta_texto].join(' ').toLowerCase().includes(q);
-    });
-  }, [libraryVideos, reuseSearchTerm, reuseSessionFilter]);
 
   const volume = useMemo(() => buildVolumeSnapshot({
     videos,
@@ -129,10 +95,7 @@ const HypothesisDetailPage = () => {
   }), [videos, hypothesis, hypothesisId]);
 
   const openCreateVideoModal = async () => {
-    setShowCreateModal(true);
-    setCreateMode('menu');
-    setLibraryVideos([]);
-    setSelectedReuseVideoIds([]);
+    setShowLibraryModal(true);
   };
 
   const openMoveModal = async () => {
@@ -231,33 +194,7 @@ const HypothesisDetailPage = () => {
     }
   };
 
-  const toggleSelectedReuseVideo = (videoId) => {
-    setSelectedReuseVideoIds((current) => {
-      if (current.includes(videoId)) return current.filter((id) => id !== videoId);
-      if (current.length >= 2) return current;
-      return [...current, videoId];
-    });
-  };
 
-  const onLinkSelectedVideos = async () => {
-    if (!selectedReuseVideoIds.length) return;
-    setLinking(true);
-    try {
-      const result = await linkVideosToHypothesis(hypothesisId, selectedReuseVideoIds);
-      await fetchVideos(hypothesisId);
-      toast({
-        title: 'Videos reutilizados',
-        description: `Vinculados: ${result?.linked?.length || 0}. Ya vinculados: ${result?.already_linked?.length || 0}.`,
-      });
-      setShowCreateModal(false);
-      setCreateMode('menu');
-      setSelectedReuseVideoIds([]);
-    } catch (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-    } finally {
-      setLinking(false);
-    }
-  };
 
   const openEdit = (video) => {
     setAudienceVideo(video);
@@ -348,59 +285,7 @@ const HypothesisDetailPage = () => {
         </div>
       </div>
 
-      {showCreateModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 p-4 flex items-center justify-center">
-          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl p-5">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Crear video ({activeTab.toUpperCase()})</h3>
-              <Button className="bg-gray-200 text-gray-700" onClick={() => setShowCreateModal(false)}>Cerrar</Button>
-            </div>
 
-            {createMode === 'menu' && (
-              <div className="grid md:grid-cols-2 gap-3">
-                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowLibraryModal(true); }}>
-                  <p className="font-semibold">Crear nuevo</p>
-                  <p className="text-sm text-gray-600">Abrir el formulario actual de creación para {activeTab.toUpperCase()}.</p>
-                </button>
-                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => setCreateMode('reuse')}>
-                  <p className="font-semibold">Elegir de biblioteca</p>
-                  <p className="text-sm text-gray-600">Vincula 1 o 2 videos de la biblioteca global de la campaña.</p>
-                </button>
-              </div>
-            )}
-
-            {createMode === 'reuse' && (
-              <div className="space-y-3">
-                <div className="grid md:grid-cols-3 gap-2">
-                  <input className="rounded-lg border p-2" placeholder="Buscar videos..." value={reuseSearchTerm} onChange={(e) => setReuseSearchTerm(e.target.value)} />
-                  <select className="rounded-lg border p-2" value={reuseSessionFilter} onChange={(e) => setReuseSessionFilter(e.target.value)}>
-                    <option value="all">Session ID (todas)</option>
-                    {reuseAvailableSessions.map((value) => <option key={value} value={value}>{value}</option>)}
-                  </select>
-                  <Button className="bg-gray-200 text-gray-700" onClick={() => { setReuseSearchTerm(''); setReuseSessionFilter('all'); }}>Limpiar filtros</Button>
-                </div>
-
-                <div className="max-h-72 overflow-auto space-y-2">
-                  {filteredSourceVideos.map((video) => (
-                    <button key={video.id} type="button" className={`w-full text-left rounded-lg border p-3 ${selectedReuseVideoIds.includes(video.id) ? 'border-purple-400 bg-purple-50' : 'bg-white'}`} onClick={() => toggleSelectedReuseVideo(video.id)}>
-                      <p className="font-medium">{video.title || video.name || '—'} <span className="text-xs text-gray-500">({video.video_type || '—'})</span></p>
-                      <p className="text-sm text-gray-600">Público: {audiences.find((a) => a.id === video.audience_id)?.name || '—'}</p>
-                      <p className="text-sm text-gray-600">Hook: {video.hook_texto || '—'} · CTA: {video.cta_texto || '—'}</p>
-                      <p className="text-sm text-gray-600">Session: {video.session_id ?? video.external_id ?? '—'}</p>
-                    </button>
-                  ))}
-                  {filteredSourceVideos.length === 0 ? <p className="text-sm text-gray-500">No hay videos de biblioteca para este filtro.</p> : null}
-                </div>
-
-                <div className="flex gap-2 justify-end">
-                  <Button className="bg-gray-200 text-gray-700" onClick={() => setCreateMode('menu')}>Volver</Button>
-                  <Button className="bg-purple-600 text-white" disabled={!selectedReuseVideoIds.length || linking} onClick={onLinkSelectedVideos}>Reutilizar seleccionados ({selectedReuseVideoIds.length}/2)</Button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
 
       <LibraryVideoModal
         isOpen={showLibraryModal}

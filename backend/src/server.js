@@ -430,11 +430,11 @@ function videoFolderLabel(video) {
   return `${videoIdentifier || 'video'} - ${videoName || 'sin-nombre'}`.slice(0, 80);
 }
 
-async function ensureCampaignVideosRootFolder(userId, campaignId, campaignName = '') {
+async function ensureCampaignVideosRootFolder(userId, campaignId) {
   const root = await ensureFolder(userId, null, 'Cloud');
   const projectsFolder = await ensureFolder(userId, root.id, 'Proyectos');
   const [campaignRows] = await pool.query(
-    `SELECT c.id, c.name, p.id AS project_id, p.name AS project_name
+    `SELECT c.id, p.id AS project_id, p.name AS project_name
      FROM campaigns c
      JOIN projects p ON p.id = c.project_id
      WHERE c.id = ? AND c.user_id = ? AND p.user_id = ?
@@ -444,9 +444,7 @@ async function ensureCampaignVideosRootFolder(userId, campaignId, campaignName =
   const campaign = campaignRows[0];
   if (!campaign) return null;
   const projectFolder = await ensureFolder(userId, projectsFolder.id, campaign.project_name || `Proyecto ${campaign.project_id}`);
-  const campaignsFolder = await ensureFolder(userId, projectFolder.id, 'Campañas');
-  const campaignFolder = await ensureFolder(userId, campaignsFolder.id, campaignName || campaign.name || `Campaña ${campaign.id}`);
-  return ensureFolder(userId, campaignFolder.id, 'Biblioteca de videos');
+  return ensureFolder(userId, projectFolder.id, 'Videos');
 }
 
 async function ensureHypothesisFolder(userId, campaignId, hypothesisId) {
