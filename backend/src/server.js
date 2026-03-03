@@ -823,14 +823,29 @@ async function hasNotNullColumn(tableName, columnName) {
   return Boolean(column && Number(column.notnull) === 1);
 }
 
-async function rebuildVideosTableWithNullableContextColumns() {
-  await pool.query('BEGIN IMMEDIATE');
-  try {
-    await pool.query('PRAGMA foreign_keys = OFF');
-    const [oldInfo] = await pool.query('PRAGMA table_info(videos)');
-    const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+async function tableExists(tableName) {
+  const [rows] = await pool.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1", [tableName]);
+  return rows.length > 0;
+}
 
-    await pool.query('ALTER TABLE videos RENAME TO videos_legacy_before_nullable_context_fix');
+async function rebuildVideosTableWithNullableContextColumns() {
+  const staleLegacyTable = 'videos_legacy_before_nullable_context_fix';
+  const hasVideosTable = await tableExists('videos');
+  if (!hasVideosTable) return;
+
+  if (await tableExists(staleLegacyTable)) {
+    await pool.query(`DROP TABLE ${normalizeIdentifier(staleLegacyTable)}`);
+  }
+
+  const [oldInfo] = await pool.query('PRAGMA table_info(videos)');
+  const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+  if (!oldColumns.size) return;
+
+  const legacyTableName = `videos_legacy_before_nullable_context_fix_${Date.now()}`;
+
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE videos RENAME TO ${normalizeIdentifier(legacyTableName)}`);
     await pool.query(`CREATE TABLE videos (
       id TEXT PRIMARY KEY,
       hypothesis_id TEXT,
@@ -938,22 +953,20 @@ async function rebuildVideosTableWithNullableContextColumns() {
     await pool.query(
       `INSERT INTO videos (${targetColumns.map((column) => normalizeIdentifier(column)).join(', ')})
        SELECT ${selectExpressions.join(', ')}
-       FROM videos_legacy_before_nullable_context_fix`,
+       FROM ${normalizeIdentifier(legacyTableName)}`,
     );
 
-    await pool.query('DROP TABLE videos_legacy_before_nullable_context_fix');
-    await pool.query('PRAGMA foreign_keys = ON');
-    await pool.query('COMMIT');
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTableName)}`);
   } catch (error) {
-    await pool.query('ROLLBACK');
-    try {
-      await pool.query('PRAGMA foreign_keys = ON');
-    } catch {
-      // ignore restoration failure
+    if (!(await tableExists('videos')) && (await tableExists(legacyTableName))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(legacyTableName)} RENAME TO videos`);
     }
     throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
   }
 }
+
 
 async function ensureVideoHierarchyMigration() {
   if (!(await hasColumn('videos', 'hypothesis_id'))) {
