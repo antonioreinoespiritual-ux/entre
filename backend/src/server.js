@@ -2803,7 +2803,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (videoMatch && req.method === 'PATCH') {
+    if (videoMatch && (req.method === 'PATCH' || req.method === 'PUT')) {
       const user = authFromRequest(req);
       if (!user) {
         sendJson(req, res, 401, { error: 'Unauthorized' });

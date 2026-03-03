@@ -22,10 +22,15 @@ const HypothesisAudienceModal = ({ isOpen, onClose, hypothesisId, videoId, curre
       toast({ title: 'Error', description: 'hypothesisId y videoId son obligatorios', variant: 'destructive' });
       return;
     }
+
     setSaving(true);
     try {
-      await upsertHypothesisAudience({ hypothesis_id: hypothesisId, video_id: videoId, audience_id: audienceId || null });
-      toast({ title: 'Público guardado', description: 'Se actualizó el público del vínculo.' });
+      await upsertHypothesisAudience({
+        hypothesis_id: hypothesisId,
+        video_id: videoId,
+        audience_id: audienceId || null,
+      });
+      toast({ title: 'Público guardado', description: 'Se actualizó el público del vínculo hypothesis_videos.' });
       if (onSaved) await onSaved();
       onClose();
     } catch (error) {
@@ -48,7 +53,9 @@ const HypothesisAudienceModal = ({ isOpen, onClose, hypothesisId, videoId, curre
             <label className="block text-sm font-medium mb-1">Público (audiencia opcional)</label>
             <select className="w-full rounded-lg border p-2" value={audienceId} onChange={(e) => setAudienceId(e.target.value)}>
               <option value="">Sin público</option>
-              {audiences.map((aud) => <option key={aud.id} value={aud.id}>{aud.name}</option>)}
+              {audiences.map((audience) => (
+                <option key={audience.id} value={audience.id}>{audience.name}</option>
+              ))}
             </select>
           </div>
 
