@@ -282,3 +282,118 @@ test('analysis-data endpoint returns per-audience cumplimiento breakdown', async
     server.kill('SIGTERM');
   }
 });
+
+test('create video auto-inserts hypothesis_videos link row', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-link-row-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4108;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `linkrow-${Date.now()}@example.com`, password: 'secret123' }),
+    });
+    assert.equal(signupRes.status, 200);
+    const token = (await signupRes.json())?.session?.access_token;
+    assert.ok(token);
+
+    const project = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P', description: 'D' } });
+    const campaign = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: project[0].id, name: 'C', description: 'D' } });
+    const hypothesis = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, type: 'test', condition: 'views > 0' } });
+
+    const video = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: { hypothesis_id: hypothesis[0].id, video_type: 'organic', title: 'Linked-on-create' },
+    });
+
+    const links = await api(baseUrl, token, {
+      table: 'hypothesis_videos',
+      operation: 'select',
+      filters: [
+        { field: 'hypothesis_id', value: hypothesis[0].id },
+        { field: 'video_id', value: video[0].id },
+      ],
+    });
+    assert.equal(links.length, 1);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});
+
+
+test('hypothesis videos endpoint includes linked videos without duplicates', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-linked-videos-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4109;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `linkedvideos-${Date.now()}@example.com`, password: 'secret123' }),
+    });
+    assert.equal(signupRes.status, 200);
+    const token = (await signupRes.json())?.session?.access_token;
+    assert.ok(token);
+
+    const project = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P', description: 'D' } });
+    const campaign = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: project[0].id, name: 'C', description: 'D' } });
+    const sourceHyp = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, type: 'source', condition: 'views > 0' } });
+    const targetHyp = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, type: 'target', condition: 'views > 0' } });
+
+    const video = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: { hypothesis_id: sourceHyp[0].id, video_type: 'organic', title: 'Reusable', external_id: 'session-777' },
+    });
+
+    const linkRes = await fetch(`${baseUrl}/api/hypotheses/${targetHyp[0].id}/videos/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ video_ids: [video[0].id] }),
+    });
+    assert.equal(linkRes.status, 200);
+
+    const listRes = await fetch(`${baseUrl}/api/hypotheses/${targetHyp[0].id}/videos`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(listRes.status, 200);
+    const listJson = await listRes.json();
+    const ids = (listJson.data || []).map((row) => row.id);
+    assert.equal(ids.filter((id) => id === video[0].id).length, 1);
+    const reused = (listJson.data || []).find((row) => row.id === video[0].id);
+    assert.equal(reused?.is_reused_for_hypothesis, 1);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

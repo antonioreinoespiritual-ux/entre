@@ -19,12 +19,12 @@ const baseVideo = {
   tiempo_prom_seg: 0, campaign_id_ref: '', ad_set_id: '',
 };
 
-const numericFields = ['clicks','views','views_profile','initiatest','initiate_checkouts','view_content','formulario_lead','purchase','likes','comments','shares','saves','nuevos_seguidores','cpc','ctr','pico_viewers','viewers_prom','duracion_min','duracion_seg','duracion_del_video_seg','views_finish_pct','retencion_pct','tiempo_prom_seg'];
+const numericFields = ['clicks', 'views', 'views_profile', 'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'likes', 'comments', 'shares', 'saves', 'nuevos_seguidores', 'cpc', 'ctr', 'pico_viewers', 'viewers_prom', 'duracion_min', 'duracion_seg', 'duracion_del_video_seg', 'views_finish_pct', 'retencion_pct', 'tiempo_prom_seg'];
 
 const fieldMapByType = {
-  live: ['external_id','title','audience_id','hook_texto','hook_tipo','cta_texto','cta_tipo','creative_id','contexto_cualitativo','clicks','views','views_profile','initiatest','pico_viewers','viewers_prom','duracion_min','nuevos_seguidores','likes','comments','shares','saves'],
-  organic: ['external_id','title','audience_id','hook_texto','hook_tipo','cta_texto','cta_tipo','creative_id','contexto_cualitativo','clicks','views','views_profile','nuevos_seguidores','initiatest','initiate_checkouts','view_content','formulario_lead','purchase','organic_piece_type','likes','comments','shares','saves','url','views_finish_pct','retencion_pct','tiempo_prom_seg','duracion_seg'],
-  paid: ['external_id','title','audience_id','hook_texto','hook_tipo','cta_texto','cta_tipo','creative_id','contexto_cualitativo','clicks','views','views_profile','nuevos_seguidores','initiatest','initiate_checkouts','view_content','formulario_lead','purchase','cpc','ctr','duracion_del_video_seg','campaign_id_ref','ad_set_id'],
+  live: ['external_id', 'title', 'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views', 'views_profile', 'initiatest', 'pico_viewers', 'viewers_prom', 'duracion_min', 'nuevos_seguidores', 'likes', 'comments', 'shares', 'saves'],
+  organic: ['external_id', 'title', 'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views', 'views_profile', 'nuevos_seguidores', 'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'organic_piece_type', 'likes', 'comments', 'shares', 'saves', 'url', 'views_finish_pct', 'retencion_pct', 'tiempo_prom_seg', 'duracion_seg'],
+  paid: ['external_id', 'title', 'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views', 'views_profile', 'nuevos_seguidores', 'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'cpc', 'ctr', 'duracion_del_video_seg', 'campaign_id_ref', 'ad_set_id'],
 };
 
 const labels = {
@@ -34,12 +34,15 @@ const labels = {
   campaign_id_ref: 'Campaign ID (ad platform)', ad_set_id: 'Ad set ID',
 };
 
+const backendBaseUrl = () => import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const token = () => JSON.parse(localStorage.getItem('mysql_backend_session') || 'null')?.access_token || '';
+
 const HypothesisDetailPage = () => {
   const { projectId, campaignId, hypothesisId } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
   const { hypotheses, fetchHypotheses } = useHypotheses();
-  const { videos, fetchVideos, createVideo, deleteVideo } = useVideos();
+  const { videos, fetchVideos, createVideo, deleteVideo, fetchProjectHypotheses, linkVideosToHypothesis } = useVideos();
   const { audiences, fetchAudiences } = useAudiences();
 
   const [activeTab, setActiveTab] = useState('paid');
@@ -49,11 +52,19 @@ const HypothesisDetailPage = () => {
   const [editForm, setEditForm] = useState(baseVideo);
   const [videoSearchTerm, setVideoSearchTerm] = useState('');
   const [sessionFilter, setSessionFilter] = useState('all');
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createMode, setCreateMode] = useState('menu');
+  const [sourceHypotheses, setSourceHypotheses] = useState([]);
+  const [sourceHypothesisId, setSourceHypothesisId] = useState('');
+  const [sourceVideos, setSourceVideos] = useState([]);
+  const [selectedReuseVideoIds, setSelectedReuseVideoIds] = useState([]);
+  const [reuseSearchTerm, setReuseSearchTerm] = useState('');
+  const [reuseSessionFilter, setReuseSessionFilter] = useState('all');
+  const [linking, setLinking] = useState(false);
 
   const openInCloud = async () => {
-    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
-    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/cloud/locate?targetType=hypothesis&targetId=${hypothesisId}`, {
-      headers: { Authorization: `Bearer ${session?.access_token || ''}` },
+    const response = await fetch(`${backendBaseUrl()}/api/cloud/locate?targetType=hypothesis&targetId=${hypothesisId}`, {
+      headers: { Authorization: `Bearer ${token()}` },
     });
     if (response.ok) {
       const json = await response.json();
@@ -67,28 +78,58 @@ const HypothesisDetailPage = () => {
     fetchVideos(hypothesisId);
   }, [campaignId, hypothesisId, fetchHypotheses, fetchAudiences, fetchVideos]);
 
+  useEffect(() => {
+    if (!showCreateModal || createMode !== 'reuse' || !sourceHypothesisId) return;
+    (async () => {
+      const response = await fetch(`${backendBaseUrl()}/api/hypotheses/${sourceHypothesisId}/videos?video_type=${activeTab}`, {
+        headers: { Authorization: `Bearer ${token()}` },
+      });
+      const json = await response.json();
+      setSourceVideos(Array.isArray(json.data) ? json.data : []);
+    })();
+  }, [showCreateModal, createMode, sourceHypothesisId, activeTab]);
+
   const hypothesis = useMemo(() => hypotheses.find((h) => h.id === hypothesisId), [hypotheses, hypothesisId]);
   const tabVideos = useMemo(() => videos.filter((video) => (video.video_type || 'organic') === activeTab), [videos, activeTab]);
+
   const availableSessions = useMemo(() => {
     const values = new Set();
     tabVideos.forEach((video) => {
       const sessionValue = video.session_id ?? video.external_id;
-      if (sessionValue !== null && sessionValue !== undefined && String(sessionValue).trim() !== '') {
-        values.add(String(sessionValue));
-      }
+      if (sessionValue != null && String(sessionValue).trim() !== '') values.add(String(sessionValue));
     });
     return [...values];
   }, [tabVideos]);
+
   const filteredTabVideos = useMemo(() => {
     const q = videoSearchTerm.trim().toLowerCase();
     return tabVideos.filter((video) => {
       const sessionValue = String(video.session_id ?? video.external_id ?? '').trim();
       if (sessionFilter !== 'all' && sessionValue !== sessionFilter) return false;
       if (!q) return true;
-      const haystack = [video.title, video.name, video.hook_texto, video.contexto_cualitativo].join(' ').toLowerCase();
-      return haystack.includes(q);
+      return [video.title, video.name, video.hook_texto, video.contexto_cualitativo].join(' ').toLowerCase().includes(q);
     });
   }, [tabVideos, videoSearchTerm, sessionFilter]);
+
+  const reuseAvailableSessions = useMemo(() => {
+    const values = new Set();
+    sourceVideos.forEach((video) => {
+      const sessionValue = video.session_id ?? video.external_id;
+      if (sessionValue != null && String(sessionValue).trim() !== '') values.add(String(sessionValue));
+    });
+    return [...values];
+  }, [sourceVideos]);
+
+  const filteredSourceVideos = useMemo(() => {
+    const q = reuseSearchTerm.trim().toLowerCase();
+    return sourceVideos.filter((video) => {
+      const sessionValue = String(video.session_id ?? video.external_id ?? '').trim();
+      if (reuseSessionFilter !== 'all' && sessionValue !== reuseSessionFilter) return false;
+      if (!q) return true;
+      return [video.title, video.name, video.hook_texto, video.cta_texto].join(' ').toLowerCase().includes(q);
+    });
+  }, [sourceVideos, reuseSearchTerm, reuseSessionFilter]);
+
   const volume = useMemo(() => buildVolumeSnapshot({
     videos,
     minimum: hypothesis?.volumen_minimo || 0,
@@ -104,6 +145,44 @@ const HypothesisDetailPage = () => {
     if (result) {
       setForm(baseVideo);
       setShowForm(false);
+    }
+  };
+
+  const openCreateVideoModal = async () => {
+    const allHypotheses = await fetchProjectHypotheses(projectId);
+    setSourceHypotheses(allHypotheses.filter((item) => item.id !== hypothesisId));
+    setShowCreateModal(true);
+    setCreateMode('menu');
+    setSourceHypothesisId('');
+    setSourceVideos([]);
+    setSelectedReuseVideoIds([]);
+  };
+
+  const toggleSelectedReuseVideo = (videoId) => {
+    setSelectedReuseVideoIds((current) => {
+      if (current.includes(videoId)) return current.filter((id) => id !== videoId);
+      if (current.length >= 2) return current;
+      return [...current, videoId];
+    });
+  };
+
+  const onLinkSelectedVideos = async () => {
+    if (!selectedReuseVideoIds.length) return;
+    setLinking(true);
+    try {
+      const result = await linkVideosToHypothesis(hypothesisId, selectedReuseVideoIds);
+      await fetchVideos(hypothesisId);
+      toast({
+        title: 'Videos reutilizados',
+        description: `Vinculados: ${result?.linked?.length || 0}. Ya vinculados: ${result?.already_linked?.length || 0}.`,
+      });
+      setShowCreateModal(false);
+      setCreateMode('menu');
+      setSelectedReuseVideoIds([]);
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } finally {
+      setLinking(false);
     }
   };
 
@@ -135,18 +214,17 @@ const HypothesisDetailPage = () => {
   const saveEdit = async (event) => {
     event.preventDefault();
     if (!editingVideo) return;
-    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
     const payload = { ...editForm };
     numericFields.forEach((field) => { payload[field] = Number(payload[field] || 0); });
     delete payload.id;
     delete payload.user_id;
     delete payload.hypothesis_id;
     delete payload.video_type;
-    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/videos/${editingVideo.id}`, {
+    const response = await fetch(`${backendBaseUrl()}/api/videos/${editingVideo.id}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${session?.access_token || ''}`,
+        Authorization: `Bearer ${token()}`,
       },
       body: JSON.stringify(payload),
     });
@@ -188,18 +266,13 @@ const HypothesisDetailPage = () => {
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-6">
-          <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-semibold flex items-center gap-2"><Video className="w-5 h-5 text-purple-600" />Videos</h2><div className="flex items-center gap-2"><BulkVideoUpdateModal triggerClassName="bg-slate-900 text-cyan-300 border border-cyan-600 hover:bg-slate-800" onApplied={async () => { await fetchVideos(hypothesisId); }} /><Button className="bg-purple-600 text-white" onClick={() => setShowForm((v) => !v)}><Plus className="w-4 h-4 mr-2" />Crear video {activeTab}</Button></div></div>
+          <div className="flex items-center justify-between mb-4"><h2 className="text-xl font-semibold flex items-center gap-2"><Video className="w-5 h-5 text-purple-600" />Videos</h2><div className="flex items-center gap-2"><BulkVideoUpdateModal triggerClassName="bg-slate-900 text-cyan-300 border border-cyan-600 hover:bg-slate-800" onApplied={async () => { await fetchVideos(hypothesisId); }} /><Button className="bg-purple-600 text-white" onClick={openCreateVideoModal}><Plus className="w-4 h-4 mr-2" />Crear video {activeTab}</Button></div></div>
 
-          <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab===tab? 'bg-purple-600 text-white':'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
+          <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
 
           <div className="mb-4 rounded-xl border bg-gray-50 p-3">
             <div className="grid md:grid-cols-3 gap-2">
-              <input
-                className="rounded-lg border p-2"
-                placeholder="Buscar videos..."
-                value={videoSearchTerm}
-                onChange={(event) => setVideoSearchTerm(event.target.value)}
-              />
+              <input className="rounded-lg border p-2" placeholder="Buscar videos..." value={videoSearchTerm} onChange={(event) => setVideoSearchTerm(event.target.value)} />
               <select className="rounded-lg border p-2" value={sessionFilter} onChange={(event) => setSessionFilter(event.target.value)}>
                 <option value="all">Session ID (todas)</option>
                 {availableSessions.map((sessionValue) => <option key={sessionValue} value={sessionValue}>{sessionValue}</option>)}
@@ -246,6 +319,7 @@ const HypothesisDetailPage = () => {
                   <div>
                     <h3 className="font-semibold">{video.title}</h3>
                     <p className="text-sm text-gray-600">Session #{video.session_id ?? video.external_id ?? '—'}</p>
+                    {video.is_reused_for_hypothesis ? <p className="mt-1 text-xs inline-flex bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Reutilizado de: {video.source_hypothesis_name || '—'}</p> : null}
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
                   <div className="flex gap-2">
@@ -259,6 +333,69 @@ const HypothesisDetailPage = () => {
         </div>
       </div>
 
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 bg-black/50 p-4 flex items-center justify-center">
+          <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl p-5">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-semibold">Crear video ({activeTab.toUpperCase()})</h3>
+              <Button className="bg-gray-200 text-gray-700" onClick={() => setShowCreateModal(false)}>Cerrar</Button>
+            </div>
+
+            {createMode === 'menu' && (
+              <div className="grid md:grid-cols-2 gap-3">
+                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowForm(true); }}>
+                  <p className="font-semibold">Crear nuevo</p>
+                  <p className="text-sm text-gray-600">Abrir el formulario actual de creación para {activeTab.toUpperCase()}.</p>
+                </button>
+                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => setCreateMode('reuse')}>
+                  <p className="font-semibold">Reutilizar existente</p>
+                  <p className="text-sm text-gray-600">Vincula 1 o 2 videos desde otra hipótesis del mismo proyecto.</p>
+                </button>
+              </div>
+            )}
+
+            {createMode === 'reuse' && (
+              <div className="space-y-3">
+                <div>
+                  <label className="text-sm font-medium">Hipótesis origen</label>
+                  <select className="w-full rounded-lg border p-2 mt-1" value={sourceHypothesisId} onChange={(event) => { setSourceHypothesisId(event.target.value); setSelectedReuseVideoIds([]); }}>
+                    <option value="">Seleccionar hipótesis</option>
+                    {sourceHypotheses.map((item) => (
+                      <option key={item.id} value={item.id}>{item.type} · {item.hypothesis_statement || item.condition || item.id}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid md:grid-cols-3 gap-2">
+                  <input className="rounded-lg border p-2" placeholder="Buscar videos..." value={reuseSearchTerm} onChange={(e) => setReuseSearchTerm(e.target.value)} />
+                  <select className="rounded-lg border p-2" value={reuseSessionFilter} onChange={(e) => setReuseSessionFilter(e.target.value)}>
+                    <option value="all">Session ID (todas)</option>
+                    {reuseAvailableSessions.map((value) => <option key={value} value={value}>{value}</option>)}
+                  </select>
+                  <Button className="bg-gray-200 text-gray-700" onClick={() => { setReuseSearchTerm(''); setReuseSessionFilter('all'); }}>Limpiar filtros</Button>
+                </div>
+
+                <div className="max-h-72 overflow-auto space-y-2">
+                  {filteredSourceVideos.map((video) => (
+                    <button key={video.id} type="button" className={`w-full text-left rounded-lg border p-3 ${selectedReuseVideoIds.includes(video.id) ? 'border-purple-400 bg-purple-50' : 'bg-white'}`} onClick={() => toggleSelectedReuseVideo(video.id)}>
+                      <p className="font-medium">{video.title || video.name || '—'} <span className="text-xs text-gray-500">({video.video_type || '—'})</span></p>
+                      <p className="text-sm text-gray-600">Público: {audiences.find((a) => a.id === video.audience_id)?.name || '—'}</p>
+                      <p className="text-sm text-gray-600">Hook: {video.hook_texto || '—'} · CTA: {video.cta_texto || '—'}</p>
+                      <p className="text-sm text-gray-600">Session: {video.session_id ?? video.external_id ?? '—'}</p>
+                    </button>
+                  ))}
+                  {sourceHypothesisId && filteredSourceVideos.length === 0 ? <p className="text-sm text-gray-500">No hay videos para este filtro.</p> : null}
+                </div>
+
+                <div className="flex gap-2 justify-end">
+                  <Button className="bg-gray-200 text-gray-700" onClick={() => setCreateMode('menu')}>Volver</Button>
+                  <Button className="bg-purple-600 text-white" disabled={!selectedReuseVideoIds.length || linking} onClick={onLinkSelectedVideos}>Reutilizar seleccionados ({selectedReuseVideoIds.length}/2)</Button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

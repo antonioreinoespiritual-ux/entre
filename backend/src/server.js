@@ -35,7 +35,7 @@ const corsOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigins.join(','))
   .map((item) => item.trim())
   .filter(Boolean);
 const sessions = new Map();
-const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'users']);
+const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos', 'users']);
 const storageRoot = path.resolve('backend/storage');
 
 const schemaSql = [
@@ -159,6 +159,19 @@ const schemaSql = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)',
   'CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)',
+  `CREATE TABLE IF NOT EXISTS hypothesis_videos (
+    id TEXT PRIMARY KEY,
+    hypothesis_id TEXT NOT NULL,
+    video_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+    FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(hypothesis_id, video_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)',
+  'CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)',
   `CREATE TABLE IF NOT EXISTS hypothesis_analysis_runs (
     id TEXT PRIMARY KEY,
     hypothesis_id TEXT NOT NULL,
@@ -680,7 +693,25 @@ async function ensureVideoHierarchyMigration() {
 
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)');
-  await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_video_id ON videos(video_id)');
+  await pool.query(`CREATE TABLE IF NOT EXISTS hypothesis_videos (
+    id TEXT PRIMARY KEY,
+    hypothesis_id TEXT NOT NULL,
+    video_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+    FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(hypothesis_id, video_id)
+  )`);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)');
+  await pool.query(
+    `INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id)
+     SELECT lower(hex(randomblob(16))), hypothesis_id, id, user_id
+     FROM videos
+     WHERE hypothesis_id IS NOT NULL AND trim(CAST(hypothesis_id AS TEXT)) <> ''`,
+  );
 
 
   const [maxVideoIdRows] = await pool.query(
@@ -1435,9 +1466,10 @@ function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos }
   };
 }
 
-async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
-  const [hypothesisRows] = await pool.query(
-    `SELECT h.*
+
+async function fetchOwnedHypothesisById(hypothesisId, userId) {
+  const [rows] = await pool.query(
+    `SELECT h.*, c.project_id
      FROM hypotheses h
      JOIN campaigns c ON c.id = h.campaign_id
      JOIN projects p ON p.id = c.project_id
@@ -1445,25 +1477,51 @@ async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) 
      LIMIT 1`,
     [hypothesisId, userId, userId, userId],
   );
-  const hypothesis = hypothesisRows[0];
+  return rows[0] || null;
+}
+
+async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
+  const where = [
+    'v.user_id = ?',
+    `(v.hypothesis_id = ? OR EXISTS (
+      SELECT 1 FROM hypothesis_videos hv
+      WHERE hv.hypothesis_id = ? AND hv.video_id = v.id AND hv.user_id = ?
+    ))`,
+  ];
+  const params = [hypothesisId, hypothesisId, hypothesisId, userId, hypothesisId, hypothesisId, userId];
+
+  if (options.video_type) {
+    where.push('v.video_type = ?');
+    params.push(options.video_type);
+  }
+  if (options.date_from) {
+    where.push('v.created_at >= ?');
+    params.push(options.date_from);
+  }
+  if (options.date_to) {
+    where.push('v.created_at <= ?');
+    params.push(options.date_to);
+  }
+
+  const [rows] = await pool.query(
+    `SELECT v.*, 
+      CASE WHEN v.hypothesis_id <> ? THEN 1 ELSE 0 END AS is_reused_for_hypothesis,
+      CASE WHEN v.hypothesis_id <> ? THEN hs.id ELSE NULL END AS source_hypothesis_id,
+      CASE WHEN v.hypothesis_id <> ? THEN COALESCE(hs.hypothesis_statement, hs.condition, hs.type, hs.id) ELSE NULL END AS source_hypothesis_name
+     FROM videos v
+     LEFT JOIN hypotheses hs ON hs.id = v.hypothesis_id
+     WHERE ${where.join(' AND ')}
+     ORDER BY v.created_at DESC`,
+    params,
+  );
+  return rows;
+}
+
+async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
+  const hypothesis = await fetchOwnedHypothesisById(hypothesisId, userId);
   if (!hypothesis) throw new Error('Hypothesis not found');
 
-  const filters = ['hypothesis_id = ?', 'user_id = ?'];
-  const values = [hypothesisId, userId];
-  if (config.video_type) {
-    filters.push('video_type = ?');
-    values.push(config.video_type);
-  }
-  if (config.date_from) {
-    filters.push('created_at >= ?');
-    values.push(config.date_from);
-  }
-  if (config.date_to) {
-    filters.push('created_at <= ?');
-    values.push(config.date_to);
-  }
-
-  const [videos] = await pool.query(`SELECT * FROM videos WHERE ${filters.join(' AND ')} ORDER BY created_at DESC`, values);
+  const videos = await listVideosForHypothesis(hypothesisId, userId, config);
   return { hypothesis, videos };
 }
 
@@ -1825,7 +1883,14 @@ async function executeCrudQuery(body, currentUserId) {
       await insertRow();
     }
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
-    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
+    if (table === 'videos') {
+      await pool.query(
+        `INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id)
+         VALUES (?, ?, ?, ?)`,
+        [uuid(), writeRow.hypothesis_id, writeRow.id, currentUserId],
+      );
+    }
+    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
     return inserted;
@@ -1837,7 +1902,7 @@ async function executeCrudQuery(body, currentUserId) {
     const setSql = fields.map((field) => `${normalizeIdentifier(field)} = ?`).join(', ');
     await pool.query(`UPDATE ${quotedTable} SET ${setSql}${where}`, [...fields.map((field) => payload[field]), ...whereValues]);
     const [updated] = await pool.query(`SELECT * FROM ${quotedTable}${where}`, whereValues);
-    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
+    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
     return updated;
@@ -1845,7 +1910,7 @@ async function executeCrudQuery(body, currentUserId) {
 
   if (operation === 'delete') {
     await pool.query(`DELETE FROM ${quotedTable}${where}`, whereValues);
-    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos'].includes(table)) {
+    if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
     return [];
@@ -2294,6 +2359,125 @@ const server = http.createServer(async (req, res) => {
       await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, existing.id, user.id]);
       const updated = await fetchOwnedVideoById(existing.id, user.id);
       sendJson(req, res, 200, { video: updated });
+      return;
+    }
+
+
+    const projectHypothesesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/hypotheses$/);
+    if (projectHypothesesMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = projectHypothesesMatch[1];
+      const [rows] = await pool.query(
+        `SELECT h.*
+         FROM hypotheses h
+         JOIN campaigns c ON c.id = h.campaign_id
+         JOIN projects p ON p.id = c.project_id
+         WHERE p.id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+         ORDER BY h.created_at DESC`,
+        [projectId, user.id, user.id, user.id],
+      );
+      sendJson(req, res, 200, { data: rows });
+      return;
+    }
+
+    const hypothesisVideosMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/videos$/);
+    if (hypothesisVideosMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const hypothesisId = hypothesisVideosMatch[1];
+      const hypothesis = await fetchOwnedHypothesisById(hypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+      const videoType = url.searchParams.get('video_type') || '';
+      const videos = await listVideosForHypothesis(hypothesisId, user.id, { video_type: videoType });
+      sendJson(req, res, 200, { data: videos });
+      return;
+    }
+
+    const linkVideosMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/videos\/link$/);
+    if (linkVideosMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const targetHypothesisId = linkVideosMatch[1];
+      const targetHypothesis = await fetchOwnedHypothesisById(targetHypothesisId, user.id);
+      if (!targetHypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const requestedVideoIds = Array.isArray(body?.video_ids) ? body.video_ids.map((v) => String(v || '').trim()).filter(Boolean) : [];
+      if (!requestedVideoIds.length) {
+        sendJson(req, res, 400, { error: 'video_ids is required' });
+        return;
+      }
+      if (requestedVideoIds.length > 2) {
+        sendJson(req, res, 400, { error: 'Up to 2 videos can be linked per request' });
+        return;
+      }
+
+      const placeholders = requestedVideoIds.map(() => '?').join(', ');
+      const [candidateVideos] = await pool.query(
+        `SELECT v.id, v.hypothesis_id, c.project_id
+         FROM videos v
+         JOIN hypotheses h ON h.id = v.hypothesis_id
+         JOIN campaigns c ON c.id = h.campaign_id
+         WHERE v.user_id = ? AND h.user_id = ? AND v.id IN (${placeholders})`,
+        [user.id, user.id, ...requestedVideoIds],
+      );
+
+      const byId = new Map(candidateVideos.map((row) => [String(row.id), row]));
+      const linked = [];
+      const alreadyLinked = [];
+      const skipped = [];
+
+      for (const videoId of requestedVideoIds) {
+        const video = byId.get(String(videoId));
+        if (!video) {
+          skipped.push({ video_id: videoId, reason: 'not_found' });
+          continue;
+        }
+        if (String(video.project_id) !== String(targetHypothesis.project_id)) {
+          skipped.push({ video_id: videoId, reason: 'different_project' });
+          continue;
+        }
+
+        const [existingLinks] = await pool.query(
+          'SELECT id FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
+          [targetHypothesisId, video.id, user.id],
+        );
+        if (existingLinks.length) {
+          alreadyLinked.push(video.id);
+          continue;
+        }
+
+        await pool.query(
+          'INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
+          [uuid(), targetHypothesisId, video.id, user.id],
+        );
+        linked.push(video.id);
+      }
+
+      await syncCloudForUser(user.id);
+      sendJson(req, res, 200, {
+        ok: true,
+        linked,
+        already_linked: alreadyLinked,
+        skipped,
+      });
       return;
     }
 

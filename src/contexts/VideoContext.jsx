@@ -1,4 +1,3 @@
-
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
@@ -12,6 +11,12 @@ export const useVideos = () => {
     throw new Error('useVideos must be used within VideoProvider');
   }
   return context;
+};
+
+const backendBaseUrl = () => import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const sessionToken = () => {
+  const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+  return session?.access_token || '';
 };
 
 export const VideoProvider = ({ children }) => {
@@ -50,20 +55,21 @@ export const VideoProvider = ({ children }) => {
     }
   }, [currentUser]);
 
-  const fetchVideos = useCallback(async (hypothesisId) => {
+  const fetchVideos = useCallback(async (hypothesisId, options = {}) => {
     if (!currentUser || !hypothesisId) return [];
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('videos')
-        .select('*')
-        .eq('hypothesis_id', hypothesisId)
-        .eq('user_id', currentUser.id)
-        .order('created_at', { ascending: false });
+      const params = new URLSearchParams();
+      if (options.video_type) params.set('video_type', options.video_type);
+      const suffix = params.toString() ? `?${params.toString()}` : '';
+      const response = await fetch(`${backendBaseUrl()}/api/hypotheses/${hypothesisId}/videos${suffix}`, {
+        headers: { Authorization: `Bearer ${sessionToken()}` },
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || 'Failed to fetch videos');
 
-      if (error) throw error;
-
-      setVideos(data || []);
+      const data = Array.isArray(json.data) ? json.data : [];
+      setVideos(data);
       return data;
     } catch (error) {
       toast({
@@ -76,6 +82,40 @@ export const VideoProvider = ({ children }) => {
       setLoading(false);
     }
   }, [toast, currentUser]);
+
+  const fetchProjectHypotheses = useCallback(async (projectId) => {
+    if (!currentUser || !projectId) return [];
+    try {
+      const response = await fetch(`${backendBaseUrl()}/api/projects/${projectId}/hypotheses`, {
+        headers: { Authorization: `Bearer ${sessionToken()}` },
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || 'Failed to fetch hypotheses');
+      return Array.isArray(json.data) ? json.data : [];
+    } catch (error) {
+      toast({
+        title: 'Error',
+        description: `Failed to fetch project hypotheses: ${error.message}`,
+        variant: 'destructive',
+      });
+      return [];
+    }
+  }, [currentUser, toast]);
+
+  const linkVideosToHypothesis = useCallback(async (hypothesisId, videoIds) => {
+    if (!currentUser || !hypothesisId) return null;
+    const response = await fetch(`${backendBaseUrl()}/api/hypotheses/${hypothesisId}/videos/link`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionToken()}`,
+      },
+      body: JSON.stringify({ video_ids: videoIds }),
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error || 'Failed to link videos');
+    return json;
+  }, [currentUser]);
 
   const createVideo = useCallback(async (videoData) => {
     if (!currentUser) return null;
@@ -148,6 +188,8 @@ export const VideoProvider = ({ children }) => {
     videos,
     loading,
     fetchVideos,
+    fetchProjectHypotheses,
+    linkVideosToHypothesis,
     createVideo,
     deleteVideo,
   };
