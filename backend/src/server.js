@@ -2270,19 +2270,37 @@ async function executeCrudQuery(body, currentUserId) {
         }
       }
 
-      if (!writeRow.campaign_id) {
-        throw new Error('videos.campaign_id is required when hypothesis_id is missing');
+      if (!writeRow.campaign_id && !writeRow.project_id) {
+        throw new Error('videos.campaign_id or videos.project_id is required when hypothesis_id is missing');
       }
 
-      const [campaignRows] = await pool.query(
-        `SELECT id
-         FROM campaigns
-         WHERE id = ? AND user_id = ?
-         LIMIT 1`,
-        [writeRow.campaign_id, currentUserId],
-      );
-      if (!campaignRows.length) {
-        throw new Error('Invalid campaign_id for current user');
+      if (writeRow.campaign_id) {
+        const [campaignRows] = await pool.query(
+          `SELECT id, project_id
+           FROM campaigns
+           WHERE id = ? AND user_id = ?
+           LIMIT 1`,
+          [writeRow.campaign_id, currentUserId],
+        );
+        if (!campaignRows.length) {
+          throw new Error('Invalid campaign_id for current user');
+        }
+        if (!writeRow.project_id) {
+          writeRow.project_id = campaignRows[0].project_id;
+        }
+      }
+
+      if (writeRow.project_id) {
+        const [projectRows] = await pool.query(
+          `SELECT id
+           FROM projects
+           WHERE id = ? AND user_id = ?
+           LIMIT 1`,
+          [writeRow.project_id, currentUserId],
+        );
+        if (!projectRows.length) {
+          throw new Error('Invalid project_id for current user');
+        }
       }
     }
     const insertRow = async () => {
@@ -2897,7 +2915,7 @@ const server = http.createServer(async (req, res) => {
         ...body,
         project_id: projectId,
         campaign_id: body?.campaign_id || null,
-        hypothesis_id: body?.hypothesis_id || '',
+        hypothesis_id: null,
         audience_id: null,
         hook_texto: null,
         hook_tipo: null,
