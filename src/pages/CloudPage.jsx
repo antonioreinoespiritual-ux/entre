@@ -94,7 +94,9 @@ const CloudPage = () => {
 
   const removeNode = async (node) => {
     if (!window.confirm(`Eliminar ${node.name}?`)) return;
-    await fetch(`${apiBaseUrl}/api/cloud/node/${node.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
+    const q = new URLSearchParams();
+    if (currentNodeId) q.set('parentId', currentNodeId);
+    await fetch(`${apiBaseUrl}/api/cloud/node/${node.id}?${q.toString()}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token()}` } });
     await loadTree();
   };
 
@@ -177,6 +179,7 @@ const CloudPage = () => {
                     {node.type === 'file' && <File className="w-4 h-4 text-emerald-300" />}
                     {node.type === 'shortcut' && <LinkIcon className="w-4 h-4 text-purple-300" />}
                     <span>{node.name}</span>
+                    {node.is_linked_from_edge ? <span className="text-[10px] uppercase tracking-wide bg-indigo-600/30 text-indigo-200 px-2 py-0.5 rounded-full">Vinculado</span> : null}
                   </button>
                   <div className="flex gap-2">
                     <Button className="bg-gray-700 text-white" onClick={() => renameNode(node)}>Renombrar</Button>

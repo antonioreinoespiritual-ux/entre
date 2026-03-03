@@ -397,3 +397,87 @@ test('hypothesis videos endpoint includes linked videos without duplicates', asy
     server.kill('SIGTERM');
   }
 });
+
+test('cloud links canonical video folder into hypothesis without physical duplication', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-cloud-link-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4110;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `cloudlink-${Date.now()}@example.com`, password: 'secret123' }),
+    });
+    assert.equal(signupRes.status, 200);
+    const token = (await signupRes.json())?.session?.access_token;
+    assert.ok(token);
+
+    const project = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P', description: 'D' } });
+    const campaign = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: project[0].id, name: 'C', description: 'D' } });
+    const sourceHyp = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, type: 'source', condition: 'views > 0' } });
+    const targetHyp = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: campaign[0].id, type: 'target', condition: 'views > 0' } });
+
+    const video = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: { hypothesis_id: sourceHyp[0].id, video_type: 'organic', title: 'Video Cloud Canon' },
+    });
+
+    const linkRes = await fetch(`${baseUrl}/api/hypotheses/${targetHyp[0].id}/videos/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ video_ids: [video[0].id] }),
+    });
+    assert.equal(linkRes.status, 200);
+
+    const locateVideoRes = await fetch(`${baseUrl}/api/cloud/locate?targetType=video&targetId=${video[0].id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(locateVideoRes.status, 200);
+    const locateVideoJson = await locateVideoRes.json();
+    const canonicalVideoFolderId = locateVideoJson.nodeId;
+    assert.ok(canonicalVideoFolderId);
+
+    const locateHypRes = await fetch(`${baseUrl}/api/cloud/locate?targetType=hypothesis&targetId=${targetHyp[0].id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(locateHypRes.status, 200);
+    const locateHypJson = await locateHypRes.json();
+
+    const hypothesisFolderId = locateHypJson.parentId || locateHypJson.nodeId;
+    const hypChildrenRes = await fetch(`${baseUrl}/api/cloud/tree?parentId=${hypothesisFolderId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(hypChildrenRes.status, 200);
+    const hypChildrenJson = await hypChildrenRes.json();
+    const videosFolder = (hypChildrenJson.data || []).find((node) => node.type === 'folder' && node.name === 'Videos');
+    assert.ok(videosFolder, 'hypothesis should contain Videos folder');
+
+    const linkedVideosRes = await fetch(`${baseUrl}/api/cloud/tree?parentId=${videosFolder.id}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(linkedVideosRes.status, 200);
+    const linkedVideosJson = await linkedVideosRes.json();
+    const linkedVideoFolder = (linkedVideosJson.data || []).find((node) => node.target_type === 'video' && String(node.target_id) === String(video[0].id));
+    assert.ok(linkedVideoFolder, 'linked video folder should appear in hypothesis cloud');
+    assert.equal(linkedVideoFolder.id, canonicalVideoFolderId, 'linked folder should be the canonical node, not a duplicate');
+    assert.equal(Number(linkedVideoFolder.is_linked_from_edge || 0), 1, 'linked folder should be represented as an edge alias');
+  } finally {
+    server.kill('SIGTERM');
+  }
+});
