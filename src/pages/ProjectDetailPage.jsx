@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { motion } from 'framer-motion';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Target, Trash2, Edit, Eye } from 'lucide-react';
+import { ArrowLeft, Plus, Target, Trash2, Edit, Eye, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useProjects } from '@/contexts/ProjectContext';
 import { useCampaigns } from '@/contexts/CampaignContext';
@@ -135,13 +135,18 @@ const ProjectDetailPage = () => {
                 <Target className="w-7 h-7 text-blue-500" />
                 Campaigns ({project.campaigns?.length || 0})
               </h2>
-              <Button
-                onClick={() => setIsCreating(!isCreating)}
-                className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white"
-              >
-                <Plus className="w-5 h-5 mr-2" />
-                {isCreating ? (editingCampaignId ? 'Edit Campaign' : 'Nueva campaña') : 'Add Campaign'}
-              </Button>
+              <div className="flex gap-2">
+                <Button onClick={() => navigate(`/projects/${id}/videos`)} className="bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
+                  <Video className="w-5 h-5 mr-2" />Biblioteca de videos
+                </Button>
+                <Button
+                  onClick={() => setIsCreating(!isCreating)}
+                  className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white"
+                >
+                  <Plus className="w-5 h-5 mr-2" />
+                  {isCreating ? (editingCampaignId ? 'Edit Campaign' : 'Nueva campaña') : 'Add Campaign'}
+                </Button>
+              </div>
             </div>
 
             {isCreating && (

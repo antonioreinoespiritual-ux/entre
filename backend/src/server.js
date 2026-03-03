@@ -853,6 +853,7 @@ async function ensureVideoHierarchyMigration() {
     ['tiempo_prom_seg', 'REAL DEFAULT 0'],
     ['duracion_seg', 'REAL DEFAULT 0'],
     ['campaign_id', 'TEXT'],
+    ['project_id', 'TEXT'],
     ['campaign_id_ref', 'TEXT'],
     ['ad_set_id', 'TEXT'],
     ['ad_id', 'TEXT'],
@@ -905,6 +906,7 @@ async function ensureVideoHierarchyMigration() {
 
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_campaign_id ON videos(campaign_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)');
   await pool.query(`CREATE TABLE IF NOT EXISTS hypothesis_videos (
     id TEXT PRIMARY KEY,
@@ -919,6 +921,20 @@ async function ensureVideoHierarchyMigration() {
   )`);
   await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)');
+  const hypothesisVideoContextColumns = [
+    ['audience_id', 'TEXT'],
+    ['hook_texto', 'TEXT'],
+    ['hook_tipo', 'TEXT'],
+    ['cta_texto', 'TEXT'],
+    ['cta_tipo', 'TEXT'],
+    ['video_type', "TEXT DEFAULT 'organic'"],
+    ['contexto_cualitativo', 'TEXT'],
+  ];
+  for (const [columnName, columnType] of hypothesisVideoContextColumns) {
+    if (!(await hasColumn('hypothesis_videos', columnName))) {
+      await pool.query(`ALTER TABLE hypothesis_videos ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
   await pool.query(`CREATE TABLE IF NOT EXISTS cloud_edges (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -943,6 +959,56 @@ async function ensureVideoHierarchyMigration() {
        SELECT h.campaign_id FROM hypotheses h WHERE h.id = videos.hypothesis_id
      )
      WHERE (campaign_id IS NULL OR trim(CAST(campaign_id AS TEXT)) = '') AND hypothesis_id IS NOT NULL`,
+  );
+  await pool.query(
+    `UPDATE videos
+     SET project_id = (
+       SELECT c.project_id
+       FROM campaigns c
+       WHERE c.id = videos.campaign_id
+     )
+     WHERE (project_id IS NULL OR trim(CAST(project_id AS TEXT)) = '')
+       AND campaign_id IS NOT NULL
+       AND trim(CAST(campaign_id AS TEXT)) <> ''`,
+  );
+
+  await pool.query(
+    `UPDATE videos
+     SET project_id = (
+       SELECT c.project_id
+       FROM hypotheses h
+       JOIN campaigns c ON c.id = h.campaign_id
+       WHERE h.id = videos.hypothesis_id
+     )
+     WHERE (project_id IS NULL OR trim(CAST(project_id AS TEXT)) = '')
+       AND hypothesis_id IS NOT NULL
+       AND trim(CAST(hypothesis_id AS TEXT)) <> ''`,
+  );
+
+  await pool.query(
+    `UPDATE hypothesis_videos
+     SET audience_id = COALESCE(audience_id, (
+           SELECT v.audience_id FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         hook_texto = COALESCE(hook_texto, (
+           SELECT v.hook_texto FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         hook_tipo = COALESCE(hook_tipo, (
+           SELECT v.hook_tipo FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         cta_texto = COALESCE(cta_texto, (
+           SELECT v.cta_texto FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         cta_tipo = COALESCE(cta_tipo, (
+           SELECT v.cta_tipo FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         video_type = COALESCE(video_type, (
+           SELECT v.video_type FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         contexto_cualitativo = COALESCE(contexto_cualitativo, (
+           SELECT v.contexto_cualitativo FROM videos v WHERE v.id = hypothesis_videos.video_id
+         ))
+     WHERE user_id IS NOT NULL`,
   );
 
   const [maxVideoIdRows] = await pool.query(
@@ -1754,12 +1820,9 @@ async function countOtherUsageInCampaign(videoId, sourceCampaignId, hypothesisId
 async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
   const where = [
     'v.user_id = ?',
-    `(v.hypothesis_id = ? OR EXISTS (
-      SELECT 1 FROM hypothesis_videos hv
-      WHERE hv.hypothesis_id = ? AND hv.video_id = v.id AND hv.user_id = ?
-    ))`,
+    '(hv.hypothesis_id = ? OR v.hypothesis_id = ?)',
   ];
-  const params = [hypothesisId, hypothesisId, hypothesisId, userId, hypothesisId, hypothesisId, userId];
+  const params = [userId, hypothesisId, hypothesisId];
 
   if (options.video_type) {
     where.push('v.video_type = ?');
@@ -1775,17 +1838,69 @@ async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
   }
 
   const [rows] = await pool.query(
-    `SELECT v.*, 
-      CASE WHEN v.hypothesis_id <> ? THEN 1 ELSE 0 END AS is_reused_for_hypothesis,
-      CASE WHEN v.hypothesis_id <> ? THEN hs.id ELSE NULL END AS source_hypothesis_id,
-      CASE WHEN v.hypothesis_id <> ? THEN COALESCE(hs.hypothesis_statement, hs.condition, hs.type, hs.id) ELSE NULL END AS source_hypothesis_name
+    `SELECT v.*,
+      COALESCE(hv.video_type, v.video_type) AS video_type,
+      COALESCE(hv.audience_id, v.audience_id) AS audience_id,
+      COALESCE(hv.hook_texto, v.hook_texto) AS hook_texto,
+      COALESCE(hv.hook_tipo, v.hook_tipo) AS hook_tipo,
+      COALESCE(hv.cta_texto, v.cta_texto) AS cta_texto,
+      COALESCE(hv.cta_tipo, v.cta_tipo) AS cta_tipo,
+      COALESCE(hv.contexto_cualitativo, v.contexto_cualitativo) AS contexto_cualitativo,
+      hv.hypothesis_id AS context_hypothesis_id,
+      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN 1 ELSE 0 END AS is_reused_for_hypothesis,
+      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN v.hypothesis_id ELSE NULL END AS source_hypothesis_id,
+      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN COALESCE(hs.hypothesis_statement, hs.condition, hs.type, hs.id) ELSE NULL END AS source_hypothesis_name
      FROM videos v
+     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id AND hv.hypothesis_id = ?
      LEFT JOIN hypotheses hs ON hs.id = v.hypothesis_id
      WHERE ${where.join(' AND ')}
      ORDER BY v.created_at DESC`,
-    params,
+    [hypothesisId, hypothesisId, hypothesisId, hypothesisId, ...params],
   );
   return rows;
+}
+
+async function listVideosForProject(projectId, userId, options = {}) {
+  const where = ['v.user_id = ?', 'v.project_id = ?'];
+  const params = [userId, projectId];
+  if (options.video_type) {
+    where.push('EXISTS (SELECT 1 FROM hypothesis_videos hv WHERE hv.video_id = v.id AND hv.user_id = v.user_id AND hv.video_type = ?)');
+    params.push(options.video_type);
+  }
+  if (options.session_id) {
+    where.push('(v.external_id = ? OR CAST(v.video_id AS TEXT) = ?)');
+    params.push(options.session_id, options.session_id);
+  }
+  if (options.search) {
+    where.push("(lower(coalesce(v.title,'')) LIKE ? OR lower(coalesce(v.external_id,'')) LIKE ?)");
+    const q = `%${String(options.search).toLowerCase()}%`;
+    params.push(q, q);
+  }
+  if (options.usage === 'used') {
+    where.push('EXISTS (SELECT 1 FROM hypothesis_videos hv WHERE hv.video_id = v.id AND hv.user_id = ?)');
+    params.push(userId);
+  } else if (options.usage === 'unused') {
+    where.push('NOT EXISTS (SELECT 1 FROM hypothesis_videos hv WHERE hv.video_id = v.id AND hv.user_id = ?)');
+    params.push(userId);
+  }
+
+  const [rows] = await pool.query(
+    `SELECT v.*,
+      COUNT(DISTINCT hv.hypothesis_id) AS used_in_hypotheses,
+      GROUP_CONCAT(DISTINCT COALESCE(h.hypothesis_statement, h.condition, h.type, h.id)) AS linked_hypotheses
+     FROM videos v
+     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id
+     LEFT JOIN hypotheses h ON h.id = hv.hypothesis_id
+     WHERE ${where.join(' AND ')}
+     GROUP BY v.id
+     ORDER BY v.created_at DESC`,
+    params,
+  );
+  return rows.map((row) => ({
+    ...row,
+    used_in_hypotheses: Number(row.used_in_hypotheses || 0),
+    linked_hypotheses: row.linked_hypotheses ? String(row.linked_hypotheses).split(',') : [],
+  }));
 }
 
 
@@ -1858,12 +1973,9 @@ async function fetchOwnedVideoById(videoId, userId) {
   const [rows] = await pool.query(
     `SELECT v.*
      FROM videos v
-     JOIN hypotheses h ON h.id = v.hypothesis_id
-     JOIN campaigns c ON c.id = h.campaign_id
-     JOIN projects p ON p.id = c.project_id
-     WHERE v.id = ? AND v.user_id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+     WHERE v.id = ? AND v.user_id = ?
      LIMIT 1`,
-    [videoId, userId, userId, userId, userId],
+    [videoId, userId],
   );
   return rows[0] || null;
 }
@@ -2695,12 +2807,9 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if ('type' in body && !('video_type' in body)) {
-        body.video_type = body.type;
-      }
-
-      const disallowed = new Set(['id', 'user_id', 'created_at', 'video_id']);
-      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key) && key !== 'type');
+      const contextFields = new Set(['audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'video_type', 'type', 'contexto_cualitativo']);
+      const disallowed = new Set(['id', 'user_id', 'created_at', 'video_id', 'campaign_id', 'project_id']);
+      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key) && !contextFields.has(key));
       if (!entries.length) {
         sendJson(req, res, 400, { error: 'No editable fields provided' });
         return;
@@ -2732,13 +2841,69 @@ const server = http.createServer(async (req, res) => {
         sendJson(req, res, 404, { error: 'Campaign not found' });
         return;
       }
-      const videos = await listVideosForCampaign(campaignId, user.id, {
+      const videos = await listVideosForProject(campaign.project_id, user.id, {
         video_type: url.searchParams.get('video_type') || '',
         search: url.searchParams.get('search') || '',
         session_id: url.searchParams.get('session_id') || '',
         usage: url.searchParams.get('usage') || '',
       });
       sendJson(req, res, 200, { data: videos, campaign });
+      return;
+    }
+
+    const projectVideosMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/videos$/);
+    if (projectVideosMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = projectVideosMatch[1];
+      const [projectRows] = await pool.query('SELECT id, name FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+      const project = projectRows[0];
+      if (!project) {
+        sendJson(req, res, 404, { error: 'Project not found' });
+        return;
+      }
+      const videos = await listVideosForProject(projectId, user.id, {
+        video_type: url.searchParams.get('video_type') || '',
+        search: url.searchParams.get('search') || '',
+        session_id: url.searchParams.get('session_id') || '',
+        usage: url.searchParams.get('usage') || '',
+      });
+      sendJson(req, res, 200, { data: videos, project });
+      return;
+    }
+
+    if (projectVideosMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = projectVideosMatch[1];
+      const [projectRows] = await pool.query('SELECT id FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+      if (!projectRows.length) {
+        sendJson(req, res, 404, { error: 'Project not found' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const payload = {
+        ...body,
+        project_id: projectId,
+        campaign_id: body?.campaign_id || null,
+        hypothesis_id: body?.hypothesis_id || '',
+        audience_id: null,
+        hook_texto: null,
+        hook_tipo: null,
+        cta_texto: null,
+        cta_tipo: null,
+        video_type: 'organic',
+      };
+
+      const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
+      sendJson(req, res, 200, { data: rows });
       return;
     }
 
@@ -2750,6 +2915,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const campaignId = campaignCreateVideoMatch[1];
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      if (!campaignRows.length) {
+        sendJson(req, res, 404, { error: 'Campaign not found' });
+        return;
+      }
       const body = await readBody(req);
       const hypothesisId = String(body?.hypothesis_id || '').trim();
 
@@ -2767,7 +2937,13 @@ const server = http.createServer(async (req, res) => {
       const payload = {
         ...body,
         campaign_id: campaignId,
+        project_id: campaignRows[0]?.project_id || null,
         hypothesis_id: hypothesisId || null,
+        audience_id: null,
+        hook_texto: null,
+        hook_tipo: null,
+        cta_texto: null,
+        cta_tipo: null,
       };
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
       const created = Array.isArray(rows) ? rows[0] : null;
@@ -2781,6 +2957,20 @@ const server = http.createServer(async (req, res) => {
           'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
           [uuid(), hypothesisId, created.id, user.id],
         );
+        const contextEntries = [
+          ['audience_id', body?.audience_id],
+          ['hook_texto', body?.hook_texto],
+          ['hook_tipo', body?.hook_tipo],
+          ['cta_texto', body?.cta_texto],
+          ['cta_tipo', body?.cta_tipo],
+          ['video_type', body?.video_type],
+          ['contexto_cualitativo', body?.contexto_cualitativo],
+        ].filter(([, value]) => value !== undefined);
+        if (contextEntries.length) {
+          const setSql = contextEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+          const values = contextEntries.map(([, value]) => value);
+          await pool.query(`UPDATE hypothesis_videos SET ${setSql} WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?`, [...values, hypothesisId, created.id, user.id]);
+        }
         await linkVideoFolderIntoHypothesis(user.id, campaignId, hypothesisId, created);
       }
 
@@ -2802,7 +2992,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(req, res, 400, { error: 'hypothesis_ids is required' });
         return;
       }
-      const [videoRows] = await pool.query('SELECT id, campaign_id, title, video_id FROM videos WHERE id = ? AND user_id = ? LIMIT 1', [videoId, user.id]);
+      const [videoRows] = await pool.query('SELECT id, campaign_id, project_id, title, video_id FROM videos WHERE id = ? AND user_id = ? LIMIT 1', [videoId, user.id]);
       const video = videoRows[0];
       if (!video) {
         sendJson(req, res, 404, { error: 'Video not found' });
@@ -2811,7 +3001,10 @@ const server = http.createServer(async (req, res) => {
 
       const placeholders = targetIds.map(() => '?').join(', ');
       const [hypothesisRows] = await pool.query(
-        `SELECT id, campaign_id FROM hypotheses WHERE user_id = ? AND id IN (${placeholders})`,
+        `SELECT h.id, h.campaign_id, c.project_id
+         FROM hypotheses h
+         JOIN campaigns c ON c.id = h.campaign_id
+         WHERE h.user_id = ? AND h.id IN (${placeholders})`,
         [user.id, ...targetIds],
       );
       const byId = new Map(hypothesisRows.map((row) => [String(row.id), row]));
@@ -2825,8 +3018,8 @@ const server = http.createServer(async (req, res) => {
           skipped.push({ hypothesis_id: hypId, reason: 'not_found' });
           continue;
         }
-        if (String(hyp.campaign_id) !== String(video.campaign_id)) {
-          skipped.push({ hypothesis_id: hypId, reason: 'different_campaign' });
+        if (video.project_id && String(hyp.project_id) !== String(video.project_id)) {
+          skipped.push({ hypothesis_id: hypId, reason: 'different_project' });
           continue;
         }
         const [exists] = await pool.query('SELECT id FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1', [hyp.id, video.id, user.id]);
@@ -2881,6 +3074,58 @@ const server = http.createServer(async (req, res) => {
       const videoType = url.searchParams.get('video_type') || '';
       const videos = await listVideosForHypothesis(hypothesisId, user.id, { video_type: videoType });
       sendJson(req, res, 200, { data: videos });
+      return;
+    }
+
+    const hypothesisVideoContextMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/videos\/([^/]+)$/);
+    if (hypothesisVideoContextMatch && req.method === 'PATCH') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const [targetHypothesisId, targetVideoId] = [hypothesisVideoContextMatch[1], hypothesisVideoContextMatch[2]];
+      const hypothesis = await fetchOwnedHypothesisById(targetHypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+      const video = await fetchOwnedVideoById(targetVideoId, user.id);
+      if (!video) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+
+      await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, user.id]);
+
+      const body = await readBody(req);
+      const normalizedType = body?.type && !body?.video_type ? body.type : body?.video_type;
+      const contextPayload = {
+        audience_id: body?.audience_id,
+        hook_texto: body?.hook_texto,
+        hook_tipo: body?.hook_tipo,
+        cta_texto: body?.cta_texto,
+        cta_tipo: body?.cta_tipo,
+        video_type: normalizedType,
+        contexto_cualitativo: body?.contexto_cualitativo,
+      };
+
+      const entries = Object.entries(contextPayload).filter(([, value]) => value !== undefined);
+      if (!entries.length) {
+        sendJson(req, res, 400, { error: 'No context fields provided' });
+        return;
+      }
+
+      const setSql = entries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+      const values = entries.map(([, value]) => value);
+      await pool.query(
+        `UPDATE hypothesis_videos SET ${setSql} WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?`,
+        [...values, targetHypothesisId, targetVideoId, user.id],
+      );
+
+      const videos = await listVideosForHypothesis(targetHypothesisId, user.id, {});
+      const updated = videos.find((row) => String(row.id) === String(targetVideoId)) || null;
+      sendJson(req, res, 200, { video: updated });
       return;
     }
 

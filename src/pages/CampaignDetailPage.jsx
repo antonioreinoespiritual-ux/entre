@@ -58,7 +58,7 @@ const CampaignDetailPage = () => {
 
   const audiencesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/audiences`;
   const hypothesesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/hypotheses`;
-  const videosLibraryPath = `/campaigns/${campaign.id}/videos`;
+  const videosLibraryPath = `/projects/${campaign.project_id}/videos`;
 
   return (
     <>
@@ -104,7 +104,7 @@ const CampaignDetailPage = () => {
                 <Video className="w-6 h-6 text-indigo-600" />
                 <h2 className="text-xl font-semibold">Biblioteca de videos</h2>
               </div>
-              <p className="text-gray-600 mb-4">Gestiona todos los videos de esta campaña y reutilízalos en hipótesis.</p>
+              <p className="text-gray-600 mb-4">Gestiona todos los videos del proyecto y reutilízalos en hipótesis.</p>
               <p className="text-sm text-gray-500 mb-4">Total: {videosCount}</p>
               <Link to={videosLibraryPath} className="text-indigo-600 font-medium hover:underline">Abrir Biblioteca de Videos →</Link>
             </motion.div>

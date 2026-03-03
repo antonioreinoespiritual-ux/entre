@@ -1,10 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { ArrowLeft, Link2, Pencil, Video } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useVideos } from '@/contexts/VideoContext';
-import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useAudiences } from '@/contexts/AudienceContext';
 import { useToast } from '@/components/ui/use-toast';
 import VideoCreateModal from '@/components/VideoCreateModal';
@@ -12,14 +11,15 @@ import VideoCreateModal from '@/components/VideoCreateModal';
 const typeOptions = ['all', 'paid', 'organic', 'live'];
 
 const CampaignVideosLibraryPage = () => {
-  const { campaignId } = useParams();
+  const { projectId: routeProjectId, campaignId } = useParams();
+  const [resolvedProjectId, setResolvedProjectId] = useState(routeProjectId || "");
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { fetchCampaignVideos, linkVideoToHypotheses } = useVideos();
-  const { hypotheses, fetchHypotheses } = useHypotheses();
-  const { audiences, fetchAudiences } = useAudiences();
+  const { fetchProjectVideos, fetchCampaignVideos, fetchProjectHypotheses, linkVideoToHypotheses } = useVideos();
+  const { audiences } = useAudiences();
+  const [hypotheses, setHypotheses] = useState([]);
 
-  const [campaign, setCampaign] = useState(null);
+  const [project, setProject] = useState(null);
   const [videos, setVideos] = useState([]);
   const [search, setSearch] = useState('');
   const [videoType, setVideoType] = useState('all');
@@ -31,28 +31,52 @@ const CampaignVideosLibraryPage = () => {
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [selectedHypothesisIds, setSelectedHypothesisIds] = useState([]);
 
-  const audienceById = useMemo(() => new Map((audiences || []).map((aud) => [aud.id, aud.name || '—'])), [audiences]);
+
+  useEffect(() => {
+    if (routeProjectId) {
+      setResolvedProjectId(routeProjectId);
+      return;
+    }
+    if (!campaignId) return;
+    (async () => {
+      try {
+        const result = await fetchCampaignVideos(campaignId);
+        const pid = result?.campaign?.project_id || '';
+        setResolvedProjectId(pid);
+      } catch {
+        setResolvedProjectId('');
+      }
+    })();
+  }, [routeProjectId, campaignId, fetchCampaignVideos]);
 
   const loadVideos = async () => {
-    const result = await fetchCampaignVideos(campaignId, {
+    if (!resolvedProjectId) return;
+    const result = await fetchProjectVideos(resolvedProjectId, {
       search,
       video_type: videoType === 'all' ? '' : videoType,
       session_id: sessionId,
       usage: usageFilter === 'all' ? '' : usageFilter,
     });
-    setCampaign(result.campaign || null);
+    setProject(result.project || null);
     setVideos(result.data || []);
   };
 
   useEffect(() => {
-    fetchHypotheses(campaignId);
-    fetchAudiences(campaignId);
-  }, [campaignId, fetchHypotheses, fetchAudiences]);
+    if (!resolvedProjectId) return;
+    (async () => {
+      try {
+        const data = await fetchProjectHypotheses(resolvedProjectId);
+        setHypotheses(data || []);
+      } catch {
+        setHypotheses([]);
+      }
+    })();
+  }, [resolvedProjectId, fetchProjectHypotheses]);
 
   useEffect(() => {
     loadVideos();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [campaignId, videoType, usageFilter]);
+  }, [resolvedProjectId, videoType, usageFilter]);
 
   const openLinkModal = (video) => {
     setSelectedVideo(video);
@@ -89,16 +113,16 @@ const CampaignVideosLibraryPage = () => {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-6">
       <Helmet><title>Biblioteca de videos</title></Helmet>
       <div className="max-w-7xl mx-auto">
-        <Button onClick={() => navigate(`/campaigns/${campaignId}`)} className="bg-white border text-gray-700 mb-4"><ArrowLeft className="w-4 h-4 mr-2" />Volver a campaña</Button>
+        <Button onClick={() => navigate(`/projects/${resolvedProjectId}`)} className="bg-white border text-gray-700 mb-4"><ArrowLeft className="w-4 h-4 mr-2" />Volver al proyecto</Button>
 
         <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
           <h1 className="text-2xl font-bold flex items-center gap-2"><Video className="w-6 h-6 text-purple-600" />Biblioteca de videos</h1>
-          <p className="text-gray-600 mt-1">{campaign?.name || 'Campaña'} · Gestiona videos globales y reutilízalos en hipótesis.</p>
+          <p className="text-gray-600 mt-1">{project?.name || 'Proyecto'} · Gestiona videos globales y reutilízalos en hipótesis.</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-xl p-6">
           <div className="grid md:grid-cols-5 gap-2 mb-4">
-            <input className="rounded-lg border p-2" placeholder="Buscar por nombre/hook/cta" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <input className="rounded-lg border p-2" placeholder="Buscar por nombre/session" value={search} onChange={(e) => setSearch(e.target.value)} />
             <select className="rounded-lg border p-2" value={videoType} onChange={(e) => setVideoType(e.target.value)}>{typeOptions.map((value) => <option key={value} value={value}>{value === 'all' ? 'Tipo (todos)' : value.toUpperCase()}</option>)}</select>
             <input className="rounded-lg border p-2" placeholder="Filtrar session_id" value={sessionId} onChange={(e) => setSessionId(e.target.value)} />
             <select className="rounded-lg border p-2" value={usageFilter} onChange={(e) => setUsageFilter(e.target.value)}>
@@ -118,8 +142,7 @@ const CampaignVideosLibraryPage = () => {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-semibold">#{video.video_id ?? '—'} · {video.title || '—'} <span className="text-xs text-gray-500">({video.video_type || '—'})</span></p>
-                    <p className="text-sm text-gray-600">Session: {video.session_id ?? video.external_id ?? '—'} · Público: {audienceById.get(video.audience_id) || '—'}</p>
-                    <p className="text-sm text-gray-600">Hook: {video.hook_texto || '—'} · CTA: {video.cta_texto || '—'}</p>
+                    <p className="text-sm text-gray-600">Session: {video.session_id ?? video.external_id ?? '—'}</p>
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Likes: {video.likes || 0} · Comments: {video.comments || 0}</p>
                     <p className="text-xs text-gray-500 mt-1">Usado en: {video.used_in_hypotheses || 0} hipótesis</p>
                     {Array.isArray(video.linked_hypotheses) && video.linked_hypotheses.length > 0 ? <p className="text-xs text-gray-500">{video.linked_hypotheses.join(' · ')}</p> : null}
@@ -144,8 +167,9 @@ const CampaignVideosLibraryPage = () => {
         }}
         mode={editingVideo ? 'edit' : 'create'}
         initialVideo={editingVideo}
+        scope="global"
         defaultType={videoType === 'all' ? 'organic' : videoType}
-        campaignId={campaignId}
+        projectId={resolvedProjectId}
         audiences={audiences}
         onCreated={async () => {
           await loadVideos();

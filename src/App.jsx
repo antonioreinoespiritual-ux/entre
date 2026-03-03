@@ -61,6 +61,7 @@ const ProtectedApp = () => (
               <Route path="/projects/:id" element={<ProjectDetailPage />} />
               <Route path="/campaigns/:id" element={<CampaignDetailPage />} />
               <Route path="/campaigns/:campaignId/videos" element={<CampaignVideosLibraryPage />} />
+              <Route path="/projects/:projectId/videos" element={<CampaignVideosLibraryPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences" element={<AudienceDashboardPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences/:audienceId" element={<AudienceDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences/ab-test" element={<AudienceAbTestPage />} />

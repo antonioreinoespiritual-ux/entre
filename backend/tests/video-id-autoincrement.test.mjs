@@ -614,7 +614,7 @@ test('move hypothesis rolls back all changes on failure', async () => {
   }
 });
 
-test('patch /api/videos/:id updates editable fields including video_type and keeps links intact', async () => {
+test('patch /api/videos/:id updates global editable fields and keeps hypothesis context unchanged', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-video-update-'));
   const dbPath = path.join(tempDir, 'app.sqlite');
   const port = 4108;
@@ -698,14 +698,12 @@ test('patch /api/videos/:id updates editable fields including video_type and kee
       },
       body: JSON.stringify({
         title: 'Edited title',
-        video_type: 'paid',
         views: 777,
       }),
     });
     assert.equal(patchRes.status, 200);
     const patchJson = await patchRes.json();
     assert.equal(patchJson.video.title, 'Edited title');
-    assert.equal(patchJson.video.video_type, 'paid');
     assert.equal(patchJson.video.views, 777);
 
     const inHypARes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisA[0].id}/videos`, {
@@ -721,6 +719,24 @@ test('patch /api/videos/:id updates editable fields including video_type and kee
     assert.equal(inHypBRes.status, 200);
     const inHypBJson = await inHypBRes.json();
     assert.equal(inHypBJson.data.some((video) => video.id === videoId), true);
+
+    const contextPatchRes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisB[0].id}/videos/${videoId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        audience_id: 'aud-b',
+        hook_texto: 'Hook B',
+        cta_texto: 'CTA B',
+        video_type: 'paid',
+      }),
+    });
+    assert.equal(contextPatchRes.status, 200);
+    const contextPatchJson = await contextPatchRes.json();
+    assert.equal(contextPatchJson.video.video_type, 'paid');
+    assert.equal(contextPatchJson.video.hook_texto, 'Hook B');
   } finally {
     server.kill('SIGTERM');
   }

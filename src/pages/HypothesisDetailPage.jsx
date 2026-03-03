@@ -308,6 +308,8 @@ const HypothesisDetailPage = () => {
 
           <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
 
+          <p className="text-sm text-gray-600 mb-3">En esta vista, público/hook/cta/tipo se editan por hipótesis.</p>
+
           <div className="mb-4 rounded-xl border bg-gray-50 p-3">
             <div className="grid md:grid-cols-3 gap-2">
               <input className="rounded-lg border p-2" placeholder="Buscar videos..." value={videoSearchTerm} onChange={(event) => setVideoSearchTerm(event.target.value)} />
@@ -405,6 +407,7 @@ const HypothesisDetailPage = () => {
           setEditingVideo(null);
         }}
         mode={editingVideo ? 'edit' : 'create'}
+        scope="context"
         initialVideo={editingVideo}
         defaultType={activeTab}
         campaignId={campaignId}
