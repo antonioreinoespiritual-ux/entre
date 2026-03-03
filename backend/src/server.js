@@ -2915,8 +2915,10 @@ const server = http.createServer(async (req, res) => {
         ...body,
         project_id: projectId,
         campaign_id: body?.campaign_id || null,
-        hypothesis_id: null,
-        audience_id: null,
+        // Keep empty-string compatibility for legacy DBs that still have NOT NULL constraints
+        // on old video-context columns while we migrate toward strict project-global videos.
+        hypothesis_id: '',
+        audience_id: '',
         hook_texto: null,
         hook_tipo: null,
         cta_texto: null,
