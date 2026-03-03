@@ -481,3 +481,135 @@ test('cloud links canonical video folder into hypothesis without physical duplic
     server.kill('SIGTERM');
   }
 });
+
+test('move hypothesis endpoint moves hypothesis and compatible videos, skipping shared videos', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-move-hyp-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4111;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `movehyp-${Date.now()}@example.com`, password: 'secret123' }),
+    });
+    assert.equal(signupRes.status, 200);
+    const token = (await signupRes.json())?.session?.access_token;
+    assert.ok(token);
+
+    const p1 = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P1', description: 'D' } });
+    const p2 = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P2', description: 'D' } });
+    const c1 = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: p1[0].id, name: 'C1', description: 'D' } });
+    const c2 = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: p2[0].id, name: 'C2', description: 'D' } });
+
+    const hSource = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: c1[0].id, type: 'source', condition: 'views > 0' } });
+    const hSibling = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: c1[0].id, type: 'sib', condition: 'views > 0' } });
+
+    const vSolo = await api(baseUrl, token, { table: 'videos', operation: 'insert', payload: { hypothesis_id: hSource[0].id, video_type: 'organic', title: 'Solo' } });
+    const vShared = await api(baseUrl, token, { table: 'videos', operation: 'insert', payload: { hypothesis_id: hSource[0].id, video_type: 'organic', title: 'Shared' } });
+
+    const shareRes = await fetch(`${baseUrl}/api/hypotheses/${hSibling[0].id}/videos/link`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ video_ids: [vShared[0].id] }),
+    });
+    assert.equal(shareRes.status, 200);
+
+    const moveRes = await fetch(`${baseUrl}/api/hypotheses/${hSource[0].id}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        target_project_id: p2[0].id,
+        target_campaign_id: c2[0].id,
+        options: { move_videos: true, no_move_shared_videos: true },
+      }),
+    });
+    assert.equal(moveRes.status, 200);
+    const moveJson = await moveRes.json();
+    assert.equal(moveJson.moved_videos_count, 1);
+    assert.equal(moveJson.skipped_shared_videos_count, 1);
+
+    const movedHyp = await api(baseUrl, token, { table: 'hypotheses', operation: 'select', filters: [{ field: 'id', value: hSource[0].id }] });
+    assert.equal(movedHyp[0].campaign_id, c2[0].id);
+
+    const movedVideo = await api(baseUrl, token, { table: 'videos', operation: 'select', filters: [{ field: 'id', value: vSolo[0].id }] });
+    assert.equal(movedVideo[0].campaign_id, c2[0].id);
+
+    const sharedVideo = await api(baseUrl, token, { table: 'videos', operation: 'select', filters: [{ field: 'id', value: vShared[0].id }] });
+    assert.equal(sharedVideo[0].campaign_id, c1[0].id);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});
+
+
+test('move hypothesis rolls back all changes on failure', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-move-hyp-rollback-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4112;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: `movehyprb-${Date.now()}@example.com`, password: 'secret123' }),
+    });
+    assert.equal(signupRes.status, 200);
+    const token = (await signupRes.json())?.session?.access_token;
+    assert.ok(token);
+
+    const p1 = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P1', description: 'D' } });
+    const p2 = await api(baseUrl, token, { table: 'projects', operation: 'insert', payload: { name: 'P2', description: 'D' } });
+    const c1 = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: p1[0].id, name: 'C1', description: 'D' } });
+    const c2 = await api(baseUrl, token, { table: 'campaigns', operation: 'insert', payload: { project_id: p2[0].id, name: 'C2', description: 'D' } });
+    const h1 = await api(baseUrl, token, { table: 'hypotheses', operation: 'insert', payload: { campaign_id: c1[0].id, type: 'h', condition: 'views > 0' } });
+    const v1 = await api(baseUrl, token, { table: 'videos', operation: 'insert', payload: { hypothesis_id: h1[0].id, video_type: 'organic', title: 'v' } });
+
+    const failRes = await fetch(`${baseUrl}/api/hypotheses/${h1[0].id}/move`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        target_project_id: p2[0].id,
+        target_campaign_id: c2[0].id,
+        options: { move_videos: true, force_fail_for_test: true },
+      }),
+    });
+    assert.equal(failRes.status, 500);
+
+    const hypAfter = await api(baseUrl, token, { table: 'hypotheses', operation: 'select', filters: [{ field: 'id', value: h1[0].id }] });
+    assert.equal(hypAfter[0].campaign_id, c1[0].id);
+
+    const videoAfter = await api(baseUrl, token, { table: 'videos', operation: 'select', filters: [{ field: 'id', value: v1[0].id }] });
+    assert.equal(videoAfter[0].campaign_id, c1[0].id);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

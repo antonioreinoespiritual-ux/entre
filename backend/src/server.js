@@ -1711,6 +1711,46 @@ async function fetchOwnedHypothesisById(hypothesisId, userId) {
   return rows[0] || null;
 }
 
+async function listVideosLinkedToHypothesis(hypothesisId, userId) {
+  const [rows] = await pool.query(
+    `SELECT DISTINCT v.*
+     FROM videos v
+     WHERE v.user_id = ?
+       AND (
+         v.hypothesis_id = ?
+         OR EXISTS (
+           SELECT 1
+           FROM hypothesis_videos hv
+           WHERE hv.user_id = ? AND hv.hypothesis_id = ? AND hv.video_id = v.id
+         )
+       )`,
+    [userId, hypothesisId, userId, hypothesisId],
+  );
+  return rows;
+}
+
+async function countOtherUsageInCampaign(videoId, sourceCampaignId, hypothesisId, userId) {
+  const [rows] = await pool.query(
+    `SELECT COUNT(DISTINCT h.id) AS total
+     FROM hypotheses h
+     WHERE h.user_id = ?
+       AND h.campaign_id = ?
+       AND h.id <> ?
+       AND (
+         EXISTS (
+           SELECT 1 FROM hypothesis_videos hv
+           WHERE hv.user_id = ? AND hv.hypothesis_id = h.id AND hv.video_id = ?
+         )
+         OR EXISTS (
+           SELECT 1 FROM videos v
+           WHERE v.user_id = ? AND v.id = ? AND v.hypothesis_id = h.id
+         )
+       )`,
+    [userId, sourceCampaignId, hypothesisId, userId, videoId, userId, videoId],
+  );
+  return Number(rows[0]?.total || 0);
+}
+
 async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
   const where = [
     'v.user_id = ?',
@@ -2963,6 +3003,123 @@ const server = http.createServer(async (req, res) => {
       }
 
       sendJson(req, res, 200, { ok: true, unlinked, skipped });
+      return;
+    }
+
+    const moveHypothesisMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/move$/);
+    if (moveHypothesisMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+
+      const hypothesisId = moveHypothesisMatch[1];
+      const hypothesis = await fetchOwnedHypothesisById(hypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const targetProjectId = String(body?.target_project_id || '').trim();
+      const targetCampaignId = String(body?.target_campaign_id || '').trim();
+      const options = {
+        move_videos: body?.options?.move_videos !== false,
+        no_move_shared_videos: body?.options?.no_move_shared_videos !== false,
+      };
+      const dryRun = Boolean(body?.dry_run);
+
+      if (!targetProjectId || !targetCampaignId) {
+        sendJson(req, res, 400, { error: 'target_project_id and target_campaign_id are required' });
+        return;
+      }
+
+      const [targetCampaignRows] = await pool.query(
+        `SELECT c.id, c.project_id
+         FROM campaigns c
+         JOIN projects p ON p.id = c.project_id
+         WHERE c.id = ? AND c.project_id = ? AND c.user_id = ? AND p.user_id = ?
+         LIMIT 1`,
+        [targetCampaignId, targetProjectId, user.id, user.id],
+      );
+      const targetCampaign = targetCampaignRows[0];
+      if (!targetCampaign) {
+        sendJson(req, res, 404, { error: 'Target campaign/project not found' });
+        return;
+      }
+
+      const sourceCampaignId = String(hypothesis.campaign_id);
+      const sourceProjectId = String(hypothesis.project_id);
+      const linkedVideos = await listVideosLinkedToHypothesis(hypothesisId, user.id);
+
+      const videosToMove = [];
+      const sharedVideos = [];
+      for (const video of linkedVideos) {
+        if (!options.move_videos) continue;
+        if (String(video.campaign_id || '') !== sourceCampaignId) continue;
+        const otherUsage = await countOtherUsageInCampaign(video.id, sourceCampaignId, hypothesisId, user.id);
+        if (otherUsage > 0 && options.no_move_shared_videos) {
+          sharedVideos.push({ video_id: video.id, title: video.title || null, shared_usage_count: otherUsage });
+          continue;
+        }
+        videosToMove.push(video);
+      }
+
+      const summary = {
+        source_project_id: sourceProjectId,
+        source_campaign_id: sourceCampaignId,
+        target_project_id: targetProjectId,
+        target_campaign_id: targetCampaignId,
+        linked_videos_count: linkedVideos.length,
+        move_videos: options.move_videos,
+        no_move_shared_videos: options.no_move_shared_videos,
+        will_move_videos_count: videosToMove.length,
+        skipped_shared_videos_count: sharedVideos.length,
+        shared_videos: sharedVideos,
+      };
+
+      if (dryRun) {
+        sendJson(req, res, 200, { ok: true, dry_run: true, moved_hypothesis_id: hypothesisId, ...summary });
+        return;
+      }
+
+      await pool.query('BEGIN IMMEDIATE');
+      try {
+        await pool.query(
+          'UPDATE hypotheses SET campaign_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+          [targetCampaignId, hypothesisId, user.id],
+        );
+
+        for (const video of videosToMove) {
+          await pool.query(
+            'UPDATE videos SET campaign_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+            [targetCampaignId, video.id, user.id],
+          );
+        }
+
+        if (body?.options?.force_fail_for_test) {
+          throw new Error('forced_failure_for_test');
+        }
+
+        await pool.query('COMMIT');
+      } catch (error) {
+        await pool.query('ROLLBACK');
+        throw error;
+      }
+
+      for (const video of videosToMove) {
+        await ensureVideoCanonicalFolder(user.id, targetCampaignId, { ...video, campaign_id: targetCampaignId });
+      }
+      await syncCloudForUser(user.id);
+
+      sendJson(req, res, 200, {
+        ok: true,
+        moved_hypothesis_id: hypothesisId,
+        moved_videos_count: videosToMove.length,
+        skipped_shared_videos_count: sharedVideos.length,
+        ...summary,
+      });
       return;
     }
 

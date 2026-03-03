@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Activity, ArrowLeft, Plus, Trash2, Video } from 'lucide-react';
+import { Activity, ArrowLeft, MoreHorizontal, Plus, Trash2, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
@@ -38,6 +38,19 @@ const HypothesisDetailPage = () => {
   const [reuseSearchTerm, setReuseSearchTerm] = useState('');
   const [reuseSessionFilter, setReuseSessionFilter] = useState('all');
   const [linking, setLinking] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const [showMoveModal, setShowMoveModal] = useState(false);
+  const [projectsOptions, setProjectsOptions] = useState([]);
+  const [campaignOptions, setCampaignOptions] = useState([]);
+  const [moveForm, setMoveForm] = useState({
+    target_project_id: projectId,
+    target_campaign_id: campaignId,
+    move_videos: true,
+    no_move_shared_videos: true,
+  });
+  const [movePreview, setMovePreview] = useState(null);
+  const [movePreviewLoading, setMovePreviewLoading] = useState(false);
+  const [moveSubmitting, setMoveSubmitting] = useState(false);
 
   const openInCloud = async () => {
     const response = await fetch(`${backendBaseUrl()}/api/cloud/locate?targetType=hypothesis&targetId=${hypothesisId}`, {
@@ -120,6 +133,102 @@ const HypothesisDetailPage = () => {
     setCreateMode('menu');
     setLibraryVideos([]);
     setSelectedReuseVideoIds([]);
+  };
+
+  const openMoveModal = async () => {
+    setShowMoveModal(true);
+    setShowActionsMenu(false);
+    setMovePreview(null);
+    try {
+      const projectsRes = await fetch(`${backendBaseUrl()}/api/db/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({ table: 'projects', operation: 'select' }),
+      });
+      const projectsJson = await projectsRes.json();
+      const projects = projectsRes.ok ? (projectsJson.data || []) : [];
+      setProjectsOptions(projects);
+
+      const campaignsRes = await fetch(`${backendBaseUrl()}/api/db/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({ table: 'campaigns', operation: 'select', filters: [{ field: 'project_id', value: moveForm.target_project_id }] }),
+      });
+      const campaignsJson = await campaignsRes.json();
+      setCampaignOptions(campaignsRes.ok ? (campaignsJson.data || []) : []);
+    } catch {
+      setProjectsOptions([]);
+      setCampaignOptions([]);
+    }
+  };
+
+  const updateMoveProject = async (nextProjectId) => {
+    setMoveForm((current) => ({ ...current, target_project_id: nextProjectId, target_campaign_id: '' }));
+    try {
+      const campaignsRes = await fetch(`${backendBaseUrl()}/api/db/query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({ table: 'campaigns', operation: 'select', filters: [{ field: 'project_id', value: nextProjectId }] }),
+      });
+      const campaignsJson = await campaignsRes.json();
+      setCampaignOptions(campaignsRes.ok ? (campaignsJson.data || []) : []);
+    } catch {
+      setCampaignOptions([]);
+    }
+  };
+
+  const loadMovePreview = async () => {
+    if (!moveForm.target_project_id || !moveForm.target_campaign_id) return;
+    setMovePreviewLoading(true);
+    try {
+      const response = await fetch(`${backendBaseUrl()}/api/hypotheses/${hypothesisId}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({
+          target_project_id: moveForm.target_project_id,
+          target_campaign_id: moveForm.target_campaign_id,
+          dry_run: true,
+          options: {
+            move_videos: moveForm.move_videos,
+            no_move_shared_videos: moveForm.no_move_shared_videos,
+          },
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || 'No se pudo previsualizar el movimiento');
+      setMovePreview(json);
+    } catch (error) {
+      setMovePreview({ error: error.message });
+    } finally {
+      setMovePreviewLoading(false);
+    }
+  };
+
+  const submitMove = async () => {
+    setMoveSubmitting(true);
+    try {
+      const response = await fetch(`${backendBaseUrl()}/api/hypotheses/${hypothesisId}/move`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` },
+        body: JSON.stringify({
+          target_project_id: moveForm.target_project_id,
+          target_campaign_id: moveForm.target_campaign_id,
+          options: {
+            move_videos: moveForm.move_videos,
+            no_move_shared_videos: moveForm.no_move_shared_videos,
+          },
+        }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || 'No se pudo mover la hipótesis');
+      toast({ title: 'Hipótesis movida', description: `Videos movidos: ${json.moved_videos_count || 0}. Compartidos omitidos: ${json.skipped_shared_videos_count || 0}.` });
+      setShowMoveModal(false);
+      navigate(`/projects/${moveForm.target_project_id}/campaigns/${moveForm.target_campaign_id}/hypotheses/${hypothesisId}`);
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    } finally {
+      setMoveSubmitting(false);
+    }
   };
 
   const toggleSelectedReuseVideo = (videoId) => {
@@ -209,14 +318,24 @@ const HypothesisDetailPage = () => {
         <div className="bg-white rounded-2xl shadow-xl p-6 mb-6">
           <div className="flex items-center justify-between gap-3">
             <h1 className="text-2xl font-bold">Hypothesis Detail Dashboard</h1>
-            <Button
-              onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesisId}/analysis`)}
-              className="bg-indigo-600 hover:bg-indigo-700 text-white"
-            >
-              <Activity className="w-4 h-4 mr-2" />
-              Análisis avanzado
-            </Button>
-            <Button onClick={openInCloud} className="bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/hypotheses/${hypothesisId}/analysis`)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                <Activity className="w-4 h-4 mr-2" />
+                Análisis avanzado
+              </Button>
+              <Button onClick={openInCloud} className="bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
+              <div className="relative">
+                <Button className="bg-gray-200 text-gray-700" onClick={() => setShowActionsMenu((v) => !v)}><MoreHorizontal className="w-4 h-4" /></Button>
+                {showActionsMenu ? (
+                  <div className="absolute right-0 mt-1 w-44 bg-white border rounded-lg shadow-lg z-20 p-1">
+                    <button className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 rounded" onClick={openMoveModal}>Mover hipótesis</button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </div>
           <p className="text-sm text-gray-600 mt-2">Tipo: {hypothesis.type} · Canal: {hypothesis.canal_principal || '-'}</p>
           <p className="mt-2">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
@@ -350,6 +469,62 @@ const HypothesisDetailPage = () => {
           await fetchVideos(hypothesisId);
         }}
       />
+
+      {showMoveModal ? (
+        <div className="fixed inset-0 z-50 bg-black/50 p-4 flex items-center justify-center">
+          <div className="w-full max-w-2xl bg-white rounded-2xl shadow-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold">Mover hipótesis</h3>
+              <Button className="bg-gray-200 text-gray-700" onClick={() => setShowMoveModal(false)}>Cerrar</Button>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-3 mb-3">
+              <div>
+                <label className="block text-sm font-medium mb-1">Proyecto destino</label>
+                <select className="w-full rounded-lg border p-2" value={moveForm.target_project_id} onChange={(e) => updateMoveProject(e.target.value)}>
+                  <option value="">Selecciona proyecto</option>
+                  {projectsOptions.map((project) => <option key={project.id} value={project.id}>{project.name || project.id}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Campaña destino</label>
+                <select className="w-full rounded-lg border p-2" value={moveForm.target_campaign_id} onChange={(e) => setMoveForm((current) => ({ ...current, target_campaign_id: e.target.value }))}>
+                  <option value="">Selecciona campaña</option>
+                  {campaignOptions.map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name || campaign.id}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="rounded-lg border p-3 mb-3 space-y-2 bg-gray-50">
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={moveForm.move_videos} onChange={(e) => setMoveForm((current) => ({ ...current, move_videos: e.target.checked }))} />Mover también videos compatibles</label>
+              <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={moveForm.no_move_shared_videos} onChange={(e) => setMoveForm((current) => ({ ...current, no_move_shared_videos: e.target.checked }))} />No mover videos compartidos</label>
+              <p className="text-xs text-gray-600">Se moverá la hipótesis y sus vínculos. Los videos compartidos no se moverán automáticamente si esta opción está activa.</p>
+            </div>
+
+            <div className="mb-3">
+              <Button className="bg-gray-200 text-gray-700" onClick={loadMovePreview} disabled={movePreviewLoading || !moveForm.target_project_id || !moveForm.target_campaign_id}>{movePreviewLoading ? 'Analizando...' : 'Analizar impacto'}</Button>
+            </div>
+
+            {movePreview ? (
+              <div className="rounded-lg border p-3 mb-3 text-sm bg-white">
+                {movePreview.error ? <p className="text-red-600">{movePreview.error}</p> : (
+                  <>
+                    <p>Videos vinculados: <strong>{movePreview.linked_videos_count || 0}</strong></p>
+                    <p>Videos que se moverán: <strong>{movePreview.will_move_videos_count || 0}</strong></p>
+                    <p>Videos compartidos omitidos: <strong>{movePreview.skipped_shared_videos_count || 0}</strong></p>
+                    <p className="text-xs text-gray-600 mt-1">Cloud: se moverá la carpeta de la hipótesis al destino y se mantendrán/actualizarán links de videos según reglas.</p>
+                  </>
+                )}
+              </div>
+            ) : null}
+
+            <div className="flex justify-end gap-2">
+              <Button className="bg-gray-200 text-gray-700" onClick={() => setShowMoveModal(false)}>Cancelar</Button>
+              <Button className="bg-indigo-600 text-white" disabled={moveSubmitting || !moveForm.target_project_id || !moveForm.target_campaign_id} onClick={submitMove}>{moveSubmitting ? 'Moviendo...' : 'Mover'}</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 };
