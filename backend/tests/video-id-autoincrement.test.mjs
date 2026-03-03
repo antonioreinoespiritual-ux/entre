@@ -737,6 +737,7 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
     const contextPatchJson = await contextPatchRes.json();
     assert.equal(contextPatchJson.video.video_type, 'paid');
     assert.equal(contextPatchJson.video.hook_texto, 'Hook B');
+    assert.equal(contextPatchJson.video.views, 777);
   } finally {
     server.kill('SIGTERM');
   }

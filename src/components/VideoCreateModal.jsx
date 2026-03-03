@@ -6,17 +6,17 @@ import { baseVideo, fieldMapByType, labels, numericFields } from '@/components/v
 
 const tabs = ['paid', 'organic', 'live'];
 
-const contextEditableByType = {
-  paid: ['audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'contexto_cualitativo'],
-  organic: ['audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'contexto_cualitativo'],
-  live: ['audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'contexto_cualitativo'],
-};
+
+const contextFields = new Set(['audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'contexto_cualitativo', 'video_type']);
 
 const VideoCreateModal = ({
   isOpen,
   onClose,
   mode = 'create',
   scope = 'context',
+  allowMetricsEdit,
+  allowGlobalEdit,
+  allowContextEdit,
   defaultType = 'organic',
   projectId,
   campaignId,
@@ -30,6 +30,9 @@ const VideoCreateModal = ({
   const { createCampaignVideo, createProjectVideo, updateVideo, updateHypothesisVideoContext } = useVideos();
   const isEditMode = mode === 'edit';
   const isGlobalScope = scope === 'global';
+  const canEditMetrics = allowMetricsEdit ?? isGlobalScope;
+  const canEditGlobal = allowGlobalEdit ?? (isGlobalScope ? true : !isEditMode);
+  const canEditContext = allowContextEdit ?? !isGlobalScope;
   const [activeTab, setActiveTab] = useState(defaultType || 'organic');
   const [form, setForm] = useState(baseVideo);
   const [submitting, setSubmitting] = useState(false);
@@ -47,10 +50,17 @@ const VideoCreateModal = ({
 
   if (!isOpen) return null;
 
+  const isFieldEditable = (field) => {
+    if (numericFields.includes(field)) return canEditMetrics;
+    if (contextFields.has(field)) return canEditContext;
+    return canEditGlobal;
+  };
+
   const renderInput = (field) => {
+    const editable = isFieldEditable(field);
     if (field === 'audience_id') {
       return (
-        <select className="w-full rounded-lg border p-2" value={form.audience_id} onChange={(e) => setForm((current) => ({ ...current, audience_id: e.target.value }))}>
+        <select className="w-full rounded-lg border p-2" disabled={!editable} value={form.audience_id} onChange={(e) => setForm((current) => ({ ...current, audience_id: e.target.value }))}>
           <option value="">Sin público</option>
           {audiences.map((aud) => <option key={aud.id} value={aud.id}>{aud.name}</option>)}
         </select>
@@ -58,11 +68,11 @@ const VideoCreateModal = ({
     }
 
     if (field === 'contexto_cualitativo') {
-      return <textarea className="w-full rounded-lg border p-2" rows="2" value={form[field]} onChange={(e) => setForm((current) => ({ ...current, [field]: e.target.value }))} />;
+      return <textarea className="w-full rounded-lg border p-2" rows="2" disabled={!editable} value={form[field]} onChange={(e) => setForm((current) => ({ ...current, [field]: e.target.value }))} />;
     }
 
     const isNumeric = numericFields.includes(field);
-    return <input type={isNumeric ? 'number' : 'text'} className="w-full rounded-lg border p-2" required={field === 'title'} value={form[field]} onChange={(e) => setForm((current) => ({ ...current, [field]: e.target.value }))} />;
+    return <input type={isNumeric ? 'number' : 'text'} className="w-full rounded-lg border p-2" required={field === 'title'} disabled={!editable} value={form[field]} onChange={(e) => setForm((current) => ({ ...current, [field]: e.target.value }))} />;
   };
 
   const onSubmit = async (event) => {
@@ -92,7 +102,7 @@ const VideoCreateModal = ({
       if (isEditMode) {
         let updated = null;
         if (isGlobalScope) {
-          const updatePayload = { title: payload.title, external_id: payload.external_id, url: payload.url, creative_id: payload.creative_id };
+          const updatePayload = Object.fromEntries(Object.entries(payload).filter(([field]) => isFieldEditable(field) && !contextFields.has(field)));
           updated = await updateVideo(initialVideo.id, updatePayload);
         } else {
           const contextPayload = {
@@ -101,7 +111,7 @@ const VideoCreateModal = ({
             hook_tipo: payload.hook_tipo,
             cta_texto: payload.cta_texto,
             cta_tipo: payload.cta_tipo,
-            video_type: activeTab,
+            ...(canEditContext ? { video_type: activeTab } : {}),
             contexto_cualitativo: payload.contexto_cualitativo,
           };
           updated = await updateHypothesisVideoContext(hypothesisId, initialVideo.id, contextPayload);
@@ -110,13 +120,8 @@ const VideoCreateModal = ({
         if (onSaved) await onSaved(updated);
       } else {
         const created = isGlobalScope
-          ? await createProjectVideo(projectId, {
-            title: payload.title,
-            external_id: payload.external_id,
-            url: payload.url,
-            creative_id: payload.creative_id,
-          })
-          : await createCampaignVideo(campaignId, payload);
+          ? await createProjectVideo(projectId, Object.fromEntries(Object.entries(payload).filter(([field]) => isFieldEditable(field) && !contextFields.has(field))))
+          : await createCampaignVideo(campaignId, Object.fromEntries(Object.entries(payload).filter(([field]) => isFieldEditable(field) || contextFields.has(field))));
         toast({ title: 'Video creado', description: `Video ${activeTab.toUpperCase()} creado correctamente.` });
         if (onCreated) await onCreated(created);
       }
@@ -136,22 +141,23 @@ const VideoCreateModal = ({
           <Button className="bg-gray-200 text-gray-700" onClick={onClose}>Cerrar</Button>
         </div>
 
-        {!isGlobalScope ? <div className="flex gap-2 mb-4">
+        <div className="flex gap-2 mb-4">
           {tabs.map((tab) => (
-            <Button key={tab} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)} type="button">
+            <Button key={tab} disabled={!canEditContext} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)} type="button">
               {tab.toUpperCase()}
             </Button>
           ))}
-        </div> : null}
+        </div>
 
         <form onSubmit={onSubmit} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-purple-50">
+          {!canEditMetrics ? <p className="md:col-span-2 text-xs text-gray-600">Métricas visibles en solo lectura en este contexto.</p> : null}
           {isEditMode && (initialVideo?.video_id || initialVideo?.video_id === 0) ? (
             <div>
               <label className="block text-sm font-medium mb-1">video_id</label>
               <input type="text" className="w-full rounded-lg border p-2 bg-gray-100" value={String(initialVideo.video_id)} readOnly disabled />
             </div>
           ) : null}
-          {(isGlobalScope ? ['external_id', 'title', 'creative_id', 'url'] : (isEditMode ? contextEditableByType[activeTab] : fieldMapByType[activeTab])).map((field) => (
+          {(isGlobalScope ? fieldMapByType[activeTab] : fieldMapByType[activeTab]).map((field) => (
             <div key={field} className={field === 'contexto_cualitativo' ? 'md:col-span-2' : ''}>
               <label className="block text-sm font-medium mb-1">{labels[field] || field}</label>
               {renderInput(field)}
