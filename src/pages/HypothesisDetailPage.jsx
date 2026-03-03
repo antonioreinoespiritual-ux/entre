@@ -9,8 +9,8 @@ import { useAudiences } from '@/contexts/AudienceContext';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
 import { useToast } from '@/components/ui/use-toast';
 import BulkVideoUpdateModal from '@/components/BulkVideoUpdateModal';
-import VideoCreateModal from '@/components/VideoCreateModal';
-import { baseVideo, fieldMapByType, labels, numericFields } from '@/components/videoFormConfig';
+import LibraryVideoModal from '@/components/LibraryVideoModal';
+import HypothesisAudienceModal from '@/components/HypothesisAudienceModal';
 
 const tabs = ['paid', 'organic', 'live'];
 
@@ -26,9 +26,9 @@ const HypothesisDetailPage = () => {
   const { audiences, fetchAudiences } = useAudiences();
 
   const [activeTab, setActiveTab] = useState('paid');
-  const [showVideoCreateModal, setShowVideoCreateModal] = useState(false);
-  const [editingVideo, setEditingVideo] = useState(null);
-  const [editForm, setEditForm] = useState(baseVideo);
+  const [showLibraryModal, setShowLibraryModal] = useState(false);
+  const [showAudienceModal, setShowAudienceModal] = useState(false);
+  const [audienceVideo, setAudienceVideo] = useState(null);
   const [videoSearchTerm, setVideoSearchTerm] = useState('');
   const [sessionFilter, setSessionFilter] = useState('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -259,52 +259,9 @@ const HypothesisDetailPage = () => {
     }
   };
 
-  const renderInput = (field) => {
-    const source = editForm;
-    const setter = setEditForm;
-    if (field === 'audience_id') {
-      return (
-        <select className="w-full rounded-lg border p-2" value={source.audience_id} onChange={(e) => setter({ ...source, audience_id: e.target.value })}>
-          <option value="">Sin público</option>
-          {audiences.map((aud) => <option key={aud.id} value={aud.id}>{aud.name}</option>)}
-        </select>
-      );
-    }
-
-    if (field === 'contexto_cualitativo') {
-      return <textarea className="w-full rounded-lg border p-2" rows="2" value={source[field]} onChange={(e) => setter({ ...source, [field]: e.target.value })} />;
-    }
-
-    const isNumeric = numericFields.includes(field);
-    return <input type={isNumeric ? 'number' : 'text'} className="w-full rounded-lg border p-2" required={field === 'title'} value={source[field]} onChange={(e) => setter({ ...source, [field]: e.target.value })} />;
-  };
-
   const openEdit = (video) => {
-    setEditingVideo(video);
-    setEditForm({ ...baseVideo, ...video });
-  };
-
-  const saveEdit = async (event) => {
-    event.preventDefault();
-    if (!editingVideo) return;
-    const payload = { ...editForm };
-    numericFields.forEach((field) => { payload[field] = Number(payload[field] || 0); });
-    delete payload.id;
-    delete payload.user_id;
-    delete payload.hypothesis_id;
-    delete payload.video_type;
-    const response = await fetch(`${backendBaseUrl()}/api/videos/${editingVideo.id}`, {
-      method: 'PATCH',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token()}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    if (response.ok) {
-      setEditingVideo(null);
-      await fetchVideos(hypothesisId);
-    }
+    setAudienceVideo(video);
+    setShowAudienceModal(true);
   };
 
   if (!hypothesis) return <div className="min-h-screen flex items-center justify-center">Cargando hipótesis...</div>;
@@ -353,6 +310,8 @@ const HypothesisDetailPage = () => {
 
           <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
 
+          <p className="text-sm text-gray-600 mb-3">En esta vista, solo Público se edita por hipótesis. Las métricas y campos globales se editan en Biblioteca.</p>
+
           <div className="mb-4 rounded-xl border bg-gray-50 p-3">
             <div className="grid md:grid-cols-3 gap-2">
               <input className="rounded-lg border p-2" placeholder="Buscar videos..." value={videoSearchTerm} onChange={(event) => setVideoSearchTerm(event.target.value)} />
@@ -363,21 +322,6 @@ const HypothesisDetailPage = () => {
               <Button className="bg-gray-200 text-gray-700" onClick={() => { setVideoSearchTerm(''); setSessionFilter('all'); }}>Limpiar filtros</Button>
             </div>
           </div>
-
-          {editingVideo && (
-            <form onSubmit={saveEdit} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-blue-50 mb-6">
-              {fieldMapByType[editingVideo.video_type || activeTab].map((field) => (
-                <div key={field} className={field === 'contexto_cualitativo' ? 'md:col-span-2' : ''}>
-                  <label className="block text-sm font-medium mb-1">{labels[field] || field}</label>
-                  {renderInput(field)}
-                </div>
-              ))}
-              <div className="md:col-span-2 flex gap-2">
-                <Button type="submit" className="bg-blue-600 text-white">Guardar cambios</Button>
-                <Button type="button" className="bg-gray-200 text-gray-700" onClick={() => setEditingVideo(null)}>Cancelar</Button>
-              </div>
-            </form>
-          )}
 
           {tabVideos.length === 0 ? (
             <div className="text-center py-10 text-gray-500">No hay videos {activeTab} todavía</div>
@@ -394,7 +338,7 @@ const HypothesisDetailPage = () => {
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
                   <div className="flex gap-2">
-                    <Button className="bg-blue-100 text-blue-700" onClick={(event) => { event.stopPropagation(); openEdit(video); }}>Editar</Button>
+                    <Button className="bg-blue-100 text-blue-700" onClick={(event) => { event.stopPropagation(); openEdit(video); }}>Editar público</Button>
                     <Button className="bg-red-100 text-red-700" onClick={(event) => { event.stopPropagation(); deleteVideo(video.id, hypothesisId); }}><Trash2 className="w-4 h-4" /></Button>
                   </div>
                 </div>
@@ -414,7 +358,7 @@ const HypothesisDetailPage = () => {
 
             {createMode === 'menu' && (
               <div className="grid md:grid-cols-2 gap-3">
-                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowVideoCreateModal(true); }}>
+                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowLibraryModal(true); }}>
                   <p className="font-semibold">Crear nuevo</p>
                   <p className="text-sm text-gray-600">Abrir el formulario actual de creación para {activeTab.toUpperCase()}.</p>
                 </button>
@@ -458,14 +402,34 @@ const HypothesisDetailPage = () => {
         </div>
       )}
 
-      <VideoCreateModal
-        isOpen={showVideoCreateModal}
-        onClose={() => setShowVideoCreateModal(false)}
-        defaultType={activeTab}
-        campaignId={campaignId}
+      <LibraryVideoModal
+        isOpen={showLibraryModal}
+        onClose={() => {
+          setShowLibraryModal(false);
+        }}
+        mode="create"
+        projectId={projectId}
+        onSaved={async (savedVideo) => {
+          if (savedVideo?.id) {
+            await linkVideosToHypothesis(hypothesisId, [savedVideo.id]);
+            setAudienceVideo(savedVideo);
+            setShowAudienceModal(true);
+          }
+          await fetchVideos(hypothesisId);
+        }}
+      />
+
+      <HypothesisAudienceModal
+        isOpen={showAudienceModal}
+        onClose={() => {
+          setShowAudienceModal(false);
+          setAudienceVideo(null);
+        }}
         hypothesisId={hypothesisId}
+        videoId={audienceVideo?.id}
+        currentAudience={audienceVideo?.audience_id || ''}
         audiences={audiences}
-        onCreated={async () => {
+        onSaved={async () => {
           await fetchVideos(hypothesisId);
         }}
       />

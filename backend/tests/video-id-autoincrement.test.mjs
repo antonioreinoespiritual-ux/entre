@@ -613,3 +613,186 @@ test('move hypothesis rolls back all changes on failure', async () => {
     server.kill('SIGTERM');
   }
 });
+
+test('patch /api/videos/:id updates global editable fields and keeps hypothesis context unchanged', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-video-update-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4108;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const email = `videoupdate-${Date.now()}@example.com`;
+    const password = 'secret123';
+
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    assert.equal(signupRes.status, 200);
+    const signupJson = await signupRes.json();
+    const token = signupJson?.session?.access_token;
+    assert.ok(token);
+
+    const project = await api(baseUrl, token, {
+      table: 'projects',
+      operation: 'insert',
+      payload: { name: 'P', description: 'D' },
+    });
+    const campaign = await api(baseUrl, token, {
+      table: 'campaigns',
+      operation: 'insert',
+      payload: { project_id: project[0].id, name: 'C', description: 'D' },
+    });
+    const hypothesisA = await api(baseUrl, token, {
+      table: 'hypotheses',
+      operation: 'insert',
+      payload: { campaign_id: campaign[0].id, type: 'A', condition: 'views > 0' },
+    });
+    const hypothesisB = await api(baseUrl, token, {
+      table: 'hypotheses',
+      operation: 'insert',
+      payload: { campaign_id: campaign[0].id, type: 'B', condition: 'views > 0' },
+    });
+
+    const created = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: {
+        hypothesis_id: hypothesisA[0].id,
+        video_type: 'organic',
+        title: 'Original title',
+        views: 10,
+      },
+    });
+    const videoId = created[0].id;
+
+    const linkRes = await fetch(`${baseUrl}/api/videos/${videoId}/link-hypotheses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ hypothesis_ids: [hypothesisB[0].id] }),
+    });
+    assert.equal(linkRes.status, 200);
+
+    const patchRes = await fetch(`${baseUrl}/api/videos/${videoId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        title: 'Edited title',
+        views: 777,
+      }),
+    });
+    assert.equal(patchRes.status, 200);
+    const patchJson = await patchRes.json();
+    assert.equal(patchJson.video.title, 'Edited title');
+    assert.equal(patchJson.video.views, 777);
+
+    const inHypARes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisA[0].id}/videos`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(inHypARes.status, 200);
+    const inHypAJson = await inHypARes.json();
+    assert.equal(inHypAJson.data.some((video) => video.id === videoId), true);
+
+    const inHypBRes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisB[0].id}/videos`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(inHypBRes.status, 200);
+    const inHypBJson = await inHypBRes.json();
+    assert.equal(inHypBJson.data.some((video) => video.id === videoId), true);
+
+    const contextPatchRes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisB[0].id}/videos/${videoId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        audience_id: 'aud-b',
+      }),
+    });
+    assert.equal(contextPatchRes.status, 200);
+    const contextPatchJson = await contextPatchRes.json();
+    assert.equal(contextPatchJson.video.audience_id, 'aud-b');
+    assert.equal(contextPatchJson.video.views, 777);
+
+
+    const hypothesisAudienceRes = await fetch(`${baseUrl}/api/hypothesis_videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        hypothesis_id: hypothesisB[0].id,
+        video_id: videoId,
+        audience_id: 'aud-route',
+      }),
+    });
+    assert.equal(hypothesisAudienceRes.status, 200);
+    const hypothesisAudienceJson = await hypothesisAudienceRes.json();
+    assert.equal(hypothesisAudienceJson.data.audience_id, 'aud-route');
+
+    const forbiddenContextRes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisB[0].id}/videos/${videoId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        audience_id: 'aud-b2',
+        views: 999,
+      }),
+    });
+    assert.equal(forbiddenContextRes.status, 400);
+    const forbiddenContextJson = await forbiddenContextRes.json();
+    assert.equal(forbiddenContextJson.code, 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS');
+    assert.deepEqual(forbiddenContextJson.fields, ['views']);
+
+    const checkVideoRes = await fetch(`${baseUrl}/api/videos/${videoId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(checkVideoRes.status, 200);
+    const checkVideoJson = await checkVideoRes.json();
+    assert.equal(checkVideoJson.video.views, 777);
+
+    const forbiddenGlobalCreateRes = await fetch(`${baseUrl}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        project_id: project[0].id,
+        title: 'bad payload',
+        video_type: 'paid',
+        audience_id: 'aud-legacy',
+      }),
+    });
+    assert.equal(forbiddenGlobalCreateRes.status, 400);
+    const forbiddenGlobalCreateJson = await forbiddenGlobalCreateRes.json();
+    assert.equal(forbiddenGlobalCreateJson.code, 'VIDEO_GLOBAL_FORBIDDEN_FIELDS');
+    assert.deepEqual(forbiddenGlobalCreateJson.fields, ['audience_id']);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

@@ -853,6 +853,7 @@ async function ensureVideoHierarchyMigration() {
     ['tiempo_prom_seg', 'REAL DEFAULT 0'],
     ['duracion_seg', 'REAL DEFAULT 0'],
     ['campaign_id', 'TEXT'],
+    ['project_id', 'TEXT'],
     ['campaign_id_ref', 'TEXT'],
     ['ad_set_id', 'TEXT'],
     ['ad_id', 'TEXT'],
@@ -905,6 +906,7 @@ async function ensureVideoHierarchyMigration() {
 
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_campaign_id ON videos(campaign_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)');
   await pool.query(`CREATE TABLE IF NOT EXISTS hypothesis_videos (
     id TEXT PRIMARY KEY,
@@ -919,6 +921,20 @@ async function ensureVideoHierarchyMigration() {
   )`);
   await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)');
+  const hypothesisVideoContextColumns = [
+    ['audience_id', 'TEXT'],
+    ['hook_texto', 'TEXT'],
+    ['hook_tipo', 'TEXT'],
+    ['cta_texto', 'TEXT'],
+    ['cta_tipo', 'TEXT'],
+    ['video_type', "TEXT DEFAULT 'organic'"],
+    ['contexto_cualitativo', 'TEXT'],
+  ];
+  for (const [columnName, columnType] of hypothesisVideoContextColumns) {
+    if (!(await hasColumn('hypothesis_videos', columnName))) {
+      await pool.query(`ALTER TABLE hypothesis_videos ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
   await pool.query(`CREATE TABLE IF NOT EXISTS cloud_edges (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -943,6 +959,56 @@ async function ensureVideoHierarchyMigration() {
        SELECT h.campaign_id FROM hypotheses h WHERE h.id = videos.hypothesis_id
      )
      WHERE (campaign_id IS NULL OR trim(CAST(campaign_id AS TEXT)) = '') AND hypothesis_id IS NOT NULL`,
+  );
+  await pool.query(
+    `UPDATE videos
+     SET project_id = (
+       SELECT c.project_id
+       FROM campaigns c
+       WHERE c.id = videos.campaign_id
+     )
+     WHERE (project_id IS NULL OR trim(CAST(project_id AS TEXT)) = '')
+       AND campaign_id IS NOT NULL
+       AND trim(CAST(campaign_id AS TEXT)) <> ''`,
+  );
+
+  await pool.query(
+    `UPDATE videos
+     SET project_id = (
+       SELECT c.project_id
+       FROM hypotheses h
+       JOIN campaigns c ON c.id = h.campaign_id
+       WHERE h.id = videos.hypothesis_id
+     )
+     WHERE (project_id IS NULL OR trim(CAST(project_id AS TEXT)) = '')
+       AND hypothesis_id IS NOT NULL
+       AND trim(CAST(hypothesis_id AS TEXT)) <> ''`,
+  );
+
+  await pool.query(
+    `UPDATE hypothesis_videos
+     SET audience_id = COALESCE(audience_id, (
+           SELECT v.audience_id FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         hook_texto = COALESCE(hook_texto, (
+           SELECT v.hook_texto FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         hook_tipo = COALESCE(hook_tipo, (
+           SELECT v.hook_tipo FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         cta_texto = COALESCE(cta_texto, (
+           SELECT v.cta_texto FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         cta_tipo = COALESCE(cta_tipo, (
+           SELECT v.cta_tipo FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         video_type = COALESCE(video_type, (
+           SELECT v.video_type FROM videos v WHERE v.id = hypothesis_videos.video_id
+         )),
+         contexto_cualitativo = COALESCE(contexto_cualitativo, (
+           SELECT v.contexto_cualitativo FROM videos v WHERE v.id = hypothesis_videos.video_id
+         ))
+     WHERE user_id IS NOT NULL`,
   );
 
   const [maxVideoIdRows] = await pool.query(
@@ -1715,16 +1781,10 @@ async function listVideosLinkedToHypothesis(hypothesisId, userId) {
   const [rows] = await pool.query(
     `SELECT DISTINCT v.*
      FROM videos v
+     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id
      WHERE v.user_id = ?
-       AND (
-         v.hypothesis_id = ?
-         OR EXISTS (
-           SELECT 1
-           FROM hypothesis_videos hv
-           WHERE hv.user_id = ? AND hv.hypothesis_id = ? AND hv.video_id = v.id
-         )
-       )`,
-    [userId, hypothesisId, userId, hypothesisId],
+       AND (hv.hypothesis_id = ? OR v.hypothesis_id = ?)`,
+    [userId, hypothesisId, hypothesisId],
   );
   return rows;
 }
@@ -1741,12 +1801,8 @@ async function countOtherUsageInCampaign(videoId, sourceCampaignId, hypothesisId
            SELECT 1 FROM hypothesis_videos hv
            WHERE hv.user_id = ? AND hv.hypothesis_id = h.id AND hv.video_id = ?
          )
-         OR EXISTS (
-           SELECT 1 FROM videos v
-           WHERE v.user_id = ? AND v.id = ? AND v.hypothesis_id = h.id
-         )
        )`,
-    [userId, sourceCampaignId, hypothesisId, userId, videoId, userId, videoId],
+    [userId, sourceCampaignId, hypothesisId, userId, videoId],
   );
   return Number(rows[0]?.total || 0);
 }
@@ -1754,12 +1810,9 @@ async function countOtherUsageInCampaign(videoId, sourceCampaignId, hypothesisId
 async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
   const where = [
     'v.user_id = ?',
-    `(v.hypothesis_id = ? OR EXISTS (
-      SELECT 1 FROM hypothesis_videos hv
-      WHERE hv.hypothesis_id = ? AND hv.video_id = v.id AND hv.user_id = ?
-    ))`,
+    '(hv.hypothesis_id = ? OR v.hypothesis_id = ?)',
   ];
-  const params = [hypothesisId, hypothesisId, hypothesisId, userId, hypothesisId, hypothesisId, userId];
+  const params = [userId, hypothesisId, hypothesisId];
 
   if (options.video_type) {
     where.push('v.video_type = ?');
@@ -1775,17 +1828,63 @@ async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
   }
 
   const [rows] = await pool.query(
-    `SELECT v.*, 
-      CASE WHEN v.hypothesis_id <> ? THEN 1 ELSE 0 END AS is_reused_for_hypothesis,
-      CASE WHEN v.hypothesis_id <> ? THEN hs.id ELSE NULL END AS source_hypothesis_id,
-      CASE WHEN v.hypothesis_id <> ? THEN COALESCE(hs.hypothesis_statement, hs.condition, hs.type, hs.id) ELSE NULL END AS source_hypothesis_name
+    `SELECT v.*,
+      COALESCE(hv.audience_id, NULLIF(v.audience_id, '')) AS audience_id,
+      hv.hypothesis_id AS context_hypothesis_id,
+      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN 1 ELSE 0 END AS is_reused_for_hypothesis,
+      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN v.hypothesis_id ELSE NULL END AS source_hypothesis_id,
+      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN COALESCE(hs.hypothesis_statement, hs.condition, hs.type, hs.id) ELSE NULL END AS source_hypothesis_name
      FROM videos v
+     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id AND hv.hypothesis_id = ?
      LEFT JOIN hypotheses hs ON hs.id = v.hypothesis_id
      WHERE ${where.join(' AND ')}
      ORDER BY v.created_at DESC`,
-    params,
+    [hypothesisId, hypothesisId, hypothesisId, hypothesisId, ...params],
   );
   return rows;
+}
+
+async function listVideosForProject(projectId, userId, options = {}) {
+  const where = ['v.user_id = ?', 'v.project_id = ?'];
+  const params = [userId, projectId];
+  if (options.video_type) {
+    where.push('EXISTS (SELECT 1 FROM hypothesis_videos hv WHERE hv.video_id = v.id AND hv.user_id = v.user_id AND hv.video_type = ?)');
+    params.push(options.video_type);
+  }
+  if (options.session_id) {
+    where.push('(v.external_id = ? OR CAST(v.video_id AS TEXT) = ?)');
+    params.push(options.session_id, options.session_id);
+  }
+  if (options.search) {
+    where.push("(lower(coalesce(v.title,'')) LIKE ? OR lower(coalesce(v.external_id,'')) LIKE ?)");
+    const q = `%${String(options.search).toLowerCase()}%`;
+    params.push(q, q);
+  }
+  if (options.usage === 'used') {
+    where.push('EXISTS (SELECT 1 FROM hypothesis_videos hv WHERE hv.video_id = v.id AND hv.user_id = ?)');
+    params.push(userId);
+  } else if (options.usage === 'unused') {
+    where.push('NOT EXISTS (SELECT 1 FROM hypothesis_videos hv WHERE hv.video_id = v.id AND hv.user_id = ?)');
+    params.push(userId);
+  }
+
+  const [rows] = await pool.query(
+    `SELECT v.*,
+      COUNT(DISTINCT hv.hypothesis_id) AS used_in_hypotheses,
+      GROUP_CONCAT(DISTINCT COALESCE(h.hypothesis_statement, h.condition, h.type, h.id)) AS linked_hypotheses
+     FROM videos v
+     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id
+     LEFT JOIN hypotheses h ON h.id = hv.hypothesis_id
+     WHERE ${where.join(' AND ')}
+     GROUP BY v.id
+     ORDER BY v.created_at DESC`,
+    params,
+  );
+  return rows.map((row) => ({
+    ...row,
+    used_in_hypotheses: Number(row.used_in_hypotheses || 0),
+    linked_hypotheses: row.linked_hypotheses ? String(row.linked_hypotheses).split(',') : [],
+  }));
 }
 
 
@@ -1832,6 +1931,18 @@ async function listVideosForCampaign(campaignId, userId, options = {}) {
   }));
 }
 
+
+const hypothesisContextOnlyFields = new Set(['audience_id']);
+
+const videoGlobalForbiddenFields = new Set(['audience_id', 'audience', 'hypothesis_id', 'campaign_id']);
+
+function compatibilityVideoLegacyColumns(videoPayload = {}) {
+  const legacy = {};
+  if (!('hypothesis_id' in videoPayload)) legacy.hypothesis_id = '';
+  if (!('audience_id' in videoPayload)) legacy.audience_id = '';
+  return legacy;
+}
+
 async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
   const hypothesis = await fetchOwnedHypothesisById(hypothesisId, userId);
   if (!hypothesis) throw new Error('Hypothesis not found');
@@ -1858,12 +1969,9 @@ async function fetchOwnedVideoById(videoId, userId) {
   const [rows] = await pool.query(
     `SELECT v.*
      FROM videos v
-     JOIN hypotheses h ON h.id = v.hypothesis_id
-     JOIN campaigns c ON c.id = h.campaign_id
-     JOIN projects p ON p.id = c.project_id
-     WHERE v.id = ? AND v.user_id = ? AND h.user_id = ? AND c.user_id = ? AND p.user_id = ?
+     WHERE v.id = ? AND v.user_id = ?
      LIMIT 1`,
-    [videoId, userId, userId, userId, userId],
+    [videoId, userId],
   );
   return rows[0] || null;
 }
@@ -2158,19 +2266,37 @@ async function executeCrudQuery(body, currentUserId) {
         }
       }
 
-      if (!writeRow.campaign_id) {
-        throw new Error('videos.campaign_id is required when hypothesis_id is missing');
+      if (!writeRow.campaign_id && !writeRow.project_id) {
+        throw new Error('videos.campaign_id or videos.project_id is required when hypothesis_id is missing');
       }
 
-      const [campaignRows] = await pool.query(
-        `SELECT id
-         FROM campaigns
-         WHERE id = ? AND user_id = ?
-         LIMIT 1`,
-        [writeRow.campaign_id, currentUserId],
-      );
-      if (!campaignRows.length) {
-        throw new Error('Invalid campaign_id for current user');
+      if (writeRow.campaign_id) {
+        const [campaignRows] = await pool.query(
+          `SELECT id, project_id
+           FROM campaigns
+           WHERE id = ? AND user_id = ?
+           LIMIT 1`,
+          [writeRow.campaign_id, currentUserId],
+        );
+        if (!campaignRows.length) {
+          throw new Error('Invalid campaign_id for current user');
+        }
+        if (!writeRow.project_id) {
+          writeRow.project_id = campaignRows[0].project_id;
+        }
+      }
+
+      if (writeRow.project_id) {
+        const [projectRows] = await pool.query(
+          `SELECT id
+           FROM projects
+           WHERE id = ? AND user_id = ?
+           LIMIT 1`,
+          [writeRow.project_id, currentUserId],
+        );
+        if (!projectRows.length) {
+          throw new Error('Invalid project_id for current user');
+        }
       }
     }
     const insertRow = async () => {
@@ -2215,7 +2341,7 @@ async function executeCrudQuery(body, currentUserId) {
       await insertRow();
     }
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
-    if (table === 'videos') {
+    if (table === 'videos' && writeRow.hypothesis_id) {
       await pool.query(
         `INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id)
          VALUES (?, ?, ?, ?)`,
@@ -2690,12 +2816,13 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readBody(req);
-      if ('hypothesis_id' in body || 'video_type' in body) {
-        sendJson(req, res, 400, { error: 'hypothesis_id and video_type cannot be changed' });
+      const forbidden = Object.keys(body || {}).filter((field) => videoGlobalForbiddenFields.has(field));
+      if (forbidden.length) {
+        sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
         return;
       }
 
-      const disallowed = new Set(['id', 'user_id', 'created_at']);
+      const disallowed = new Set(['id', 'user_id', 'created_at', 'video_id', 'campaign_id', 'project_id']);
       const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key));
       if (!entries.length) {
         sendJson(req, res, 400, { error: 'No editable fields provided' });
@@ -2707,6 +2834,31 @@ const server = http.createServer(async (req, res) => {
       await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, existing.id, user.id]);
       const updated = await fetchOwnedVideoById(existing.id, user.id);
       sendJson(req, res, 200, { video: updated });
+      return;
+    }
+
+    if (url.pathname === '/api/videos' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(req);
+      const forbidden = Object.keys(body || {}).filter((field) => videoGlobalForbiddenFields.has(field));
+      if (forbidden.length) {
+        sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
+        return;
+      }
+      if (!body?.project_id) {
+        sendJson(req, res, 400, { error: 'project_id is required' });
+        return;
+      }
+      const payload = {
+        ...body,
+        ...compatibilityVideoLegacyColumns(body),
+      };
+      const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
+      sendJson(req, res, 200, { data: rows });
       return;
     }
 
@@ -2728,13 +2880,67 @@ const server = http.createServer(async (req, res) => {
         sendJson(req, res, 404, { error: 'Campaign not found' });
         return;
       }
-      const videos = await listVideosForCampaign(campaignId, user.id, {
+      const videos = await listVideosForProject(campaign.project_id, user.id, {
         video_type: url.searchParams.get('video_type') || '',
         search: url.searchParams.get('search') || '',
         session_id: url.searchParams.get('session_id') || '',
         usage: url.searchParams.get('usage') || '',
       });
       sendJson(req, res, 200, { data: videos, campaign });
+      return;
+    }
+
+    const projectVideosMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/videos$/);
+    if (projectVideosMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = projectVideosMatch[1];
+      const [projectRows] = await pool.query('SELECT id, name FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+      const project = projectRows[0];
+      if (!project) {
+        sendJson(req, res, 404, { error: 'Project not found' });
+        return;
+      }
+      const videos = await listVideosForProject(projectId, user.id, {
+        video_type: url.searchParams.get('video_type') || '',
+        search: url.searchParams.get('search') || '',
+        session_id: url.searchParams.get('session_id') || '',
+        usage: url.searchParams.get('usage') || '',
+      });
+      sendJson(req, res, 200, { data: videos, project });
+      return;
+    }
+
+    if (projectVideosMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = projectVideosMatch[1];
+      const [projectRows] = await pool.query('SELECT id FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+      if (!projectRows.length) {
+        sendJson(req, res, 404, { error: 'Project not found' });
+        return;
+      }
+
+      const body = await readBody(req);
+      const forbidden = Object.keys(body || {}).filter((field) => videoGlobalForbiddenFields.has(field));
+      if (forbidden.length) {
+        sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
+        return;
+      }
+      const payload = {
+        ...body,
+        project_id: projectId,
+        ...compatibilityVideoLegacyColumns(body),
+      };
+
+      const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
+      sendJson(req, res, 200, { data: rows });
       return;
     }
 
@@ -2746,24 +2952,33 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const campaignId = campaignCreateVideoMatch[1];
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      if (!campaignRows.length) {
+        sendJson(req, res, 404, { error: 'Campaign not found' });
+        return;
+      }
       const body = await readBody(req);
       const hypothesisId = String(body?.hypothesis_id || '').trim();
 
       if (hypothesisId) {
-        const [hypothesisRows] = await pool.query(
-          'SELECT id FROM hypotheses WHERE id = ? AND campaign_id = ? AND user_id = ? LIMIT 1',
-          [hypothesisId, campaignId, user.id],
-        );
-        if (!hypothesisRows.length) {
-          sendJson(req, res, 400, { error: 'hypothesis_id is invalid for this campaign' });
-          return;
-        }
+        sendJson(req, res, 400, {
+          error: 'Legacy hypothesis payload is not supported in /api/campaigns/:id/videos. Use /api/videos + /api/hypotheses/:id/videos/link + PATCH context.',
+          code: 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS',
+          fields: ['hypothesis_id'],
+        });
+        return;
       }
 
       const payload = {
         ...body,
         campaign_id: campaignId,
+        project_id: campaignRows[0]?.project_id || null,
         hypothesis_id: hypothesisId || null,
+        audience_id: null,
+        hook_texto: null,
+        hook_tipo: null,
+        cta_texto: null,
+        cta_tipo: null,
       };
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
       const created = Array.isArray(rows) ? rows[0] : null;
@@ -2777,6 +2992,14 @@ const server = http.createServer(async (req, res) => {
           'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
           [uuid(), hypothesisId, created.id, user.id],
         );
+        const contextEntries = [
+          ['audience_id', body?.audience_id],
+        ].filter(([, value]) => value !== undefined);
+        if (contextEntries.length) {
+          const setSql = contextEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+          const values = contextEntries.map(([, value]) => value);
+          await pool.query(`UPDATE hypothesis_videos SET ${setSql} WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?`, [...values, hypothesisId, created.id, user.id]);
+        }
         await linkVideoFolderIntoHypothesis(user.id, campaignId, hypothesisId, created);
       }
 
@@ -2798,7 +3021,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(req, res, 400, { error: 'hypothesis_ids is required' });
         return;
       }
-      const [videoRows] = await pool.query('SELECT id, campaign_id, title, video_id FROM videos WHERE id = ? AND user_id = ? LIMIT 1', [videoId, user.id]);
+      const [videoRows] = await pool.query('SELECT id, campaign_id, project_id, title, video_id FROM videos WHERE id = ? AND user_id = ? LIMIT 1', [videoId, user.id]);
       const video = videoRows[0];
       if (!video) {
         sendJson(req, res, 404, { error: 'Video not found' });
@@ -2807,7 +3030,10 @@ const server = http.createServer(async (req, res) => {
 
       const placeholders = targetIds.map(() => '?').join(', ');
       const [hypothesisRows] = await pool.query(
-        `SELECT id, campaign_id FROM hypotheses WHERE user_id = ? AND id IN (${placeholders})`,
+        `SELECT h.id, h.campaign_id, c.project_id
+         FROM hypotheses h
+         JOIN campaigns c ON c.id = h.campaign_id
+         WHERE h.user_id = ? AND h.id IN (${placeholders})`,
         [user.id, ...targetIds],
       );
       const byId = new Map(hypothesisRows.map((row) => [String(row.id), row]));
@@ -2821,8 +3047,8 @@ const server = http.createServer(async (req, res) => {
           skipped.push({ hypothesis_id: hypId, reason: 'not_found' });
           continue;
         }
-        if (String(hyp.campaign_id) !== String(video.campaign_id)) {
-          skipped.push({ hypothesis_id: hypId, reason: 'different_campaign' });
+        if (video.project_id && String(hyp.project_id) !== String(video.project_id)) {
+          skipped.push({ hypothesis_id: hypId, reason: 'different_project' });
           continue;
         }
         const [exists] = await pool.query('SELECT id FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1', [hyp.id, video.id, user.id]);
@@ -2861,6 +3087,59 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+
+    if (url.pathname === '/api/hypothesis_videos' && (req.method === 'POST' || req.method === 'PUT')) {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(req);
+      const hypothesisId = String(body?.hypothesis_id || '').trim();
+      const videoId = String(body?.video_id || '').trim();
+      if (!hypothesisId || !videoId) {
+        sendJson(req, res, 400, { error: 'hypothesis_id and video_id are required' });
+        return;
+      }
+
+      const invalid = Object.keys(body || {}).filter((key) => !new Set(['hypothesis_id', 'video_id', 'audience_id']).has(key));
+      if (invalid.length) {
+        sendJson(req, res, 400, {
+          error: 'No se permite actualizar métricas ni campos globales desde hipótesis',
+          code: 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS',
+          fields: invalid,
+        });
+        return;
+      }
+
+      const hypothesis = await fetchOwnedHypothesisById(hypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+      const video = await fetchOwnedVideoById(videoId, user.id);
+      if (!video) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+
+      await pool.query(
+        'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
+        [uuid(), hypothesisId, videoId, user.id],
+      );
+      await pool.query(
+        'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
+        [body?.audience_id || null, hypothesisId, videoId, user.id],
+      );
+
+      const [rows] = await pool.query(
+        'SELECT * FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
+        [hypothesisId, videoId, user.id],
+      );
+      sendJson(req, res, 200, { data: rows[0] || null });
+      return;
+    }
+
     const hypothesisVideosMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/videos$/);
     if (hypothesisVideosMatch && req.method === 'GET') {
       const user = authFromRequest(req);
@@ -2877,6 +3156,54 @@ const server = http.createServer(async (req, res) => {
       const videoType = url.searchParams.get('video_type') || '';
       const videos = await listVideosForHypothesis(hypothesisId, user.id, { video_type: videoType });
       sendJson(req, res, 200, { data: videos });
+      return;
+    }
+
+    const hypothesisVideoContextMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/videos\/([^/]+)$/);
+    if (hypothesisVideoContextMatch && req.method === 'PATCH') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const [targetHypothesisId, targetVideoId] = [hypothesisVideoContextMatch[1], hypothesisVideoContextMatch[2]];
+      const hypothesis = await fetchOwnedHypothesisById(targetHypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+      const video = await fetchOwnedVideoById(targetVideoId, user.id);
+      if (!video) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+
+      await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, user.id]);
+
+      const body = await readBody(req);
+      const keys = Object.keys(body || {});
+      const invalid = keys.filter((key) => !hypothesisContextOnlyFields.has(key));
+      if (invalid.length) {
+        sendJson(req, res, 400, {
+          error: 'No se permite actualizar métricas ni campos globales desde hipótesis',
+          code: 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS',
+          fields: invalid,
+        });
+        return;
+      }
+      if (!('audience_id' in (body || {}))) {
+        sendJson(req, res, 400, { error: 'audience_id is required' });
+        return;
+      }
+
+      await pool.query(
+        'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
+        [body.audience_id || null, targetHypothesisId, targetVideoId, user.id],
+      );
+
+      const videos = await listVideosForHypothesis(targetHypothesisId, user.id, {});
+      const updated = videos.find((row) => String(row.id) === String(targetVideoId)) || null;
+      sendJson(req, res, 200, { video: updated });
       return;
     }
 
@@ -2908,12 +3235,11 @@ const server = http.createServer(async (req, res) => {
 
       const placeholders = requestedVideoIds.map(() => '?').join(', ');
       const [candidateVideos] = await pool.query(
-        `SELECT v.id, v.hypothesis_id, v.campaign_id, v.title, v.video_id, c.project_id
+        `SELECT v.id, v.title, v.video_id, COALESCE(v.project_id, c.project_id) AS project_id
          FROM videos v
-         JOIN campaigns c ON c.id = v.campaign_id
-         JOIN projects p ON p.id = c.project_id
-         WHERE v.user_id = ? AND c.user_id = ? AND p.user_id = ? AND v.id IN (${placeholders})`,
-        [user.id, user.id, user.id, ...requestedVideoIds],
+         LEFT JOIN campaigns c ON c.id = v.campaign_id
+         WHERE v.user_id = ? AND v.id IN (${placeholders})`,
+        [user.id, ...requestedVideoIds],
       );
 
       const byId = new Map(candidateVideos.map((row) => [String(row.id), row]));
