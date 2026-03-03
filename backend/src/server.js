@@ -3087,6 +3087,59 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+
+    if (url.pathname === '/api/hypothesis_videos' && (req.method === 'POST' || req.method === 'PUT')) {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(req);
+      const hypothesisId = String(body?.hypothesis_id || '').trim();
+      const videoId = String(body?.video_id || '').trim();
+      if (!hypothesisId || !videoId) {
+        sendJson(req, res, 400, { error: 'hypothesis_id and video_id are required' });
+        return;
+      }
+
+      const invalid = Object.keys(body || {}).filter((key) => !new Set(['hypothesis_id', 'video_id', 'audience_id']).has(key));
+      if (invalid.length) {
+        sendJson(req, res, 400, {
+          error: 'No se permite actualizar métricas ni campos globales desde hipótesis',
+          code: 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS',
+          fields: invalid,
+        });
+        return;
+      }
+
+      const hypothesis = await fetchOwnedHypothesisById(hypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+      const video = await fetchOwnedVideoById(videoId, user.id);
+      if (!video) {
+        sendJson(req, res, 404, { error: 'Video not found' });
+        return;
+      }
+
+      await pool.query(
+        'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
+        [uuid(), hypothesisId, videoId, user.id],
+      );
+      await pool.query(
+        'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
+        [body?.audience_id || null, hypothesisId, videoId, user.id],
+      );
+
+      const [rows] = await pool.query(
+        'SELECT * FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
+        [hypothesisId, videoId, user.id],
+      );
+      sendJson(req, res, 200, { data: rows[0] || null });
+      return;
+    }
+
     const hypothesisVideosMatch = url.pathname.match(/^\/api\/hypotheses\/([^/]+)\/videos$/);
     if (hypothesisVideosMatch && req.method === 'GET') {
       const user = authFromRequest(req);

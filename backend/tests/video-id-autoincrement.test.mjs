@@ -735,6 +735,23 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
     assert.equal(contextPatchJson.video.audience_id, 'aud-b');
     assert.equal(contextPatchJson.video.views, 777);
 
+
+    const hypothesisAudienceRes = await fetch(`${baseUrl}/api/hypothesis_videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        hypothesis_id: hypothesisB[0].id,
+        video_id: videoId,
+        audience_id: 'aud-route',
+      }),
+    });
+    assert.equal(hypothesisAudienceRes.status, 200);
+    const hypothesisAudienceJson = await hypothesisAudienceRes.json();
+    assert.equal(hypothesisAudienceJson.data.audience_id, 'aud-route');
+
     const forbiddenContextRes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisB[0].id}/videos/${videoId}`, {
       method: 'PATCH',
       headers: {

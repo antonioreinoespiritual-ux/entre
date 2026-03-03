@@ -4,9 +4,8 @@ import { ArrowLeft, Link2, Pencil, Video } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useVideos } from '@/contexts/VideoContext';
-import { useAudiences } from '@/contexts/AudienceContext';
 import { useToast } from '@/components/ui/use-toast';
-import VideoCreateModal from '@/components/VideoCreateModal';
+import LibraryVideoModal from '@/components/LibraryVideoModal';
 
 const typeOptions = ['all', 'paid', 'organic', 'live'];
 
@@ -16,7 +15,6 @@ const CampaignVideosLibraryPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { fetchProjectVideos, fetchCampaignVideos, fetchProjectHypotheses, linkVideoToHypotheses } = useVideos();
-  const { audiences } = useAudiences();
   const [hypotheses, setHypotheses] = useState([]);
 
   const [project, setProject] = useState(null);
@@ -159,7 +157,7 @@ const CampaignVideosLibraryPage = () => {
         </div>
       </div>
 
-      <VideoCreateModal
+      <LibraryVideoModal
         isOpen={showCreate}
         onClose={() => {
           setShowCreate(false);
@@ -167,13 +165,7 @@ const CampaignVideosLibraryPage = () => {
         }}
         mode={editingVideo ? 'edit' : 'create'}
         initialVideo={editingVideo}
-        context="library"
-        defaultType={videoType === 'all' ? 'organic' : videoType}
         projectId={resolvedProjectId}
-        audiences={audiences}
-        onCreated={async () => {
-          await loadVideos();
-        }}
         onSaved={async () => {
           await loadVideos();
         }}

@@ -111,35 +111,7 @@ export const VideoProvider = ({ children }) => {
     return { data: Array.isArray(json.data) ? json.data : [], project: json.project || null };
   }, [currentUser]);
 
-  const createCampaignVideo = useCallback(async (campaignId, payload) => {
-    if (!currentUser || !campaignId) return null;
-    const response = await fetch(`${backendBaseUrl()}/api/campaigns/${campaignId}/videos`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${sessionToken()}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    const json = await response.json();
-    if (!response.ok) throw new Error(json.error || 'Failed to create video');
-    return Array.isArray(json.data) ? json.data[0] : null;
-  }, [currentUser]);
 
-  const createProjectVideo = useCallback(async (projectId, payload) => {
-    if (!currentUser || !projectId) return null;
-    const response = await fetch(`${backendBaseUrl()}/api/projects/${projectId}/videos`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${sessionToken()}`,
-      },
-      body: JSON.stringify(payload),
-    });
-    const json = await response.json();
-    if (!response.ok) throw new Error(json.error || 'Failed to create project video');
-    return Array.isArray(json.data) ? json.data[0] : null;
-  }, [currentUser]);
 
 
   const createGlobalVideo = useCallback(async (payload) => {
@@ -172,10 +144,12 @@ export const VideoProvider = ({ children }) => {
     return json.video || null;
   }, [currentUser]);
 
-  const updateHypothesisVideoContext = useCallback(async (hypothesisId, videoId, payload) => {
-    if (!currentUser || !hypothesisId || !videoId) return null;
-    const response = await fetch(`${backendBaseUrl()}/api/hypotheses/${hypothesisId}/videos/${videoId}`, {
-      method: 'PATCH',
+
+
+  const upsertHypothesisAudience = useCallback(async (payload) => {
+    if (!currentUser) return null;
+    const response = await fetch(`${backendBaseUrl()}/api/hypothesis_videos`, {
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${sessionToken()}`,
@@ -184,12 +158,12 @@ export const VideoProvider = ({ children }) => {
     });
     const json = await response.json();
     if (!response.ok) {
-      const error = new Error(json.error || 'Failed to update hypothesis video context');
+      const error = new Error(json.error || 'Failed to save hypothesis audience');
       if (json.code) error.code = json.code;
       if (json.fields) error.fields = json.fields;
       throw error;
     }
-    return json.video || null;
+    return json.data || null;
   }, [currentUser]);
 
   const fetchProjectHypotheses = useCallback(async (projectId) => {
@@ -291,11 +265,9 @@ export const VideoProvider = ({ children }) => {
     fetchVideos,
     fetchCampaignVideos,
     fetchProjectVideos,
-    createCampaignVideo,
-    createProjectVideo,
     createGlobalVideo,
     updateVideo,
-    updateHypothesisVideoContext,
+    upsertHypothesisAudience,
     fetchProjectHypotheses,
     linkVideosToHypothesis,
     linkVideoToHypotheses,

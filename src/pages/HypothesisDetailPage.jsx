@@ -9,7 +9,8 @@ import { useAudiences } from '@/contexts/AudienceContext';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
 import { useToast } from '@/components/ui/use-toast';
 import BulkVideoUpdateModal from '@/components/BulkVideoUpdateModal';
-import VideoCreateModal from '@/components/VideoCreateModal';
+import LibraryVideoModal from '@/components/LibraryVideoModal';
+import HypothesisAudienceModal from '@/components/HypothesisAudienceModal';
 
 const tabs = ['paid', 'organic', 'live'];
 
@@ -25,8 +26,9 @@ const HypothesisDetailPage = () => {
   const { audiences, fetchAudiences } = useAudiences();
 
   const [activeTab, setActiveTab] = useState('paid');
-  const [showVideoCreateModal, setShowVideoCreateModal] = useState(false);
-  const [editingVideo, setEditingVideo] = useState(null);
+  const [showLibraryModal, setShowLibraryModal] = useState(false);
+  const [showAudienceModal, setShowAudienceModal] = useState(false);
+  const [audienceVideo, setAudienceVideo] = useState(null);
   const [videoSearchTerm, setVideoSearchTerm] = useState('');
   const [sessionFilter, setSessionFilter] = useState('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -258,8 +260,8 @@ const HypothesisDetailPage = () => {
   };
 
   const openEdit = (video) => {
-    setEditingVideo(video);
-    setShowVideoCreateModal(true);
+    setAudienceVideo(video);
+    setShowAudienceModal(true);
   };
 
   if (!hypothesis) return <div className="min-h-screen flex items-center justify-center">Cargando hipótesis...</div>;
@@ -308,7 +310,7 @@ const HypothesisDetailPage = () => {
 
           <div className="flex gap-2 mb-4">{tabs.map((tab) => <Button key={tab} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)}>{tab.toUpperCase()}</Button>)}</div>
 
-          <p className="text-sm text-gray-600 mb-3">En esta vista, público/hook/cta/tipo se editan por hipótesis.</p>
+          <p className="text-sm text-gray-600 mb-3">En esta vista, solo Público se edita por hipótesis. Las métricas y campos globales se editan en Biblioteca.</p>
 
           <div className="mb-4 rounded-xl border bg-gray-50 p-3">
             <div className="grid md:grid-cols-3 gap-2">
@@ -336,7 +338,7 @@ const HypothesisDetailPage = () => {
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
                   <div className="flex gap-2">
-                    <Button className="bg-blue-100 text-blue-700" onClick={(event) => { event.stopPropagation(); openEdit(video); }}>Editar</Button>
+                    <Button className="bg-blue-100 text-blue-700" onClick={(event) => { event.stopPropagation(); openEdit(video); }}>Editar público</Button>
                     <Button className="bg-red-100 text-red-700" onClick={(event) => { event.stopPropagation(); deleteVideo(video.id, hypothesisId); }}><Trash2 className="w-4 h-4" /></Button>
                   </div>
                 </div>
@@ -356,7 +358,7 @@ const HypothesisDetailPage = () => {
 
             {createMode === 'menu' && (
               <div className="grid md:grid-cols-2 gap-3">
-                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowVideoCreateModal(true); }}>
+                <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => { setCreateMode('new'); setShowCreateModal(false); setShowLibraryModal(true); }}>
                   <p className="font-semibold">Crear nuevo</p>
                   <p className="text-sm text-gray-600">Abrir el formulario actual de creación para {activeTab.toUpperCase()}.</p>
                 </button>
@@ -400,22 +402,33 @@ const HypothesisDetailPage = () => {
         </div>
       )}
 
-      <VideoCreateModal
-        isOpen={showVideoCreateModal}
+      <LibraryVideoModal
+        isOpen={showLibraryModal}
         onClose={() => {
-          setShowVideoCreateModal(false);
-          setEditingVideo(null);
+          setShowLibraryModal(false);
         }}
-        mode={editingVideo ? 'edit' : 'create'}
-        context="hypothesis"
-        initialVideo={editingVideo}
-        defaultType={activeTab}
+        mode="create"
         projectId={projectId}
-        hypothesisId={hypothesisId}
-        audiences={audiences}
-        onCreated={async () => {
+        onSaved={async (savedVideo) => {
+          if (savedVideo?.id) {
+            await linkVideosToHypothesis(hypothesisId, [savedVideo.id]);
+            setAudienceVideo(savedVideo);
+            setShowAudienceModal(true);
+          }
           await fetchVideos(hypothesisId);
         }}
+      />
+
+      <HypothesisAudienceModal
+        isOpen={showAudienceModal}
+        onClose={() => {
+          setShowAudienceModal(false);
+          setAudienceVideo(null);
+        }}
+        hypothesisId={hypothesisId}
+        videoId={audienceVideo?.id}
+        currentAudience={audienceVideo?.audience_id || ''}
+        audiences={audiences}
         onSaved={async () => {
           await fetchVideos(hypothesisId);
         }}
