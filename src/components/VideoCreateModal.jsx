@@ -7,6 +7,7 @@ import { baseVideo, fieldMapByType, labels, numericFields } from '@/components/v
 const tabs = ['paid', 'organic', 'live'];
 const contextOnlyFields = new Set(['audience_id']);
 const contextReferenceFields = new Set(['external_id', 'title', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo']);
+const libraryForbiddenPayloadFields = new Set(['audience_id', 'hypothesis_id', 'id', 'user_id', 'project_id', 'campaign_id', 'created_at', 'updated_at']);
 
 const VideoCreateModal = ({
   isOpen,
@@ -97,7 +98,7 @@ const VideoCreateModal = ({
       if (isEditMode) {
         let updated = null;
         if (isLibraryContext) {
-          const updatePayload = Object.fromEntries(Object.entries(payload).filter(([field]) => field !== 'audience_id'));
+          const updatePayload = Object.fromEntries(Object.entries(payload).filter(([field]) => !libraryForbiddenPayloadFields.has(field)));
           updated = await updateVideo(initialVideo.id, updatePayload);
         } else {
           updated = await updateHypothesisVideoContext(hypothesisId, initialVideo.id, { audience_id: payload.audience_id });
@@ -105,7 +106,7 @@ const VideoCreateModal = ({
         toast({ title: 'Video actualizado', description: 'Cambios guardados correctamente.' });
         if (onSaved) await onSaved(updated);
       } else if (isLibraryContext) {
-        const createPayload = Object.fromEntries(Object.entries(payload).filter(([field]) => field !== 'audience_id'));
+        const createPayload = Object.fromEntries(Object.entries(payload).filter(([field]) => !libraryForbiddenPayloadFields.has(field)));
         const created = await createProjectVideo(projectId, createPayload);
         toast({ title: 'Video creado', description: `Video ${activeTab.toUpperCase()} creado correctamente.` });
         if (onCreated) await onCreated(created);
