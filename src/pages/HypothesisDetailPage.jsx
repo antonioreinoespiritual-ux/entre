@@ -42,7 +42,7 @@ const HypothesisDetailPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { hypotheses, fetchHypotheses } = useHypotheses();
-  const { videos, fetchVideos, createVideo, deleteVideo, fetchProjectHypotheses, linkVideosToHypothesis } = useVideos();
+  const { videos, fetchVideos, createVideo, deleteVideo, fetchCampaignVideos, linkVideosToHypothesis } = useVideos();
   const { audiences, fetchAudiences } = useAudiences();
 
   const [activeTab, setActiveTab] = useState('paid');
@@ -54,9 +54,7 @@ const HypothesisDetailPage = () => {
   const [sessionFilter, setSessionFilter] = useState('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createMode, setCreateMode] = useState('menu');
-  const [sourceHypotheses, setSourceHypotheses] = useState([]);
-  const [sourceHypothesisId, setSourceHypothesisId] = useState('');
-  const [sourceVideos, setSourceVideos] = useState([]);
+  const [libraryVideos, setLibraryVideos] = useState([]);
   const [selectedReuseVideoIds, setSelectedReuseVideoIds] = useState([]);
   const [reuseSearchTerm, setReuseSearchTerm] = useState('');
   const [reuseSessionFilter, setReuseSessionFilter] = useState('all');
@@ -79,15 +77,16 @@ const HypothesisDetailPage = () => {
   }, [campaignId, hypothesisId, fetchHypotheses, fetchAudiences, fetchVideos]);
 
   useEffect(() => {
-    if (!showCreateModal || createMode !== 'reuse' || !sourceHypothesisId) return;
+    if (!showCreateModal || createMode !== 'reuse') return;
     (async () => {
-      const response = await fetch(`${backendBaseUrl()}/api/hypotheses/${sourceHypothesisId}/videos?video_type=${activeTab}`, {
-        headers: { Authorization: `Bearer ${token()}` },
-      });
-      const json = await response.json();
-      setSourceVideos(Array.isArray(json.data) ? json.data : []);
+      try {
+        const result = await fetchCampaignVideos(campaignId, { video_type: activeTab });
+        setLibraryVideos(result.data || []);
+      } catch {
+        setLibraryVideos([]);
+      }
     })();
-  }, [showCreateModal, createMode, sourceHypothesisId, activeTab]);
+  }, [showCreateModal, createMode, campaignId, activeTab, fetchCampaignVideos]);
 
   const hypothesis = useMemo(() => hypotheses.find((h) => h.id === hypothesisId), [hypotheses, hypothesisId]);
   const tabVideos = useMemo(() => videos.filter((video) => (video.video_type || 'organic') === activeTab), [videos, activeTab]);
@@ -113,22 +112,22 @@ const HypothesisDetailPage = () => {
 
   const reuseAvailableSessions = useMemo(() => {
     const values = new Set();
-    sourceVideos.forEach((video) => {
+    libraryVideos.forEach((video) => {
       const sessionValue = video.session_id ?? video.external_id;
       if (sessionValue != null && String(sessionValue).trim() !== '') values.add(String(sessionValue));
     });
     return [...values];
-  }, [sourceVideos]);
+  }, [libraryVideos]);
 
   const filteredSourceVideos = useMemo(() => {
     const q = reuseSearchTerm.trim().toLowerCase();
-    return sourceVideos.filter((video) => {
+    return libraryVideos.filter((video) => {
       const sessionValue = String(video.session_id ?? video.external_id ?? '').trim();
       if (reuseSessionFilter !== 'all' && sessionValue !== reuseSessionFilter) return false;
       if (!q) return true;
       return [video.title, video.name, video.hook_texto, video.cta_texto].join(' ').toLowerCase().includes(q);
     });
-  }, [sourceVideos, reuseSearchTerm, reuseSessionFilter]);
+  }, [libraryVideos, reuseSearchTerm, reuseSessionFilter]);
 
   const volume = useMemo(() => buildVolumeSnapshot({
     videos,
@@ -149,12 +148,9 @@ const HypothesisDetailPage = () => {
   };
 
   const openCreateVideoModal = async () => {
-    const allHypotheses = await fetchProjectHypotheses(projectId);
-    setSourceHypotheses(allHypotheses.filter((item) => item.id !== hypothesisId));
     setShowCreateModal(true);
     setCreateMode('menu');
-    setSourceHypothesisId('');
-    setSourceVideos([]);
+    setLibraryVideos([]);
     setSelectedReuseVideoIds([]);
   };
 
@@ -348,24 +344,14 @@ const HypothesisDetailPage = () => {
                   <p className="text-sm text-gray-600">Abrir el formulario actual de creación para {activeTab.toUpperCase()}.</p>
                 </button>
                 <button type="button" className="rounded-xl border p-4 text-left hover:border-purple-300" onClick={() => setCreateMode('reuse')}>
-                  <p className="font-semibold">Reutilizar existente</p>
-                  <p className="text-sm text-gray-600">Vincula 1 o 2 videos desde otra hipótesis del mismo proyecto.</p>
+                  <p className="font-semibold">Elegir de biblioteca</p>
+                  <p className="text-sm text-gray-600">Vincula 1 o 2 videos de la biblioteca global de la campaña.</p>
                 </button>
               </div>
             )}
 
             {createMode === 'reuse' && (
               <div className="space-y-3">
-                <div>
-                  <label className="text-sm font-medium">Hipótesis origen</label>
-                  <select className="w-full rounded-lg border p-2 mt-1" value={sourceHypothesisId} onChange={(event) => { setSourceHypothesisId(event.target.value); setSelectedReuseVideoIds([]); }}>
-                    <option value="">Seleccionar hipótesis</option>
-                    {sourceHypotheses.map((item) => (
-                      <option key={item.id} value={item.id}>{item.type} · {item.hypothesis_statement || item.condition || item.id}</option>
-                    ))}
-                  </select>
-                </div>
-
                 <div className="grid md:grid-cols-3 gap-2">
                   <input className="rounded-lg border p-2" placeholder="Buscar videos..." value={reuseSearchTerm} onChange={(e) => setReuseSearchTerm(e.target.value)} />
                   <select className="rounded-lg border p-2" value={reuseSessionFilter} onChange={(e) => setReuseSessionFilter(e.target.value)}>
@@ -384,7 +370,7 @@ const HypothesisDetailPage = () => {
                       <p className="text-sm text-gray-600">Session: {video.session_id ?? video.external_id ?? '—'}</p>
                     </button>
                   ))}
-                  {sourceHypothesisId && filteredSourceVideos.length === 0 ? <p className="text-sm text-gray-500">No hay videos para este filtro.</p> : null}
+                  {filteredSourceVideos.length === 0 ? <p className="text-sm text-gray-500">No hay videos de biblioteca para este filtro.</p> : null}
                 </div>
 
                 <div className="flex gap-2 justify-end">

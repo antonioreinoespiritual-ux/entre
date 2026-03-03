@@ -72,35 +72,53 @@ export const VideoProvider = ({ children }) => {
       setVideos(data);
       return data;
     } catch (error) {
-      toast({
-        title: 'Error',
-        description: `Failed to fetch videos: ${error.message}`,
-        variant: 'destructive',
-      });
+      toast({ title: 'Error', description: `Failed to fetch videos: ${error.message}`, variant: 'destructive' });
       return [];
     } finally {
       setLoading(false);
     }
   }, [toast, currentUser]);
 
+  const fetchCampaignVideos = useCallback(async (campaignId, options = {}) => {
+    if (!currentUser || !campaignId) return { data: [], campaign: null };
+    const params = new URLSearchParams();
+    if (options.video_type) params.set('video_type', options.video_type);
+    if (options.search) params.set('search', options.search);
+    if (options.session_id) params.set('session_id', options.session_id);
+    if (options.usage) params.set('usage', options.usage);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const response = await fetch(`${backendBaseUrl()}/api/campaigns/${campaignId}/videos${suffix}`, {
+      headers: { Authorization: `Bearer ${sessionToken()}` },
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error || 'Failed to fetch campaign videos');
+    return { data: Array.isArray(json.data) ? json.data : [], campaign: json.campaign || null };
+  }, [currentUser]);
+
+  const createCampaignVideo = useCallback(async (campaignId, payload) => {
+    if (!currentUser || !campaignId) return null;
+    const response = await fetch(`${backendBaseUrl()}/api/campaigns/${campaignId}/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionToken()}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error || 'Failed to create video');
+    return Array.isArray(json.data) ? json.data[0] : null;
+  }, [currentUser]);
+
   const fetchProjectHypotheses = useCallback(async (projectId) => {
     if (!currentUser || !projectId) return [];
-    try {
-      const response = await fetch(`${backendBaseUrl()}/api/projects/${projectId}/hypotheses`, {
-        headers: { Authorization: `Bearer ${sessionToken()}` },
-      });
-      const json = await response.json();
-      if (!response.ok) throw new Error(json.error || 'Failed to fetch hypotheses');
-      return Array.isArray(json.data) ? json.data : [];
-    } catch (error) {
-      toast({
-        title: 'Error',
-        description: `Failed to fetch project hypotheses: ${error.message}`,
-        variant: 'destructive',
-      });
-      return [];
-    }
-  }, [currentUser, toast]);
+    const response = await fetch(`${backendBaseUrl()}/api/projects/${projectId}/hypotheses`, {
+      headers: { Authorization: `Bearer ${sessionToken()}` },
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error || 'Failed to fetch hypotheses');
+    return Array.isArray(json.data) ? json.data : [];
+  }, [currentUser]);
 
   const linkVideosToHypothesis = useCallback(async (hypothesisId, videoIds) => {
     if (!currentUser || !hypothesisId) return null;
@@ -117,6 +135,21 @@ export const VideoProvider = ({ children }) => {
     return json;
   }, [currentUser]);
 
+  const linkVideoToHypotheses = useCallback(async (videoId, hypothesisIds) => {
+    if (!currentUser || !videoId) return null;
+    const response = await fetch(`${backendBaseUrl()}/api/videos/${videoId}/link-hypotheses`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionToken()}`,
+      },
+      body: JSON.stringify({ hypothesis_ids: hypothesisIds }),
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error || 'Failed to link video to hypotheses');
+    return json;
+  }, [currentUser]);
+
   const createVideo = useCallback(async (videoData) => {
     if (!currentUser) return null;
     setLoading(true);
@@ -129,10 +162,7 @@ export const VideoProvider = ({ children }) => {
 
       if (error) throw error;
 
-      toast({
-        title: 'Success',
-        description: 'Video created successfully',
-      });
+      toast({ title: 'Success', description: 'Video created successfully' });
 
       await validateHypothesisForVideo(videoData.hypothesis_id, videoData);
       if (videoData.hypothesis_id) {
@@ -140,11 +170,7 @@ export const VideoProvider = ({ children }) => {
       }
       return data;
     } catch (error) {
-      toast({
-        title: 'Error',
-        description: `Failed to create video: ${error.message}`,
-        variant: 'destructive',
-      });
+      toast({ title: 'Error', description: `Failed to create video: ${error.message}`, variant: 'destructive' });
       return null;
     } finally {
       setLoading(false);
@@ -163,21 +189,14 @@ export const VideoProvider = ({ children }) => {
 
       if (error) throw error;
 
-      toast({
-        title: 'Success',
-        description: 'Video deleted successfully',
-      });
+      toast({ title: 'Success', description: 'Video deleted successfully' });
 
       if (hypothesisId) {
         await fetchVideos(hypothesisId);
       }
       return true;
     } catch (error) {
-      toast({
-        title: 'Error',
-        description: `Failed to delete video: ${error.message}`,
-        variant: 'destructive',
-      });
+      toast({ title: 'Error', description: `Failed to delete video: ${error.message}`, variant: 'destructive' });
       return false;
     } finally {
       setLoading(false);
@@ -188,8 +207,11 @@ export const VideoProvider = ({ children }) => {
     videos,
     loading,
     fetchVideos,
+    fetchCampaignVideos,
+    createCampaignVideo,
     fetchProjectHypotheses,
     linkVideosToHypothesis,
+    linkVideoToHypotheses,
     createVideo,
     deleteVideo,
   };

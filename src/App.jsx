@@ -10,6 +10,7 @@ import { HypothesisProvider } from '@/contexts/HypothesisContext';
 import ProjectsPage from '@/pages/ProjectsPage';
 import ProjectDetailPage from '@/pages/ProjectDetailPage';
 import CampaignDetailPage from '@/pages/CampaignDetailPage';
+import CampaignVideosLibraryPage from '@/pages/CampaignVideosLibraryPage';
 import AudienceDashboardPage from '@/pages/AudienceDashboardPage';
 import AudienceDetailPage from '@/pages/AudienceDetailPage';
 import AudienceAbTestPage from '@/pages/AudienceAbTestPage';
@@ -59,6 +60,7 @@ const ProtectedApp = () => (
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/projects/:id" element={<ProjectDetailPage />} />
               <Route path="/campaigns/:id" element={<CampaignDetailPage />} />
+              <Route path="/campaigns/:campaignId/videos" element={<CampaignVideosLibraryPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences" element={<AudienceDashboardPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences/:audienceId" element={<AudienceDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/audiences/ab-test" element={<AudienceAbTestPage />} />

@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { motion } from 'framer-motion';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Lightbulb, Users } from 'lucide-react';
+import { ArrowLeft, Lightbulb, Users, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCampaigns } from '@/contexts/CampaignContext';
 import { useAudiences } from '@/contexts/AudienceContext';
 import { useHypotheses } from '@/contexts/HypothesisContext';
+import { useVideos } from '@/contexts/VideoContext';
 
 const CampaignDetailPage = () => {
   const { id } = useParams();
@@ -14,9 +15,11 @@ const CampaignDetailPage = () => {
   const { fetchCampaignById } = useCampaigns();
   const { audiences, fetchAudiences } = useAudiences();
   const { hypotheses, fetchHypotheses } = useHypotheses();
+  const { fetchCampaignVideos } = useVideos();
 
   const [campaign, setCampaign] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [videosCount, setVideosCount] = useState(0);
 
   const openInCloud = async () => {
     if (!campaign?.id) return;
@@ -37,11 +40,13 @@ const CampaignDetailPage = () => {
       setCampaign(data);
       if (data) {
         await Promise.all([fetchAudiences(data.id), fetchHypotheses(data.id)]);
+        const videosResult = await fetchCampaignVideos(data.id);
+        setVideosCount((videosResult?.data || []).length);
       }
       setLoading(false);
     };
     load();
-  }, [id, fetchCampaignById, fetchAudiences, fetchHypotheses]);
+  }, [id, fetchCampaignById, fetchAudiences, fetchHypotheses, fetchCampaignVideos]);
 
   if (loading) {
     return <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50"><div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent" /></div>;
@@ -53,6 +58,7 @@ const CampaignDetailPage = () => {
 
   const audiencesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/audiences`;
   const hypothesesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/hypotheses`;
+  const videosLibraryPath = `/campaigns/${campaign.id}/videos`;
 
   return (
     <>
@@ -72,7 +78,7 @@ const CampaignDetailPage = () => {
             <Button onClick={openInCloud} className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
           </div>
 
-          <div className="grid md:grid-cols-2 gap-6">
+          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">
             <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow-xl p-6 border border-blue-100">
               <div className="flex items-center gap-3 mb-4">
                 <Users className="w-6 h-6 text-blue-600" />
@@ -91,6 +97,16 @@ const CampaignDetailPage = () => {
               <p className="text-gray-600 mb-4">Gestiona hipótesis y videos por tipo (paid, organic, live).</p>
               <p className="text-sm text-gray-500 mb-4">Total: {hypotheses.length}</p>
               <Link to={hypothesesPath} className="text-purple-600 font-medium hover:underline">Abrir Hypotheses Dashboard →</Link>
+            </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow-xl p-6 border border-indigo-100">
+              <div className="flex items-center gap-3 mb-4">
+                <Video className="w-6 h-6 text-indigo-600" />
+                <h2 className="text-xl font-semibold">Biblioteca de videos</h2>
+              </div>
+              <p className="text-gray-600 mb-4">Gestiona todos los videos de esta campaña y reutilízalos en hipótesis.</p>
+              <p className="text-sm text-gray-500 mb-4">Total: {videosCount}</p>
+              <Link to={videosLibraryPath} className="text-indigo-600 font-medium hover:underline">Abrir Biblioteca de Videos →</Link>
             </motion.div>
           </div>
         </div>
