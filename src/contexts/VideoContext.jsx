@@ -110,6 +110,21 @@ export const VideoProvider = ({ children }) => {
     return Array.isArray(json.data) ? json.data[0] : null;
   }, [currentUser]);
 
+  const updateVideo = useCallback(async (videoId, payload) => {
+    if (!currentUser || !videoId) return null;
+    const response = await fetch(`${backendBaseUrl()}/api/videos/${videoId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionToken()}`,
+      },
+      body: JSON.stringify(payload),
+    });
+    const json = await response.json();
+    if (!response.ok) throw new Error(json.error || 'Failed to update video');
+    return json.video || null;
+  }, [currentUser]);
+
   const fetchProjectHypotheses = useCallback(async (projectId) => {
     if (!currentUser || !projectId) return [];
     const response = await fetch(`${backendBaseUrl()}/api/projects/${projectId}/hypotheses`, {
@@ -209,6 +224,7 @@ export const VideoProvider = ({ children }) => {
     fetchVideos,
     fetchCampaignVideos,
     createCampaignVideo,
+    updateVideo,
     fetchProjectHypotheses,
     linkVideosToHypothesis,
     linkVideoToHypotheses,

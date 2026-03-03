@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, Link2, Video } from 'lucide-react';
+import { ArrowLeft, Link2, Pencil, Video } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useVideos } from '@/contexts/VideoContext';
@@ -26,6 +26,7 @@ const CampaignVideosLibraryPage = () => {
   const [sessionId, setSessionId] = useState('');
   const [usageFilter, setUsageFilter] = useState('all');
   const [showCreate, setShowCreate] = useState(false);
+  const [editingVideo, setEditingVideo] = useState(null);
   const [showLinkModal, setShowLinkModal] = useState(false);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [selectedHypothesisIds, setSelectedHypothesisIds] = useState([]);
@@ -57,6 +58,11 @@ const CampaignVideosLibraryPage = () => {
     setSelectedVideo(video);
     setSelectedHypothesisIds([]);
     setShowLinkModal(true);
+  };
+
+  const openEditModal = (video) => {
+    setEditingVideo(video);
+    setShowCreate(true);
   };
 
   const toggleHypothesis = (id) => {
@@ -118,7 +124,10 @@ const CampaignVideosLibraryPage = () => {
                     <p className="text-xs text-gray-500 mt-1">Usado en: {video.used_in_hypotheses || 0} hipótesis</p>
                     {Array.isArray(video.linked_hypotheses) && video.linked_hypotheses.length > 0 ? <p className="text-xs text-gray-500">{video.linked_hypotheses.join(' · ')}</p> : null}
                   </div>
-                  <Button className="bg-indigo-600 text-white" onClick={() => openLinkModal(video)}><Link2 className="w-4 h-4 mr-2" />Vincular a hipótesis…</Button>
+                  <div className="flex gap-2">
+                    <Button className="bg-blue-100 text-blue-700" onClick={() => openEditModal(video)}><Pencil className="w-4 h-4 mr-2" />Editar</Button>
+                    <Button className="bg-indigo-600 text-white" onClick={() => openLinkModal(video)}><Link2 className="w-4 h-4 mr-2" />Vincular a hipótesis…</Button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -129,11 +138,19 @@ const CampaignVideosLibraryPage = () => {
 
       <VideoCreateModal
         isOpen={showCreate}
-        onClose={() => setShowCreate(false)}
+        onClose={() => {
+          setShowCreate(false);
+          setEditingVideo(null);
+        }}
+        mode={editingVideo ? 'edit' : 'create'}
+        initialVideo={editingVideo}
         defaultType={videoType === 'all' ? 'organic' : videoType}
         campaignId={campaignId}
         audiences={audiences}
         onCreated={async () => {
+          await loadVideos();
+        }}
+        onSaved={async () => {
           await loadVideos();
         }}
       />

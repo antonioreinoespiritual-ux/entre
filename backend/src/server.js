@@ -2690,13 +2690,17 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readBody(req);
-      if ('hypothesis_id' in body || 'video_type' in body) {
-        sendJson(req, res, 400, { error: 'hypothesis_id and video_type cannot be changed' });
+      if ('hypothesis_id' in body) {
+        sendJson(req, res, 400, { error: 'hypothesis_id cannot be changed' });
         return;
       }
 
-      const disallowed = new Set(['id', 'user_id', 'created_at']);
-      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key));
+      if ('type' in body && !('video_type' in body)) {
+        body.video_type = body.type;
+      }
+
+      const disallowed = new Set(['id', 'user_id', 'created_at', 'video_id']);
+      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key) && key !== 'type');
       if (!entries.length) {
         sendJson(req, res, 400, { error: 'No editable fields provided' });
         return;
