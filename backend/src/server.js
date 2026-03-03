@@ -2889,6 +2889,10 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readBody(req);
+      if ('audience_id' in (body || {}) || 'hypothesis_id' in (body || {})) {
+        sendJson(req, res, 400, { error: 'audience_id and hypothesis_id are not allowed for global library videos' });
+        return;
+      }
       const payload = {
         ...body,
         project_id: projectId,
@@ -2934,6 +2938,15 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
+      if (hypothesisId) {
+        const metricFields = new Set(['clicks','views','views_profile','initiatest','initiate_checkouts','view_content','formulario_lead','purchase','likes','comments','shares','saves','nuevos_seguidores','cpc','ctr','pico_viewers','viewers_prom','duracion_min','duracion_seg','duracion_del_video_seg','views_finish_pct','retencion_pct','tiempo_prom_seg']);
+        const invalidMetricPayload = Object.keys(body || {}).some((key) => metricFields.has(key));
+        if (invalidMetricPayload) {
+          sendJson(req, res, 400, { error: 'Metrics are not editable from hypothesis context' });
+          return;
+        }
+      }
+
       const payload = {
         ...body,
         campaign_id: campaignId,
@@ -2959,12 +2972,6 @@ const server = http.createServer(async (req, res) => {
         );
         const contextEntries = [
           ['audience_id', body?.audience_id],
-          ['hook_texto', body?.hook_texto],
-          ['hook_tipo', body?.hook_tipo],
-          ['cta_texto', body?.cta_texto],
-          ['cta_tipo', body?.cta_tipo],
-          ['video_type', body?.video_type],
-          ['contexto_cualitativo', body?.contexto_cualitativo],
         ].filter(([, value]) => value !== undefined);
         if (contextEntries.length) {
           const setSql = contextEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
@@ -3099,28 +3106,21 @@ const server = http.createServer(async (req, res) => {
       await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, user.id]);
 
       const body = await readBody(req);
-      const normalizedType = body?.type && !body?.video_type ? body.type : body?.video_type;
-      const contextPayload = {
-        audience_id: body?.audience_id,
-        hook_texto: body?.hook_texto,
-        hook_tipo: body?.hook_tipo,
-        cta_texto: body?.cta_texto,
-        cta_tipo: body?.cta_tipo,
-        video_type: normalizedType,
-        contexto_cualitativo: body?.contexto_cualitativo,
-      };
-
-      const entries = Object.entries(contextPayload).filter(([, value]) => value !== undefined);
-      if (!entries.length) {
-        sendJson(req, res, 400, { error: 'No context fields provided' });
+      const keys = Object.keys(body || {});
+      const allowed = new Set(['audience_id']);
+      const invalid = keys.filter((key) => !allowed.has(key));
+      if (invalid.length) {
+        sendJson(req, res, 400, { error: `Only audience_id can be edited in hypothesis context. Invalid fields: ${invalid.join(',')}` });
+        return;
+      }
+      if (!('audience_id' in (body || {}))) {
+        sendJson(req, res, 400, { error: 'audience_id is required' });
         return;
       }
 
-      const setSql = entries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
-      const values = entries.map(([, value]) => value);
       await pool.query(
-        `UPDATE hypothesis_videos SET ${setSql} WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?`,
-        [...values, targetHypothesisId, targetVideoId, user.id],
+        'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
+        [body.audience_id || null, targetHypothesisId, targetVideoId, user.id],
       );
 
       const videos = await listVideosForHypothesis(targetHypothesisId, user.id, {});

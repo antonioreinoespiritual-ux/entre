@@ -167,7 +167,7 @@ const CampaignVideosLibraryPage = () => {
         }}
         mode={editingVideo ? 'edit' : 'create'}
         initialVideo={editingVideo}
-        scope="global"
+        context="library"
         defaultType={videoType === 'all' ? 'organic' : videoType}
         projectId={resolvedProjectId}
         audiences={audiences}

@@ -5,18 +5,14 @@ import { useVideos } from '@/contexts/VideoContext';
 import { baseVideo, fieldMapByType, labels, numericFields } from '@/components/videoFormConfig';
 
 const tabs = ['paid', 'organic', 'live'];
-
-
-const contextFields = new Set(['audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'contexto_cualitativo', 'video_type']);
+const contextOnlyFields = new Set(['audience_id']);
+const contextReferenceFields = new Set(['external_id', 'title', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo']);
 
 const VideoCreateModal = ({
   isOpen,
   onClose,
   mode = 'create',
-  scope = 'context',
-  allowMetricsEdit,
-  allowGlobalEdit,
-  allowContextEdit,
+  context = 'hypothesis',
   defaultType = 'organic',
   projectId,
   campaignId,
@@ -29,10 +25,7 @@ const VideoCreateModal = ({
   const { toast } = useToast();
   const { createCampaignVideo, createProjectVideo, updateVideo, updateHypothesisVideoContext } = useVideos();
   const isEditMode = mode === 'edit';
-  const isGlobalScope = scope === 'global';
-  const canEditMetrics = allowMetricsEdit ?? isGlobalScope;
-  const canEditGlobal = allowGlobalEdit ?? (isGlobalScope ? true : !isEditMode);
-  const canEditContext = allowContextEdit ?? !isGlobalScope;
+  const isLibraryContext = context === 'library';
   const [activeTab, setActiveTab] = useState(defaultType || 'organic');
   const [form, setForm] = useState(baseVideo);
   const [submitting, setSubmitting] = useState(false);
@@ -51,10 +44,15 @@ const VideoCreateModal = ({
   if (!isOpen) return null;
 
   const isFieldEditable = (field) => {
-    if (numericFields.includes(field)) return canEditMetrics;
-    if (contextFields.has(field)) return canEditContext;
-    return canEditGlobal;
+    if (isLibraryContext) return field !== 'audience_id';
+    if (contextOnlyFields.has(field)) return true;
+    if (isEditMode) return false;
+    return field === 'title' || field === 'external_id';
   };
+
+  const visibleFields = isLibraryContext
+    ? fieldMapByType[activeTab].filter((field) => field !== 'audience_id')
+    : fieldMapByType[activeTab].filter((field) => !numericFields.includes(field) && contextReferenceFields.has(field) || field === 'audience_id');
 
   const renderInput = (field) => {
     const editable = isFieldEditable(field);
@@ -77,52 +75,50 @@ const VideoCreateModal = ({
 
   const onSubmit = async (event) => {
     event.preventDefault();
-    if (!isEditMode && !isGlobalScope && !campaignId) {
-      toast({ title: 'Error', description: 'campaignId es obligatorio para crear videos', variant: 'destructive' });
+
+    if (!isEditMode && isLibraryContext && !projectId) {
+      toast({ title: 'Error', description: 'projectId es obligatorio para biblioteca', variant: 'destructive' });
       return;
     }
-    if (!isEditMode && isGlobalScope && !projectId) {
-      toast({ title: 'Error', description: 'projectId es obligatorio para crear videos globales', variant: 'destructive' });
+    if (!isEditMode && !isLibraryContext && !campaignId) {
+      toast({ title: 'Error', description: 'campaignId es obligatorio para hipótesis', variant: 'destructive' });
       return;
     }
-    if (isEditMode && !initialVideo?.id) {
-      toast({ title: 'Error', description: 'Video inválido para edición', variant: 'destructive' });
+    if (!isLibraryContext && !hypothesisId) {
+      toast({ title: 'Error', description: 'hypothesisId es obligatorio para contexto hipótesis', variant: 'destructive' });
       return;
     }
 
-    const payload = {
-      ...form,
-      video_type: activeTab,
-    };
-    if (hypothesisId) payload.hypothesis_id = hypothesisId;
+    const payload = { ...form, video_type: activeTab };
     numericFields.forEach((field) => { payload[field] = Number(payload[field] || 0); });
 
     setSubmitting(true);
     try {
       if (isEditMode) {
         let updated = null;
-        if (isGlobalScope) {
-          const updatePayload = Object.fromEntries(Object.entries(payload).filter(([field]) => isFieldEditable(field) && !contextFields.has(field)));
+        if (isLibraryContext) {
+          const updatePayload = Object.fromEntries(Object.entries(payload).filter(([field]) => field !== 'audience_id'));
           updated = await updateVideo(initialVideo.id, updatePayload);
         } else {
-          const contextPayload = {
-            audience_id: payload.audience_id,
-            hook_texto: payload.hook_texto,
-            hook_tipo: payload.hook_tipo,
-            cta_texto: payload.cta_texto,
-            cta_tipo: payload.cta_tipo,
-            ...(canEditContext ? { video_type: activeTab } : {}),
-            contexto_cualitativo: payload.contexto_cualitativo,
-          };
-          updated = await updateHypothesisVideoContext(hypothesisId, initialVideo.id, contextPayload);
+          updated = await updateHypothesisVideoContext(hypothesisId, initialVideo.id, { audience_id: payload.audience_id });
         }
         toast({ title: 'Video actualizado', description: 'Cambios guardados correctamente.' });
         if (onSaved) await onSaved(updated);
-      } else {
-        const created = isGlobalScope
-          ? await createProjectVideo(projectId, Object.fromEntries(Object.entries(payload).filter(([field]) => isFieldEditable(field) && !contextFields.has(field))))
-          : await createCampaignVideo(campaignId, Object.fromEntries(Object.entries(payload).filter(([field]) => isFieldEditable(field) || contextFields.has(field))));
+      } else if (isLibraryContext) {
+        const createPayload = Object.fromEntries(Object.entries(payload).filter(([field]) => field !== 'audience_id'));
+        const created = await createProjectVideo(projectId, createPayload);
         toast({ title: 'Video creado', description: `Video ${activeTab.toUpperCase()} creado correctamente.` });
+        if (onCreated) await onCreated(created);
+      } else {
+        const createPayload = {
+          title: payload.title,
+          external_id: payload.external_id,
+          hypothesis_id: hypothesisId,
+          audience_id: payload.audience_id,
+          video_type: activeTab,
+        };
+        const created = await createCampaignVideo(campaignId, createPayload);
+        toast({ title: 'Video creado', description: `Video ${activeTab.toUpperCase()} creado y vinculado.` });
         if (onCreated) await onCreated(created);
       }
       onClose();
@@ -137,32 +133,34 @@ const VideoCreateModal = ({
     <div className="fixed inset-0 z-50 bg-black/50 p-4 flex items-center justify-center">
       <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl p-5 max-h-[90vh] overflow-auto">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-semibold">{isEditMode ? 'Editar video' : 'Crear video'} {isGlobalScope ? '(global)' : `(${activeTab.toUpperCase()})`}</h3>
+          <h3 className="text-lg font-semibold">{isEditMode ? 'Editar video' : 'Crear video'} ({activeTab.toUpperCase()})</h3>
           <Button className="bg-gray-200 text-gray-700" onClick={onClose}>Cerrar</Button>
         </div>
 
         <div className="flex gap-2 mb-4">
           {tabs.map((tab) => (
-            <Button key={tab} disabled={!canEditContext} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)} type="button">
+            <Button key={tab} disabled={!isLibraryContext && isEditMode} className={activeTab === tab ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-700'} onClick={() => setActiveTab(tab)} type="button">
               {tab.toUpperCase()}
             </Button>
           ))}
         </div>
 
         <form onSubmit={onSubmit} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-purple-50">
-          {!canEditMetrics ? <p className="md:col-span-2 text-xs text-gray-600">Métricas visibles en solo lectura en este contexto.</p> : null}
+          {!isLibraryContext ? <p className="md:col-span-2 text-xs text-gray-600">Contexto de hipótesis: solo Público se guarda aquí. Métricas/global son de biblioteca.</p> : null}
           {isEditMode && (initialVideo?.video_id || initialVideo?.video_id === 0) ? (
             <div>
               <label className="block text-sm font-medium mb-1">video_id</label>
               <input type="text" className="w-full rounded-lg border p-2 bg-gray-100" value={String(initialVideo.video_id)} readOnly disabled />
             </div>
           ) : null}
-          {(isGlobalScope ? fieldMapByType[activeTab] : fieldMapByType[activeTab]).map((field) => (
+
+          {visibleFields.map((field) => (
             <div key={field} className={field === 'contexto_cualitativo' ? 'md:col-span-2' : ''}>
               <label className="block text-sm font-medium mb-1">{labels[field] || field}</label>
               {renderInput(field)}
             </div>
           ))}
+
           <div className="md:col-span-2 flex gap-2 justify-end">
             <Button type="button" className="bg-gray-200 text-gray-700" onClick={onClose}>Cancelar</Button>
             <Button type="submit" disabled={submitting} className="bg-purple-600 text-white">{submitting ? (isEditMode ? 'Guardando...' : 'Creando...') : (isEditMode ? 'Guardar cambios' : `Crear video ${activeTab}`)}</Button>

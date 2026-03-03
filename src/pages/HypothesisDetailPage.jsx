@@ -407,7 +407,7 @@ const HypothesisDetailPage = () => {
           setEditingVideo(null);
         }}
         mode={editingVideo ? 'edit' : 'create'}
-        scope="context"
+        context="hypothesis"
         initialVideo={editingVideo}
         defaultType={activeTab}
         campaignId={campaignId}
