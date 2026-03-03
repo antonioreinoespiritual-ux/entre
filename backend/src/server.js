@@ -2308,16 +2308,11 @@ async function executeCrudQuery(body, currentUserId) {
       );
     };
 
-    const ensureAutoExternalId = () => {
+    const assignAutoIdentifiersForVideo = async () => {
       if (table !== 'videos') return;
-      if (String(writeRow.external_id || '').trim()) return;
-      const generatedExternalId = autoExternalIdForVideo(writeRow.video_type, writeRow.video_id);
-      if (generatedExternalId) writeRow.external_id = generatedExternalId;
-    };
 
-    if (table === 'videos' && (writeRow.video_id == null || String(writeRow.video_id).trim() === '')) {
-      await pool.query('BEGIN IMMEDIATE');
-      try {
+      if (writeRow.video_id == null || String(writeRow.video_id).trim() === '') {
+        const hasProjectScope = String(writeRow.project_id || '').trim() !== '';
         const [maxRows] = await pool.query(
           `SELECT COALESCE(MAX(CASE
             WHEN trim(CAST(video_id AS TEXT)) <> '' AND trim(CAST(video_id AS TEXT)) GLOB '[0-9]*'
@@ -2325,11 +2320,48 @@ async function executeCrudQuery(body, currentUserId) {
             ELSE NULL
           END), 0) AS max_video_id
           FROM videos
-          WHERE user_id = ?`,
-          [currentUserId],
+          WHERE user_id = ? ${hasProjectScope ? 'AND project_id = ?' : ''}`,
+          hasProjectScope ? [currentUserId, writeRow.project_id] : [currentUserId],
         );
         writeRow.video_id = Number(maxRows[0]?.max_video_id || 0) + 1;
-        ensureAutoExternalId();
+      }
+
+      if (!String(writeRow.external_id || '').trim()) {
+        const generatedExternalId = autoExternalIdForVideo(writeRow.video_type, writeRow.video_id);
+        if (generatedExternalId) {
+          if (String(writeRow.project_id || '').trim()) {
+            const [existsRows] = await pool.query(
+              'SELECT id FROM videos WHERE user_id = ? AND project_id = ? AND external_id = ? LIMIT 1',
+              [currentUserId, writeRow.project_id, generatedExternalId],
+            );
+            if (existsRows.length) {
+              const prefix = generatedExternalId.split('-')[0] || 'session';
+              const [maxRows] = await pool.query(
+                `SELECT COALESCE(MAX(CASE
+                  WHEN external_id LIKE ? AND trim(substr(external_id, instr(external_id, '-') + 1)) GLOB '[0-9]*'
+                  THEN CAST(substr(external_id, instr(external_id, '-') + 1) AS INTEGER)
+                  ELSE NULL
+                END), 0) AS max_external_seq
+                FROM videos
+                WHERE user_id = ? AND project_id = ?`,
+                [`${prefix}-%`, currentUserId, writeRow.project_id],
+              );
+              const nextSequence = Number(maxRows[0]?.max_external_seq || 0) + 1;
+              writeRow.external_id = `${prefix}-${nextSequence}`;
+            } else {
+              writeRow.external_id = generatedExternalId;
+            }
+          } else {
+            writeRow.external_id = generatedExternalId;
+          }
+        }
+      }
+    };
+
+    if (table === 'videos') {
+      await pool.query('BEGIN IMMEDIATE');
+      try {
+        await assignAutoIdentifiersForVideo();
         await insertRow();
         await pool.query('COMMIT');
       } catch (error) {
@@ -2337,7 +2369,6 @@ async function executeCrudQuery(body, currentUserId) {
         throw error;
       }
     } else {
-      ensureAutoExternalId();
       await insertRow();
     }
     const [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
@@ -2940,69 +2971,6 @@ const server = http.createServer(async (req, res) => {
       };
 
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
-      sendJson(req, res, 200, { data: rows });
-      return;
-    }
-
-    const campaignCreateVideoMatch = url.pathname.match(/^\/api\/campaigns\/([^/]+)\/videos$/);
-    if (campaignCreateVideoMatch && req.method === 'POST') {
-      const user = authFromRequest(req);
-      if (!user) {
-        sendJson(req, res, 401, { error: 'Unauthorized' });
-        return;
-      }
-      const campaignId = campaignCreateVideoMatch[1];
-      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
-      if (!campaignRows.length) {
-        sendJson(req, res, 404, { error: 'Campaign not found' });
-        return;
-      }
-      const body = await readBody(req);
-      const hypothesisId = String(body?.hypothesis_id || '').trim();
-
-      if (hypothesisId) {
-        sendJson(req, res, 400, {
-          error: 'Legacy hypothesis payload is not supported in /api/campaigns/:id/videos. Use /api/videos + /api/hypotheses/:id/videos/link + PATCH context.',
-          code: 'HYPOTHESIS_CONTEXT_FORBIDDEN_FIELDS',
-          fields: ['hypothesis_id'],
-        });
-        return;
-      }
-
-      const payload = {
-        ...body,
-        campaign_id: campaignId,
-        project_id: campaignRows[0]?.project_id || null,
-        hypothesis_id: hypothesisId || null,
-        audience_id: null,
-        hook_texto: null,
-        hook_tipo: null,
-        cta_texto: null,
-        cta_tipo: null,
-      };
-      const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
-      const created = Array.isArray(rows) ? rows[0] : null;
-
-      if (created?.id) {
-        await ensureVideoCanonicalFolder(user.id, campaignId, created);
-      }
-
-      if (created?.id && hypothesisId) {
-        await pool.query(
-          'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
-          [uuid(), hypothesisId, created.id, user.id],
-        );
-        const contextEntries = [
-          ['audience_id', body?.audience_id],
-        ].filter(([, value]) => value !== undefined);
-        if (contextEntries.length) {
-          const setSql = contextEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
-          const values = contextEntries.map(([, value]) => value);
-          await pool.query(`UPDATE hypothesis_videos SET ${setSql} WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?`, [...values, hypothesisId, created.id, user.id]);
-        }
-        await linkVideoFolderIntoHypothesis(user.id, campaignId, hypothesisId, created);
-      }
-
       sendJson(req, res, 200, { data: rows });
       return;
     }

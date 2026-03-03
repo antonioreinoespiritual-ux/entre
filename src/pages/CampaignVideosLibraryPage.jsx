@@ -130,7 +130,7 @@ const CampaignVideosLibraryPage = () => {
             </select>
             <div className="flex gap-2">
               <Button className="bg-gray-200 text-gray-700" onClick={applySearch}>Filtrar</Button>
-              <Button className="bg-purple-600 text-white" onClick={() => setShowCreate(true)}>Crear video</Button>
+              <Button className="bg-purple-600 text-white" onClick={() => { setEditingVideo(null); setShowCreate(true); }}>Crear video</Button>
             </div>
           </div>
 
