@@ -22,7 +22,7 @@ const CampaignDetailPage = () => {
   const [videosCount, setVideosCount] = useState(0);
 
   const openInCloud = async () => {
-    navigate(`/cloud?projectId=${campaign.project_id}`);
+    navigate(`/projects/${campaign.project_id}/cloud`);
   };
 
   useEffect(() => {

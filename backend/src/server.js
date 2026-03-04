@@ -367,6 +367,41 @@ async function listCloudChildren(userId, parentId) {
   return [...byId.values()].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
 }
 
+function sanitizeCloudName(rawName) {
+  return String(rawName || '').replace(/[\\/]+/g, ' ').trim().slice(0, 120);
+}
+
+function parseMultipartFormData(bodyBuffer, contentType) {
+  const match = String(contentType || '').match(/boundary=(.+)$/i);
+  if (!match) throw new Error('Missing multipart boundary');
+  const boundary = `--${match[1]}`;
+  const parts = bodyBuffer.toString('binary').split(boundary).slice(1, -1);
+  const parsed = {};
+  for (const part of parts) {
+    const trimmed = part.replace(/^\r\n/, '').replace(/\r\n$/, '');
+    const splitIndex = trimmed.indexOf('\r\n\r\n');
+    if (splitIndex < 0) continue;
+    const rawHeaders = trimmed.slice(0, splitIndex);
+    const rawValue = trimmed.slice(splitIndex + 4);
+    const disposition = rawHeaders.split('\r\n').find((line) => /^content-disposition:/i.test(line)) || '';
+    const nameMatch = disposition.match(/name="([^"]+)"/i);
+    if (!nameMatch) continue;
+    const fieldName = nameMatch[1];
+    const fileNameMatch = disposition.match(/filename="([^"]*)"/i);
+    if (fileNameMatch) {
+      const contentTypeHeader = rawHeaders.split('\r\n').find((line) => /^content-type:/i.test(line));
+      parsed[fieldName] = {
+        filename: sanitizeCloudName(fileNameMatch[1] || 'file.bin') || 'file.bin',
+        mimeType: (contentTypeHeader || '').split(':')[1]?.trim() || 'application/octet-stream',
+        buffer: Buffer.from(rawValue, 'binary'),
+      };
+    } else {
+      parsed[fieldName] = Buffer.from(rawValue, 'binary').toString('utf8').trim();
+    }
+  }
+  return parsed;
+}
+
 async function findNodeByName(userId, parentId, name, type = 'folder') {
   const sql = parentId == null
     ? 'SELECT * FROM cloud_nodes WHERE user_id = ? AND parent_id IS NULL AND name = ? AND type = ? LIMIT 1'
@@ -2839,13 +2874,23 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (url.pathname === '/api/cloud/tree' && req.method === 'GET') {
+    if ((url.pathname === '/api/cloud/tree' || url.pathname === '/api/cloud/list') && req.method === 'GET') {
       const user = authFromRequest(req);
       if (!user) {
         sendJson(req, res, 401, { error: 'Unauthorized' });
         return;
       }
-      await syncCloudForUser(user.id);
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      if (!projectId) {
+        sendJson(req, res, 400, { error: 'projectId is required' });
+        return;
+      }
+      const [projectRows] = await pool.query('SELECT id FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+      if (!projectRows.length) {
+        sendJson(req, res, 404, { error: 'Project not found' });
+        return;
+      }
+      await syncCloudForUser(user.id, projectId);
       const parentId = url.searchParams.get('parentId');
       const search = (url.searchParams.get('search') || '').trim().toLowerCase();
       const sort = url.searchParams.get('sort') || 'name';
@@ -2853,35 +2898,194 @@ const server = http.createServer(async (req, res) => {
       const offset = Math.max(Number(url.searchParams.get('offset') || 0), 0);
 
       let rows = await listCloudChildren(user.id, parentId);
+      rows = rows.filter((row) => String(row.project_id || '') === projectId);
       if (search) rows = rows.filter((row) => String(row.name || '').toLowerCase().includes(search));
       if (sort === 'updated_at') rows.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
       if (sort === 'created_at') rows.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
 
       const paged = rows.slice(offset, offset + limit);
       const breadcrumbs = parentId ? await getCloudBreadcrumbs(user.id, parentId) : [];
-      sendJson(req, res, 200, { data: paged, total: rows.length, breadcrumbs });
+      sendJson(req, res, 200, {
+        data: paged.map((row) => ({
+          id: row.id,
+          name: row.name,
+          kind: row.is_linked_from_edge ? 'shortcut' : row.kind,
+          type: row.type,
+          targetId: row.is_linked_from_edge ? row.id : null,
+          size: row.size,
+          updatedAt: row.updated_at,
+          mimeType: row.mime_type,
+          isShortcut: Boolean(row.is_linked_from_edge),
+        })),
+        total: rows.length,
+        breadcrumbs,
+      });
       return;
     }
 
     if (url.pathname === '/api/cloud/folder' && req.method === 'POST') {
-      sendJson(req, res, 410, { error: 'Cloud legacy endpoint removed. Use project-scoped sync/overview endpoints.' });
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const body = await readBody(req);
+      const projectId = String(body?.projectId || '').trim();
+      const parentId = String(body?.parentId || '').trim() || null;
+      const name = sanitizeCloudName(body?.name);
+      if (!projectId || !name) {
+        sendJson(req, res, 400, { error: 'projectId and name are required' });
+        return;
+      }
+      const node = await createCloudNode({ userId: user.id, projectId, parentId, name, type: 'folder' });
+      sendJson(req, res, 201, { node });
       return;
     }
 
     const cloudNodeMatch = url.pathname.match(/^\/api\/cloud\/node\/([^/]+)$/);
     if (cloudNodeMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
-      sendJson(req, res, 410, { error: 'Cloud legacy endpoint removed. Use link/unlink flows from videos/hypotheses.' });
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const nodeId = cloudNodeMatch[1];
+      const node = await getCloudNodeById(nodeId, user.id);
+      if (!node) {
+        sendJson(req, res, 404, { error: 'Node not found' });
+        return;
+      }
+      if (req.method === 'PATCH') {
+        const body = await readBody(req);
+        const name = sanitizeCloudName(body?.name);
+        if (!name) {
+          sendJson(req, res, 400, { error: 'name is required' });
+          return;
+        }
+        await pool.query('UPDATE cloud_nodes SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?', [name, nowIso(), nodeId, user.id]);
+        sendJson(req, res, 200, { ok: true });
+        return;
+      }
+
+      const parentId = String(url.searchParams.get('parentId') || '').trim() || null;
+      if (parentId) {
+        const [edgeRows] = await pool.query('SELECT id FROM cloud_edges WHERE user_id = ? AND parent_id = ? AND child_id = ? LIMIT 1', [user.id, parentId, nodeId]);
+        if (edgeRows.length) {
+          await unlinkCloudEdge(user.id, parentId, nodeId);
+          sendJson(req, res, 200, { ok: true, unlinked: true });
+          return;
+        }
+      }
+      await deleteCloudNodeTree(user.id, nodeId);
+      sendJson(req, res, 200, { ok: true, deleted: true });
       return;
     }
 
     if (url.pathname === '/api/cloud/upload' && req.method === 'POST') {
-      sendJson(req, res, 410, { error: 'Cloud upload is not available in the rebuilt minimal Cloud.' });
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const bodyBuffer = Buffer.concat(chunks);
+      const form = parseMultipartFormData(bodyBuffer, req.headers['content-type']);
+      const projectId = String(form.projectId || '').trim();
+      const parentId = String(form.parentId || '').trim() || null;
+      const file = form.file;
+      if (!projectId || !parentId || !file?.buffer) {
+        sendJson(req, res, 400, { error: 'projectId, parentId and file are required' });
+        return;
+      }
+      const parentNode = await getCloudNodeById(parentId, user.id);
+      if (!parentNode || String(parentNode.project_id) !== projectId) {
+        sendJson(req, res, 404, { error: 'Parent folder not found' });
+        return;
+      }
+      const fileId = uuid();
+      const ext = path.extname(file.filename || '') || '.bin';
+      const storagePath = path.join(storageRoot, 'cloud', projectId, `${fileId}${ext}`);
+      fs.mkdirSync(path.dirname(storagePath), { recursive: true });
+      fs.writeFileSync(storagePath, file.buffer);
+      const node = await createCloudNode({
+        userId: user.id,
+        projectId,
+        parentId,
+        name: file.filename,
+        type: 'file',
+        mimeType: file.mimeType,
+        size: file.buffer.length,
+        storagePath,
+      });
+      sendJson(req, res, 201, { node });
       return;
     }
 
-    const cloudDownloadMatch = url.pathname.match(/^\/api\/cloud\/download\/([^/]+)$/);
+    const cloudDownloadMatch = url.pathname.match(/^\/api\/cloud\/download(?:\/([^/]+))?$/);
     if (cloudDownloadMatch && req.method === 'GET') {
-      sendJson(req, res, 410, { error: 'Cloud download is not available in the rebuilt minimal Cloud.' });
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const nodeId = cloudDownloadMatch[1] || url.searchParams.get('nodeId');
+      const node = await getCloudNodeById(nodeId, user.id);
+      if (!node || node.type !== 'file' || !node.storage_path || !fs.existsSync(node.storage_path)) {
+        sendJson(req, res, 404, { error: 'File not found' });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': node.mime_type || 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${encodeURIComponent(node.name || 'file')}"`,
+      });
+      fs.createReadStream(node.storage_path).pipe(res);
+      return;
+    }
+
+
+    if (url.pathname === '/api/cloud/search' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const q = String(url.searchParams.get('q') || '').trim().toLowerCase();
+      if (!projectId) {
+        sendJson(req, res, 400, { error: 'projectId is required' });
+        return;
+      }
+      const [rows] = await pool.query(
+        `SELECT id, name, kind, type, parent_id, updated_at
+         FROM cloud_nodes
+         WHERE user_id = ? AND project_id = ? AND lower(name) LIKE ?
+         ORDER BY updated_at DESC
+         LIMIT 100`,
+        [user.id, projectId, `%${q}%`],
+      );
+      sendJson(req, res, 200, { data: rows });
+      return;
+    }
+
+    if (url.pathname === '/api/cloud/resolve-shortcut' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const nodeId = String(url.searchParams.get('nodeId') || '').trim();
+      const parentId = String(url.searchParams.get('parentId') || '').trim() || null;
+      if (!nodeId || !parentId) {
+        sendJson(req, res, 400, { error: 'nodeId and parentId are required' });
+        return;
+      }
+      const [edgeRows] = await pool.query('SELECT id FROM cloud_edges WHERE user_id = ? AND parent_id = ? AND child_id = ? LIMIT 1', [user.id, parentId, nodeId]);
+      if (!edgeRows.length) {
+        sendJson(req, res, 404, { error: 'Shortcut not found' });
+        return;
+      }
+      sendJson(req, res, 200, { targetId: nodeId });
       return;
     }
 

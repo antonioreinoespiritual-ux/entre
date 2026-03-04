@@ -21,7 +21,7 @@ const ProjectDetailPage = () => {
   const [editingCampaignId, setEditingCampaignId] = useState(null);
 
   const openInCloud = async () => {
-    navigate(`/cloud?projectId=${id}`);
+    navigate(`/projects/${id}/cloud`);
   };
 
   useEffect(() => {

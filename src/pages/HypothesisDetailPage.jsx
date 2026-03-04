@@ -46,7 +46,7 @@ const HypothesisDetailPage = () => {
   const [moveSubmitting, setMoveSubmitting] = useState(false);
 
   const openInCloud = async () => {
-    navigate(`/cloud?projectId=${projectId}`);
+    navigate(`/projects/${projectId}/cloud`);
   };
 
   useEffect(() => {

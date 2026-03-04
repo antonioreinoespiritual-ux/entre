@@ -38,7 +38,7 @@ const VideoDetailPage = () => {
   const comparables = useMemo(() => videos.filter((v) => v.id !== videoId && (v.video_type || '') === (video?.video_type || '')).slice(0, 3), [videos, videoId, video]);
 
   const openInCloud = async () => {
-    navigate(`/cloud?projectId=${projectId}`);
+    navigate(`/projects/${projectId}/cloud`);
   };
 
   if (!video) return <div className="min-h-screen flex items-center justify-center">Cargando video...</div>;
