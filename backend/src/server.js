@@ -3619,6 +3619,27 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const campaignAudiencesMatch = url.pathname.match(/^\/api\/campaigns\/([^/]+)\/audiences$/);
+    if (campaignAudiencesMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const campaignId = campaignAudiencesMatch[1];
+      const campaign = await fetchOwnedCampaignById(campaignId, user.id);
+      if (!campaign) {
+        sendJson(req, res, 404, { error: 'Campaign not found' });
+        return;
+      }
+      const [rows] = await pool.query(
+        'SELECT * FROM audiences WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC',
+        [user.id, campaignId],
+      );
+      sendJson(req, res, 200, { data: rows, campaign });
+      return;
+    }
+
     const projectVideosMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/videos$/);
     if (projectVideosMatch && req.method === 'GET') {
       const user = authFromRequest(req);
