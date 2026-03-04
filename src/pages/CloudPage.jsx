@@ -46,7 +46,7 @@ const CloudPage = () => {
       url.searchParams.set('projectId', projectId);
       url.searchParams.set('parentId', nextParentId);
       if (q) url.searchParams.set('search', q);
-      const response = await fetch(url, { headers: authHeader });
+      const response = await fetch(url.toString(), { headers: authHeader });
       const json = await response.json();
       if (!response.ok) throw new Error(json?.error || 'No se pudo listar carpeta');
       setItems(json.data || []);
@@ -107,7 +107,7 @@ const CloudPage = () => {
     for (const id of selected) {
       const url = new URL(`${apiBaseUrl}/api/cloud/node/${id}`);
       url.searchParams.set('parentId', parentId);
-      await fetch(url, { method: 'DELETE', headers: authHeader });
+      await fetch(url.toString(), { method: 'DELETE', headers: authHeader });
     }
     await loadList(parentId);
   };
@@ -129,7 +129,7 @@ const CloudPage = () => {
     const url = new URL(`${apiBaseUrl}/api/cloud/search`);
     url.searchParams.set('projectId', projectId);
     url.searchParams.set('q', search);
-    const response = await fetch(url, { headers: authHeader });
+    const response = await fetch(url.toString(), { headers: authHeader });
     const json = await response.json();
     setGlobalResults(json.data || []);
   };
