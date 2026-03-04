@@ -504,9 +504,9 @@ async function ensureProjectCloudRoots(userId, projectId) {
   };
 
   const projectRoot = await ensureCanonicalFolder('project_root', project.name || `Proyecto ${project.id}`, null);
+  const campaignsRoot = await ensureCanonicalFolder('campaigns_root', 'Campañas', projectRoot.id);
   const videosRoot = await ensureCanonicalFolder('videos_root', 'Videos', projectRoot.id);
-  const hypothesesRoot = await ensureCanonicalFolder('hypotheses_root', 'Hipótesis', projectRoot.id);
-  return { projectRoot, videosRoot, hypothesesRoot };
+  return { projectRoot, campaignsRoot, videosRoot };
 }
 
 async function ensureProjectVideosRootFolder(userId, projectId) {
@@ -528,6 +528,43 @@ async function ensureCampaignVideosRootFolder(userId, campaignId) {
   return ensureProjectVideosRootFolder(userId, campaign.project_id);
 }
 
+async function ensureCampaignCloudFolders(userId, campaignId) {
+  const [rows] = await pool.query(
+    `SELECT c.id, c.name, c.project_id
+     FROM campaigns c
+     JOIN projects p ON p.id = c.project_id
+     WHERE c.id = ? AND c.user_id = ? AND p.user_id = ?
+     LIMIT 1`,
+    [campaignId, userId, userId],
+  );
+  const campaign = rows[0];
+  if (!campaign) return null;
+
+  const roots = await ensureProjectCloudRoots(userId, campaign.project_id);
+  if (!roots) return null;
+
+  const ensureCanonicalFolder = async (canonicalKey, name, parentId, targetType = null, targetId = null) => {
+    const [found] = await pool.query(
+      'SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key = ? LIMIT 1',
+      [userId, campaign.project_id, canonicalKey],
+    );
+    const existing = found[0] || null;
+    if (existing) {
+      if (String(existing.name || '') !== String(name || '') || String(existing.parent_id || '') !== String(parentId || '')) {
+        await pool.query('UPDATE cloud_nodes SET name = ?, parent_id = ?, updated_at = ? WHERE id = ? AND user_id = ?', [name, parentId, nowIso(), existing.id, userId]);
+      }
+      return existing;
+    }
+    return createCloudNode({ userId, projectId: campaign.project_id, parentId, name, type: 'folder', canonicalKey, targetType, targetId });
+  };
+
+  const campaignRoot = await ensureCanonicalFolder(`campaign_root:${campaign.id}`, campaign.name || `Campaña ${campaign.id}`, roots.campaignsRoot.id, 'campaign', campaign.id);
+  const videosFolder = await ensureCanonicalFolder(`campaign_videos_root:${campaign.id}`, 'Biblioteca de videos', campaignRoot.id);
+  const hypothesesFolder = await ensureCanonicalFolder(`campaign_hypotheses_root:${campaign.id}`, 'Hipótesis', campaignRoot.id);
+  const audiencesFolder = await ensureCanonicalFolder(`campaign_audiences_root:${campaign.id}`, 'Audiencias', campaignRoot.id);
+  return { campaign, roots, campaignRoot, videosFolder, hypothesesFolder, audiencesFolder };
+}
+
 async function ensureHypothesisFolder(userId, campaignId, hypothesisId) {
   const [rows] = await pool.query(
     `SELECT h.id, h.hypothesis_statement, h.condition, h.type, c.project_id
@@ -540,19 +577,46 @@ async function ensureHypothesisFolder(userId, campaignId, hypothesisId) {
   const hypothesis = rows[0];
   if (!hypothesis) return null;
 
-  const roots = await ensureProjectCloudRoots(userId, hypothesis.project_id);
-  if (!roots) return null;
+  const campaignFolders = await ensureCampaignCloudFolders(userId, campaignId);
+  if (!campaignFolders) return null;
 
   const hypothesisName = String(hypothesis.hypothesis_statement || hypothesis.condition || hypothesis.type || `Hipótesis ${hypothesis.id}`).slice(0, 80);
   const hypothesisRootCanonicalKey = `hypothesis_root:${hypothesis.id}`;
   const [existingRoot] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key = ? LIMIT 1', [userId, hypothesis.project_id, hypothesisRootCanonicalKey]);
   let hypothesisRoot = existingRoot[0] || null;
   if (!hypothesisRoot) {
-    hypothesisRoot = await createCloudNode({ userId, projectId: hypothesis.project_id, parentId: roots.hypothesesRoot.id, name: hypothesisName, type: 'folder', canonicalKey: hypothesisRootCanonicalKey, targetType: 'hypothesis', targetId: hypothesis.id });
+    hypothesisRoot = await createCloudNode({ userId, projectId: hypothesis.project_id, parentId: campaignFolders.hypothesesFolder.id, name: hypothesisName, type: 'folder', canonicalKey: hypothesisRootCanonicalKey, targetType: 'hypothesis', targetId: hypothesis.id });
   }
   const [videoFolderRows] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND parent_id = ? AND name = ? AND type = ? LIMIT 1', [userId, hypothesis.project_id, hypothesisRoot.id, 'Videos', 'folder']);
   if (videoFolderRows[0]) return videoFolderRows[0];
   return createCloudNode({ userId, projectId: hypothesis.project_id, parentId: hypothesisRoot.id, name: 'Videos', type: 'folder' });
+}
+
+async function ensureAudienceFolder(userId, campaignId, audienceId) {
+  const [rows] = await pool.query(
+    `SELECT a.id, a.name, c.project_id
+     FROM audiences a
+     JOIN campaigns c ON c.id = a.campaign_id
+     WHERE a.id = ? AND a.campaign_id = ? AND a.user_id = ?
+     LIMIT 1`,
+    [audienceId, campaignId, userId],
+  );
+  const audience = rows[0];
+  if (!audience) return null;
+
+  const campaignFolders = await ensureCampaignCloudFolders(userId, campaignId);
+  if (!campaignFolders) return null;
+
+  const audienceName = String(audience.name || `Audiencia ${audience.id}`).slice(0, 80);
+  const audienceRootCanonicalKey = `audience_root:${audience.id}`;
+  const [existingRoot] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key = ? LIMIT 1', [userId, audience.project_id, audienceRootCanonicalKey]);
+  let audienceRoot = existingRoot[0] || null;
+  if (!audienceRoot) {
+    audienceRoot = await createCloudNode({ userId, projectId: audience.project_id, parentId: campaignFolders.audiencesFolder.id, name: audienceName, type: 'folder', canonicalKey: audienceRootCanonicalKey, targetType: 'audience', targetId: audience.id });
+  }
+  const [videoFolderRows] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND parent_id = ? AND name = ? AND type = ? LIMIT 1', [userId, audience.project_id, audienceRoot.id, 'Videos', 'folder']);
+  if (videoFolderRows[0]) return videoFolderRows[0];
+  return createCloudNode({ userId, projectId: audience.project_id, parentId: audienceRoot.id, name: 'Videos', type: 'folder' });
 }
 
 async function ensureVideoCanonicalFolder(userId, video, campaignId = null) {
@@ -606,6 +670,25 @@ async function linkVideoFolderIntoHypothesis(userId, campaignId, hypothesisId, v
   if (!canonicalFolder) return null;
   await ensureCloudEdge(userId, hypothesisVideosFolder.id, canonicalFolder.id);
   return canonicalFolder;
+}
+
+async function linkVideoFolderIntoAudience(userId, campaignId, audienceId, video) {
+  if (!audienceId) return null;
+  const audienceVideosFolder = await ensureAudienceFolder(userId, campaignId, audienceId);
+  if (!audienceVideosFolder) return null;
+  const canonicalFolder = await ensureVideoCanonicalFolder(userId, video, campaignId);
+  if (!canonicalFolder) return null;
+  await ensureCloudEdge(userId, audienceVideosFolder.id, canonicalFolder.id);
+  return canonicalFolder;
+}
+
+async function unlinkVideoFolderFromAudience(userId, campaignId, audienceId, video) {
+  if (!audienceId) return;
+  const audienceVideosFolder = await ensureAudienceFolder(userId, campaignId, audienceId);
+  if (!audienceVideosFolder) return;
+  const canonicalFolder = await ensureVideoCanonicalFolder(userId, video, campaignId);
+  if (!canonicalFolder) return;
+  await unlinkCloudEdge(userId, audienceVideosFolder.id, canonicalFolder.id);
 }
 
 async function unlinkVideoFolderFromHypothesis(userId, campaignId, hypothesisId, video) {
@@ -753,25 +836,47 @@ async function syncCloudForUser(userId, projectId = null) {
     const roots = await ensureProjectCloudRoots(userId, project.id);
     if (!roots) continue;
 
+    const [campaigns] = await pool.query(
+      'SELECT id FROM campaigns WHERE user_id = ? AND project_id = ? ORDER BY created_at ASC',
+      [userId, project.id],
+    );
+    for (const campaign of campaigns) {
+      const campaignFolders = await ensureCampaignCloudFolders(userId, campaign.id);
+      if (!campaignFolders) continue;
+
+      const [campaignVideos] = await pool.query(
+        'SELECT * FROM videos WHERE user_id = ? AND project_id = ? ORDER BY created_at ASC',
+        [userId, project.id],
+      );
+      for (const video of campaignVideos) {
+        const canonical = await ensureVideoCanonicalFolder(userId, video, campaign.id);
+        if (canonical) await ensureCloudEdge(userId, campaignFolders.videosFolder.id, canonical.id);
+      }
+
+      const [campaignHypotheses] = await pool.query(
+        'SELECT id FROM hypotheses WHERE user_id = ? AND campaign_id = ? ORDER BY created_at ASC',
+        [userId, campaign.id],
+      );
+      for (const hypothesis of campaignHypotheses) {
+        await ensureHypothesisFolder(userId, campaign.id, hypothesis.id);
+      }
+
+      const [campaignAudiences] = await pool.query(
+        'SELECT id FROM audiences WHERE user_id = ? AND campaign_id = ? ORDER BY created_at ASC',
+        [userId, campaign.id],
+      );
+      for (const audience of campaignAudiences) {
+        await ensureAudienceFolder(userId, campaign.id, audience.id);
+      }
+    }
+
     const [videos] = await pool.query('SELECT * FROM videos WHERE user_id = ? AND project_id = ? ORDER BY created_at ASC', [userId, project.id]);
     for (const video of videos) {
       await ensureVideoCanonicalFolder(userId, video, video.campaign_id || null);
     }
 
-    const [hypotheses] = await pool.query(
-      `SELECT h.id, h.campaign_id
-       FROM hypotheses h
-       JOIN campaigns c ON c.id = h.campaign_id
-       WHERE h.user_id = ? AND c.project_id = ?`,
-      [userId, project.id],
-    );
-
-    for (const hypothesis of hypotheses) {
-      await ensureHypothesisFolder(userId, hypothesis.campaign_id, hypothesis.id);
-    }
-
     const [links] = await pool.query(
-      `SELECT hv.hypothesis_id, hv.video_id, h.campaign_id
+      `SELECT hv.hypothesis_id, hv.video_id, h.campaign_id, COALESCE(hv.audience_id, h.audience_id) AS audience_id
        FROM hypothesis_videos hv
        JOIN hypotheses h ON h.id = hv.hypothesis_id
        JOIN campaigns c ON c.id = h.campaign_id
@@ -784,6 +889,9 @@ async function syncCloudForUser(userId, projectId = null) {
       const video = videoRows[0];
       if (!video) continue;
       await linkVideoFolderIntoHypothesis(userId, link.campaign_id, link.hypothesis_id, video);
+      if (link.audience_id) {
+        await linkVideoFolderIntoAudience(userId, link.campaign_id, link.audience_id, video);
+      }
     }
   }
 }
@@ -3519,8 +3627,10 @@ const server = http.createServer(async (req, res) => {
           already_linked.push(hyp.id);
           continue;
         }
-        await pool.query('INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [uuid(), hyp.id, video.id, hyp.audience_id || null, user.id]);
-        await linkVideoFolderIntoHypothesis(user.id, video.campaign_id, hyp.id, video);
+        const contextAudienceId = hyp.audience_id || null;
+        await pool.query('INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [uuid(), hyp.id, video.id, contextAudienceId, user.id]);
+        await linkVideoFolderIntoHypothesis(user.id, hyp.campaign_id, hyp.id, video);
+        await linkVideoFolderIntoAudience(user.id, hyp.campaign_id, contextAudienceId, video);
         linked.push(hyp.id);
       }
       await syncCloudForUser(user.id);
@@ -3610,6 +3720,11 @@ const server = http.createServer(async (req, res) => {
       }
 
       const contextAudienceId = hypothesis?.audience_id || body?.audience_id || null;
+      const [prevRows] = await pool.query(
+        'SELECT audience_id FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
+        [hypothesisId, videoId, user.id],
+      );
+      const previousAudienceId = prevRows[0]?.audience_id || null;
       await pool.query(
         'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)',
         [uuid(), hypothesisId, videoId, contextAudienceId, user.id],
@@ -3619,6 +3734,10 @@ const server = http.createServer(async (req, res) => {
         [contextAudienceId, hypothesisId, videoId, user.id],
       );
       await linkVideoFolderIntoHypothesis(user.id, hypothesis.campaign_id, hypothesisId, video);
+      await linkVideoFolderIntoAudience(user.id, hypothesis.campaign_id, contextAudienceId, video);
+      if (previousAudienceId && String(previousAudienceId) !== String(contextAudienceId || '')) {
+        await unlinkVideoFolderFromAudience(user.id, hypothesis.campaign_id, previousAudienceId, video);
+      }
 
       const [rows] = await pool.query(
         'SELECT * FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
@@ -3668,8 +3787,11 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readBody(req);
       const contextAudienceId = hypothesis?.audience_id || body?.audience_id || null;
+      const [prevRows] = await pool.query('SELECT audience_id FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1', [targetHypothesisId, targetVideoId, user.id]);
+      const previousAudienceId = prevRows[0]?.audience_id || null;
       await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, contextAudienceId, user.id]);
       await linkVideoFolderIntoHypothesis(user.id, hypothesis.campaign_id, targetHypothesisId, video);
+      await linkVideoFolderIntoAudience(user.id, hypothesis.campaign_id, contextAudienceId, video);
 
       const keys = Object.keys(body || {});
       const invalid = keys.filter((key) => !hypothesisContextOnlyFields.has(key));
@@ -3685,6 +3807,9 @@ const server = http.createServer(async (req, res) => {
         'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
         [contextAudienceId, targetHypothesisId, targetVideoId, user.id],
       );
+      if (previousAudienceId && String(previousAudienceId) !== String(contextAudienceId || '')) {
+        await unlinkVideoFolderFromAudience(user.id, hypothesis.campaign_id, previousAudienceId, video);
+      }
 
       const videos = await listVideosForHypothesis(targetHypothesisId, user.id, {});
       const updated = videos.find((row) => String(row.id) === String(targetVideoId)) || null;
@@ -3752,11 +3877,13 @@ const server = http.createServer(async (req, res) => {
           continue;
         }
 
+        const contextAudienceId = targetHypothesis.audience_id || null;
         await pool.query(
           'INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)',
-          [uuid(), targetHypothesisId, video.id, targetHypothesis.audience_id || null, user.id],
+          [uuid(), targetHypothesisId, video.id, contextAudienceId, user.id],
         );
         await linkVideoFolderIntoHypothesis(user.id, targetHypothesis.campaign_id, targetHypothesisId, video);
+        await linkVideoFolderIntoAudience(user.id, targetHypothesis.campaign_id, contextAudienceId, video);
         linked.push(video.id);
       }
 
@@ -3808,8 +3935,11 @@ const server = http.createServer(async (req, res) => {
           skipped.push({ video_id: requestedId, reason: 'not_found' });
           continue;
         }
+        const [hvRows] = await pool.query('SELECT audience_id FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1', [targetHypothesisId, video.id, user.id]);
+        const linkedAudienceId = hvRows[0]?.audience_id || null;
         await pool.query('DELETE FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?', [targetHypothesisId, video.id, user.id]);
         await unlinkVideoFolderFromHypothesis(user.id, targetHypothesis.campaign_id, targetHypothesisId, video);
+        await unlinkVideoFolderFromAudience(user.id, targetHypothesis.campaign_id, linkedAudienceId, video);
         unlinked.push(video.id);
       }
 

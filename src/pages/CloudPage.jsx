@@ -34,7 +34,7 @@ const CloudPage = () => {
     const json = await response.json();
     if (!response.ok) throw new Error(json?.error || 'No se pudo cargar Cloud');
     setOverview(json);
-    const rootId = json?.roots?.projectRoot?.id || '';
+    const rootId = json?.roots?.campaignsRoot?.id || json?.roots?.projectRoot?.id || '';
     if (!parentId && rootId) setParentId(rootId);
   };
 
