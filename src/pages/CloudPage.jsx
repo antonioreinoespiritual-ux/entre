@@ -3,6 +3,7 @@ import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Folder, File, Link as LinkIcon, Search, Grid2X2, List, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { toUrlString } from '@/lib/url';
 
 const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
@@ -29,7 +30,7 @@ const CloudPage = () => {
   const authHeader = useMemo(() => ({ Authorization: `Bearer ${token()}` }), []);
 
   const loadOverview = async () => {
-    const response = await fetch(`${apiBaseUrl}/api/cloud/projects/${projectId}/overview`, { headers: authHeader });
+    const response = await fetch(toUrlString(`${apiBaseUrl}/api/cloud/projects/${projectId}/overview`), { headers: authHeader });
     const json = await response.json();
     if (!response.ok) throw new Error(json?.error || 'No se pudo cargar Cloud');
     setOverview(json);
@@ -46,7 +47,7 @@ const CloudPage = () => {
       url.searchParams.set('projectId', projectId);
       url.searchParams.set('parentId', nextParentId);
       if (q) url.searchParams.set('search', q);
-      const response = await fetch(url.toString(), { headers: authHeader });
+      const response = await fetch(toUrlString(url), { headers: authHeader });
       const json = await response.json();
       if (!response.ok) throw new Error(json?.error || 'No se pudo listar carpeta');
       setItems(json.data || []);
@@ -79,7 +80,7 @@ const CloudPage = () => {
   const createFolder = async () => {
     const name = window.prompt('Nombre de carpeta');
     if (!name) return;
-    await fetch(`${apiBaseUrl}/api/cloud/folder`, {
+    await fetch(toUrlString(`${apiBaseUrl}/api/cloud/folder`), {
       method: 'POST',
       headers: { ...authHeader, 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId, parentId, name }),
@@ -93,7 +94,7 @@ const CloudPage = () => {
     const current = items.find((i) => i.id === first);
     const name = window.prompt('Nuevo nombre', current?.name || '');
     if (!name) return;
-    await fetch(`${apiBaseUrl}/api/cloud/node/${first}`, {
+    await fetch(toUrlString(`${apiBaseUrl}/api/cloud/node/${first}`), {
       method: 'PATCH',
       headers: { ...authHeader, 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
@@ -107,7 +108,7 @@ const CloudPage = () => {
     for (const id of selected) {
       const url = new URL(`${apiBaseUrl}/api/cloud/node/${id}`);
       url.searchParams.set('parentId', parentId);
-      await fetch(url.toString(), { method: 'DELETE', headers: authHeader });
+      await fetch(toUrlString(url), { method: 'DELETE', headers: authHeader });
     }
     await loadList(parentId);
   };
@@ -119,7 +120,7 @@ const CloudPage = () => {
       fd.append('projectId', projectId);
       fd.append('parentId', parentId);
       fd.append('file', file);
-      await fetch(`${apiBaseUrl}/api/cloud/upload`, { method: 'POST', headers: authHeader, body: fd });
+      await fetch(toUrlString(`${apiBaseUrl}/api/cloud/upload`), { method: 'POST', headers: authHeader, body: fd });
     }
     event.target.value = '';
     await loadList(parentId);
@@ -129,7 +130,7 @@ const CloudPage = () => {
     const url = new URL(`${apiBaseUrl}/api/cloud/search`);
     url.searchParams.set('projectId', projectId);
     url.searchParams.set('q', search);
-    const response = await fetch(url.toString(), { headers: authHeader });
+    const response = await fetch(toUrlString(url), { headers: authHeader });
     const json = await response.json();
     setGlobalResults(json.data || []);
   };
@@ -181,7 +182,7 @@ const CloudPage = () => {
                 {item.kind === 'shortcut' ? <LinkIcon className="w-4 h-4 text-indigo-300" /> : item.kind === 'folder' ? <Folder className="w-4 h-4 text-blue-300" /> : <File className="w-4 h-4 text-gray-300" />}
                 <span>{item.name}</span>
               </button>
-              {item.kind === 'file' ? <a href={`${apiBaseUrl}/api/cloud/download?nodeId=${encodeURIComponent(item.id)}`} target="_blank" rel="noreferrer"><Download className="w-4 h-4" /></a> : null}
+              {item.kind === 'file' ? <a href={toUrlString(`${apiBaseUrl}/api/cloud/download?nodeId=${encodeURIComponent(item.id)}`)} target="_blank" rel="noreferrer"><Download className="w-4 h-4" /></a> : null}
               <span className="text-xs text-gray-400">{item.kind}</span>
               <span className="text-xs text-gray-400">{item.size || '-'}</span>
             </div>
