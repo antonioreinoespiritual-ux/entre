@@ -99,11 +99,13 @@ const schemaSql = [
     volumen_unidad TEXT,
     canal_principal TEXT,
     contexto_cualitativo TEXT,
+    audience_id TEXT,
     condition TEXT,
     validation_status TEXT DEFAULT 'No Validada',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_hypotheses_campaign_id ON hypotheses(campaign_id)',
@@ -1264,6 +1266,10 @@ async function ensureVideoHierarchyMigration() {
     }
   }
 
+  if (!(await hasColumn('hypotheses', 'audience_id'))) {
+    await pool.query('ALTER TABLE hypotheses ADD COLUMN audience_id TEXT');
+  }
+
   await ensureHypothesisVideosVideoForeignKeyTarget();
   await pool.query(`CREATE TABLE IF NOT EXISTS cloud_edges (
     id TEXT PRIMARY KEY,
@@ -1311,6 +1317,8 @@ async function ensureVideoHierarchyMigration() {
   await pool.query(
     `UPDATE hypothesis_videos
      SET audience_id = COALESCE(audience_id, (
+           SELECT h.audience_id FROM hypotheses h WHERE h.id = hypothesis_videos.hypothesis_id
+         ), (
            SELECT v.audience_id FROM videos v WHERE v.id = hypothesis_videos.video_id
          )),
          hook_texto = COALESCE(hook_texto, (
@@ -2104,10 +2112,10 @@ async function listVideosLinkedToHypothesis(hypothesisId, userId) {
   const [rows] = await pool.query(
     `SELECT DISTINCT v.*
      FROM videos v
-     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id
+     JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id
      WHERE v.user_id = ?
-       AND (hv.hypothesis_id = ? OR v.hypothesis_id = ?)`,
-    [userId, hypothesisId, hypothesisId],
+       AND hv.hypothesis_id = ?`,
+    [userId, hypothesisId],
   );
   return rows;
 }
@@ -2133,9 +2141,9 @@ async function countOtherUsageInCampaign(videoId, sourceCampaignId, hypothesisId
 async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
   const where = [
     'v.user_id = ?',
-    '(hv.hypothesis_id = ? OR v.hypothesis_id = ?)',
+    'hv.hypothesis_id = ?',
   ];
-  const params = [userId, hypothesisId, hypothesisId];
+  const params = [userId, hypothesisId];
 
   if (options.video_type) {
     where.push('v.video_type = ?');
@@ -2152,17 +2160,16 @@ async function listVideosForHypothesis(hypothesisId, userId, options = {}) {
 
   const [rows] = await pool.query(
     `SELECT v.*,
-      COALESCE(hv.audience_id, NULLIF(v.audience_id, '')) AS audience_id,
+      hv.audience_id AS audience_id,
       hv.hypothesis_id AS context_hypothesis_id,
-      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN 1 ELSE 0 END AS is_reused_for_hypothesis,
-      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN v.hypothesis_id ELSE NULL END AS source_hypothesis_id,
-      CASE WHEN v.hypothesis_id IS NOT NULL AND trim(CAST(v.hypothesis_id AS TEXT)) <> '' AND v.hypothesis_id <> ? THEN COALESCE(hs.hypothesis_statement, hs.condition, hs.type, hs.id) ELSE NULL END AS source_hypothesis_name
+      0 AS is_reused_for_hypothesis,
+      NULL AS source_hypothesis_id,
+      NULL AS source_hypothesis_name
      FROM videos v
-     LEFT JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id AND hv.hypothesis_id = ?
-     LEFT JOIN hypotheses hs ON hs.id = v.hypothesis_id
+     JOIN hypothesis_videos hv ON hv.video_id = v.id AND hv.user_id = v.user_id
      WHERE ${where.join(' AND ')}
      ORDER BY v.created_at DESC`,
-    [hypothesisId, hypothesisId, hypothesisId, hypothesisId, ...params],
+    params,
   );
   return rows;
 }
@@ -2714,6 +2721,14 @@ async function executeCrudQuery(body, currentUserId) {
     const setSql = fields.map((field) => `${normalizeIdentifier(field)} = ?`).join(', ');
     await pool.query(`UPDATE ${quotedTable} SET ${setSql}${where}`, [...fields.map((field) => payload[field]), ...whereValues]);
     const [updated] = await pool.query(`SELECT * FROM ${quotedTable}${where}`, whereValues);
+    if (table === 'hypotheses' && Object.prototype.hasOwnProperty.call(payload || {}, 'audience_id')) {
+      for (const hypothesis of updated) {
+        await pool.query(
+          'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND user_id = ?',
+          [hypothesis?.audience_id || null, hypothesis.id, currentUserId],
+        );
+      }
+    }
     if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
@@ -3352,7 +3367,7 @@ const server = http.createServer(async (req, res) => {
 
       const placeholders = targetIds.map(() => '?').join(', ');
       const [hypothesisRows] = await pool.query(
-        `SELECT h.id, h.campaign_id, c.project_id
+        `SELECT h.id, h.campaign_id, h.audience_id, c.project_id
          FROM hypotheses h
          JOIN campaigns c ON c.id = h.campaign_id
          WHERE h.user_id = ? AND h.id IN (${placeholders})`,
@@ -3378,7 +3393,7 @@ const server = http.createServer(async (req, res) => {
           already_linked.push(hyp.id);
           continue;
         }
-        await pool.query('INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)', [uuid(), hyp.id, video.id, user.id]);
+        await pool.query('INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [uuid(), hyp.id, video.id, hyp.audience_id || null, user.id]);
         await linkVideoFolderIntoHypothesis(user.id, video.campaign_id, hyp.id, video);
         linked.push(hyp.id);
       }
@@ -3468,13 +3483,14 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      const contextAudienceId = hypothesis?.audience_id || body?.audience_id || null;
       await pool.query(
-        'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
-        [uuid(), hypothesisId, videoId, user.id],
+        'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)',
+        [uuid(), hypothesisId, videoId, contextAudienceId, user.id],
       );
       await pool.query(
         'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
-        [body?.audience_id || null, hypothesisId, videoId, user.id],
+        [contextAudienceId, hypothesisId, videoId, user.id],
       );
       await linkVideoFolderIntoHypothesis(user.id, hypothesis.campaign_id, hypothesisId, video);
 
@@ -3524,10 +3540,11 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, user.id]);
+      const body = await readBody(req);
+      const contextAudienceId = hypothesis?.audience_id || body?.audience_id || null;
+      await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, contextAudienceId, user.id]);
       await linkVideoFolderIntoHypothesis(user.id, hypothesis.campaign_id, targetHypothesisId, video);
 
-      const body = await readBody(req);
       const keys = Object.keys(body || {});
       const invalid = keys.filter((key) => !hypothesisContextOnlyFields.has(key));
       if (invalid.length) {
@@ -3538,14 +3555,9 @@ const server = http.createServer(async (req, res) => {
         });
         return;
       }
-      if (!('audience_id' in (body || {}))) {
-        sendJson(req, res, 400, { error: 'audience_id is required' });
-        return;
-      }
-
       await pool.query(
         'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
-        [body.audience_id || null, targetHypothesisId, targetVideoId, user.id],
+        [contextAudienceId, targetHypothesisId, targetVideoId, user.id],
       );
 
       const videos = await listVideosForHypothesis(targetHypothesisId, user.id, {});
@@ -3615,8 +3627,8 @@ const server = http.createServer(async (req, res) => {
         }
 
         await pool.query(
-          'INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)',
-          [uuid(), targetHypothesisId, video.id, user.id],
+          'INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)',
+          [uuid(), targetHypothesisId, video.id, targetHypothesis.audience_id || null, user.id],
         );
         await linkVideoFolderIntoHypothesis(user.id, targetHypothesis.campaign_id, targetHypothesisId, video);
         linked.push(video.id);
@@ -3929,13 +3941,22 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const where = ['audience_id = ?', 'user_id = ?'];
-      const values = [audienceId, user.id];
+      const where = ['hv.user_id = ?', 'hv.audience_id = ?', 'h.campaign_id = ?'];
+      const values = [user.id, audienceId, audience.campaign_id];
       if (selectedType !== 'all') {
-        where.push('video_type = ?');
+        where.push('v.video_type = ?');
         values.push(selectedType);
       }
-      const [videos] = await pool.query(`SELECT * FROM videos WHERE ${where.join(' AND ')} ORDER BY created_at DESC`, values);
+      const [videos] = await pool.query(
+        `SELECT v.*, hv.audience_id, hv.hypothesis_id, MAX(hv.created_at) AS linked_at
+         FROM hypothesis_videos hv
+         JOIN videos v ON v.id = hv.video_id AND v.user_id = hv.user_id
+         JOIN hypotheses h ON h.id = hv.hypothesis_id AND h.user_id = hv.user_id
+         WHERE ${where.join(' AND ')}
+         GROUP BY v.id, hv.audience_id, hv.hypothesis_id
+         ORDER BY linked_at DESC, v.created_at DESC`,
+        values,
+      );
       const aggregates = buildAudienceAggregates(videos);
       const warnings = buildAudienceWarnings(videos, selectedType, minViews);
       const byType = {

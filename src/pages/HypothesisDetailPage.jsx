@@ -66,6 +66,14 @@ const HypothesisDetailPage = () => {
   const hypothesis = useMemo(() => hypotheses.find((h) => h.id === hypothesisId), [hypotheses, hypothesisId]);
   const tabVideos = useMemo(() => videos.filter((video) => (video.video_type || 'organic') === activeTab), [videos, activeTab]);
 
+
+  const audiencesById = useMemo(() => {
+    const map = new Map();
+    audiences.forEach((audience) => map.set(String(audience.id), audience));
+    return map;
+  }, [audiences]);
+
+
   const availableSessions = useMemo(() => {
     const values = new Set();
     tabVideos.forEach((video) => {
@@ -272,6 +280,7 @@ const HypothesisDetailPage = () => {
                     <h3 className="font-semibold">{video.title}</h3>
                     <p className="text-sm text-gray-600">Session #{video.session_id ?? video.external_id ?? '—'}</p>
                     {video.is_reused_for_hypothesis ? <p className="mt-1 text-xs inline-flex bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Reutilizado de: {video.source_hypothesis_name || '—'}</p> : null}
+                    <p className="text-sm text-gray-600">Público: {audiencesById.get(String(video.audience_id || ''))?.name || 'Sin público'}</p>
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
                   <div className="flex gap-2">
