@@ -553,6 +553,71 @@ async function unlinkVideoFolderFromHypothesis(userId, campaignId, hypothesisId,
   await unlinkCloudEdge(userId, hypothesisVideosFolder.id, canonicalFolder.id);
 }
 
+async function cleanupHypothesisVideoLinks(projectId, userId) {
+  const [hypRows] = await pool.query(
+    `SELECT h.id, h.campaign_id
+     FROM hypotheses h
+     JOIN campaigns c ON c.id = h.campaign_id
+     WHERE c.project_id = ? AND h.user_id = ? AND c.user_id = ?`,
+    [projectId, userId, userId],
+  );
+
+  let removedEdges = 0;
+  let removedShortcuts = 0;
+
+  for (const hyp of hypRows) {
+    const hypothesisVideosFolder = await ensureHypothesisFolder(userId, hyp.campaign_id, hyp.id);
+    if (!hypothesisVideosFolder) continue;
+
+    const [edgeRows] = await pool.query(
+      `SELECT e.id
+       FROM cloud_edges e
+       JOIN cloud_nodes child ON child.id = e.child_id AND child.user_id = e.user_id
+       WHERE e.user_id = ? AND e.parent_id = ? AND child.target_type = 'video'`,
+      [userId, hypothesisVideosFolder.id],
+    );
+    if (edgeRows.length) {
+      await pool.query('DELETE FROM cloud_edges WHERE user_id = ? AND parent_id = ? AND child_id IN (SELECT id FROM cloud_nodes WHERE user_id = ? AND target_type = ?)', [userId, hypothesisVideosFolder.id, userId, 'video']);
+      removedEdges += edgeRows.length;
+    }
+
+    const [shortcutRows] = await pool.query(
+      `SELECT id
+       FROM cloud_nodes
+       WHERE user_id = ? AND parent_id = ? AND type = 'shortcut' AND target_type = 'video'`,
+      [userId, hypothesisVideosFolder.id],
+    );
+    if (shortcutRows.length) {
+      await pool.query('DELETE FROM cloud_nodes WHERE user_id = ? AND parent_id = ? AND type = ? AND target_type = ?', [userId, hypothesisVideosFolder.id, 'shortcut', 'video']);
+      removedShortcuts += shortcutRows.length;
+    }
+  }
+
+  const hypothesisIds = hypRows.map((row) => row.id);
+  let removedLinks = 0;
+  if (hypothesisIds.length) {
+    const placeholders = hypothesisIds.map(() => '?').join(', ');
+    const [rows] = await pool.query(
+      `SELECT id FROM hypothesis_videos WHERE user_id = ? AND hypothesis_id IN (${placeholders})`,
+      [userId, ...hypothesisIds],
+    );
+    removedLinks = rows.length;
+    await pool.query(
+      `DELETE FROM hypothesis_videos WHERE user_id = ? AND hypothesis_id IN (${placeholders})`,
+      [userId, ...hypothesisIds],
+    );
+  }
+
+  await pool.query(
+    `UPDATE videos SET hypothesis_id = NULL
+     WHERE user_id = ? AND project_id = ? AND hypothesis_id IS NOT NULL AND trim(CAST(hypothesis_id AS TEXT)) <> ''`,
+    [userId, projectId],
+  );
+
+  await syncCloudForUser(userId);
+  return { removed_links: removedLinks, removed_edges: removedEdges, removed_shortcuts: removedShortcuts };
+}
+
 async function ensureVideoCloudFolderStructure(userId, parentId, video) {
   const videoName = (video.title || video.record_name || `Video ${video.id}`).slice(0, 80);
   const videoFolder = await ensureTargetFolder(userId, parentId, videoName, 'video', video.id);
@@ -681,9 +746,8 @@ async function syncCloudForUser(userId) {
         await ensureShortcut(userId, hypothesisFolder.id, 'Abrir hipótesis', 'hypothesis', hypothesis.id);
         const videosFolder = await ensureFolder(userId, hypothesisFolder.id, 'Videos');
 
-        const hypothesisVideos = videos.filter((video) => video.hypothesis_id === hypothesis.id).map((video) => video.id);
         const linkedVideoIds = linksByHypothesis.get(hypothesis.id) || [];
-        const allVideoIds = [...new Set([...hypothesisVideos, ...linkedVideoIds])];
+        const allVideoIds = [...new Set(linkedVideoIds)];
 
         for (const videoId of allVideoIds) {
           const video = videoById.get(videoId) || videos.find((item) => item.id === videoId);
@@ -1211,13 +1275,6 @@ async function ensureVideoHierarchyMigration() {
   )`);
   await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_edges_user_parent ON cloud_edges(user_id, parent_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_edges_user_child ON cloud_edges(user_id, child_id)');
-  await pool.query(
-    `INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id)
-     SELECT lower(hex(randomblob(16))), hypothesis_id, id, user_id
-     FROM videos
-     WHERE hypothesis_id IS NOT NULL AND trim(CAST(hypothesis_id AS TEXT)) <> ''`,
-  );
-
 
   await pool.query(
     `UPDATE videos
@@ -2631,13 +2688,6 @@ async function executeCrudQuery(body, currentUserId) {
       await insertRow();
     }
     let [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
-    if (table === 'videos' && writeRow.hypothesis_id) {
-      await pool.query(
-        `INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id)
-         VALUES (?, ?, ?, ?)`,
-        [uuid(), writeRow.hypothesis_id, writeRow.id, currentUserId],
-      );
-    }
 
     if (table === 'videos') {
       const created = inserted[0] || null;
@@ -3338,6 +3388,29 @@ const server = http.createServer(async (req, res) => {
     }
 
 
+    const resetHypothesisVideoLinksMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/hypothesis-video-links\/reset$/);
+    if (resetHypothesisVideoLinksMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = resetHypothesisVideoLinksMatch[1];
+      const [projectRows] = await pool.query('SELECT id FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+      if (!projectRows.length) {
+        sendJson(req, res, 404, { error: 'Project not found' });
+        return;
+      }
+
+      try {
+        const summary = await cleanupHypothesisVideoLinks(projectId, user.id);
+        sendJson(req, res, 200, { ok: true, project_id: projectId, ...summary });
+      } catch (error) {
+        sendJson(req, res, 500, { error: error?.message || String(error) });
+      }
+      return;
+    }
+
     const projectHypothesesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/hypotheses$/);
     if (projectHypothesesMatch && req.method === 'GET') {
       const user = authFromRequest(req);
@@ -3403,6 +3476,7 @@ const server = http.createServer(async (req, res) => {
         'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
         [body?.audience_id || null, hypothesisId, videoId, user.id],
       );
+      await linkVideoFolderIntoHypothesis(user.id, hypothesis.campaign_id, hypothesisId, video);
 
       const [rows] = await pool.query(
         'SELECT * FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
@@ -3451,6 +3525,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, user_id) VALUES (?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, user.id]);
+      await linkVideoFolderIntoHypothesis(user.id, hypothesis.campaign_id, targetHypothesisId, video);
 
       const body = await readBody(req);
       const keys = Object.keys(body || {});
