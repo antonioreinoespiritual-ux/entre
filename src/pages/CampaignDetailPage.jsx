@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { motion } from 'framer-motion';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Lightbulb, Users, Video } from 'lucide-react';
+import { ArrowLeft, Lightbulb, MessageSquare, Users, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCampaigns } from '@/contexts/CampaignContext';
 import { useAudiences } from '@/contexts/AudienceContext';
@@ -20,6 +20,7 @@ const CampaignDetailPage = () => {
   const [campaign, setCampaign] = useState(null);
   const [loading, setLoading] = useState(true);
   const [videosCount, setVideosCount] = useState(0);
+  const [modeModalOpen, setModeModalOpen] = useState(false);
 
   const openInCloud = async () => {
     navigate(`/projects/${campaign.project_id}/cloud`);
@@ -34,6 +35,8 @@ const CampaignDetailPage = () => {
         await Promise.all([fetchAudiences(data.id), fetchHypotheses(data.id)]);
         const videosResult = await fetchCampaignVideos(data.id);
         setVideosCount((videosResult?.data || []).length);
+        const key = `campaign-mode-selected:${data.id}`;
+        if (!sessionStorage.getItem(key)) setModeModalOpen(true);
       }
       setLoading(false);
     };
@@ -51,6 +54,13 @@ const CampaignDetailPage = () => {
   const audiencesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/audiences`;
   const hypothesesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/hypotheses`;
   const videosLibraryPath = `/projects/${campaign.project_id}/videos`;
+  const interviewsPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/interviews`;
+
+  const chooseMode = (mode) => {
+    sessionStorage.setItem(`campaign-mode-selected:${campaign.id}`, mode);
+    setModeModalOpen(false);
+    if (mode === 'interviews') navigate(interviewsPath);
+  };
 
   return (
     <>
@@ -100,8 +110,30 @@ const CampaignDetailPage = () => {
               <p className="text-sm text-gray-500 mb-4">Total: {videosCount}</p>
               <Link to={videosLibraryPath} className="text-indigo-600 font-medium hover:underline">Abrir Biblioteca de Videos →</Link>
             </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow-xl p-6 border border-emerald-100">
+              <div className="flex items-center gap-3 mb-4">
+                <MessageSquare className="w-6 h-6 text-emerald-600" />
+                <h2 className="text-xl font-semibold">Entrevistas</h2>
+              </div>
+              <p className="text-gray-600 mb-4">Módulo separado de videos: clientes, formularios, hipótesis de entrevistas y sesiones.</p>
+              <Link to={interviewsPath} className="text-emerald-600 font-medium hover:underline">Abrir Modo Entrevistas →</Link>
+            </motion.div>
           </div>
         </div>
+
+        {modeModalOpen ? (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md space-y-4">
+              <h3 className="text-xl font-semibold">Seleccionar modo</h3>
+              <p className="text-sm text-gray-600">Elige cómo quieres trabajar esta campaña.</p>
+              <div className="grid grid-cols-2 gap-3">
+                <Button className="bg-indigo-600 text-white" onClick={() => chooseMode('videos')}>Modo videos</Button>
+                <Button className="bg-emerald-600 text-white" onClick={() => chooseMode('interviews')}>Modo entrevistas</Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
     </>
   );

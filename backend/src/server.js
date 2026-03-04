@@ -208,6 +208,79 @@ const schemaSql = [
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_audience_ab_tests_campaign_id ON audience_ab_tests(campaign_id)',
+  `CREATE TABLE IF NOT EXISTS interview_clients (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    audience_id TEXT,
+    user_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    contact TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_interview_clients_campaign ON interview_clients(campaign_id, audience_id)',
+  `CREATE TABLE IF NOT EXISTS interview_hypotheses (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    audience_id TEXT,
+    user_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'active',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_interview_hypotheses_campaign ON interview_hypotheses(campaign_id)',
+  `CREATE TABLE IF NOT EXISTS interview_forms (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
+    questions_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_interview_forms_campaign ON interview_forms(campaign_id)',
+  `CREATE TABLE IF NOT EXISTS interview_sessions (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    audience_id TEXT,
+    form_id TEXT NOT NULL,
+    interview_hypothesis_id TEXT,
+    conducted_at TEXT,
+    notes TEXT,
+    responses_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (client_id) REFERENCES interview_clients(id) ON DELETE CASCADE,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+    FOREIGN KEY (form_id) REFERENCES interview_forms(id) ON DELETE CASCADE,
+    FOREIGN KEY (interview_hypothesis_id) REFERENCES interview_hypotheses(id) ON DELETE SET NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_interview_sessions_campaign ON interview_sessions(campaign_id, client_id)',
   `CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -1036,6 +1109,15 @@ async function readBody(req) {
   for await (const chunk of req) chunks.push(chunk);
   if (chunks.length === 0) return {};
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+function safeParseJsonField(value, fallback) {
+  if (value == null || value === '') return fallback;
+  try {
+    return JSON.parse(String(value));
+  } catch {
+    return fallback;
+  }
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -2461,6 +2543,18 @@ async function fetchOwnedVideoById(videoId, userId) {
   return rows[0] || null;
 }
 
+async function fetchOwnedCampaignById(campaignId, userId) {
+  const [rows] = await pool.query(
+    `SELECT c.*, p.id AS project_id
+     FROM campaigns c
+     JOIN projects p ON p.id = c.project_id
+     WHERE c.id = ? AND c.user_id = ? AND p.user_id = ?
+     LIMIT 1`,
+    [campaignId, userId, userId],
+  );
+  return rows[0] || null;
+}
+
 function computeDerivedVideoMetrics(video) {
   const views = Math.max(toNumber(video.views), 0);
   const clicks = Math.max(toNumber(video.clicks), 0);
@@ -3681,6 +3775,194 @@ const server = http.createServer(async (req, res) => {
       );
       sendJson(req, res, 200, { data: rows });
       return;
+    }
+
+    const campaignInterviewsClientsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/clients$/);
+    if (campaignInterviewsClientsMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const [projectId, campaignId] = [campaignInterviewsClientsMatch[1], campaignInterviewsClientsMatch[2]];
+      const campaign = await fetchOwnedCampaignById(campaignId, user.id);
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      if (req.method === 'GET') {
+        const audienceId = String(url.searchParams.get('audience_id') || '').trim();
+        const params = [user.id, projectId, campaignId];
+        const whereAudience = audienceId ? 'AND c.audience_id = ?' : '';
+        if (audienceId) params.push(audienceId);
+        const [rows] = await pool.query(
+          `SELECT c.*, a.name AS audience_name,
+             (SELECT COUNT(*) FROM interview_sessions s WHERE s.client_id = c.id AND s.user_id = c.user_id) AS interviews_count
+           FROM interview_clients c
+           LEFT JOIN audiences a ON a.id = c.audience_id
+           WHERE c.user_id = ? AND c.project_id = ? AND c.campaign_id = ? ${whereAudience}
+           ORDER BY c.created_at DESC`,
+          params,
+        );
+        return sendJson(req, res, 200, { data: rows });
+      }
+
+      const body = await readBody(req);
+      const now = nowIso();
+      await pool.query(
+        `INSERT INTO interview_clients (id, project_id, campaign_id, audience_id, user_id, name, contact, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [uuid(), projectId, campaignId, body.audience_id || null, user.id, body.name || 'Cliente', body.contact || null, body.notes || null, now, now],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_clients WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
+      return sendJson(req, res, 200, { data: rows[0] || null });
+    }
+
+    const interviewClientMatch = url.pathname.match(/^\/api\/interview-clients\/([^/]+)$/);
+    if (interviewClientMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const id = interviewClientMatch[1];
+      if (req.method === 'DELETE') {
+        await pool.query('DELETE FROM interview_clients WHERE id = ? AND user_id = ?', [id, user.id]);
+        return sendJson(req, res, 200, { ok: true });
+      }
+      const body = await readBody(req);
+      await pool.query(
+        'UPDATE interview_clients SET name = ?, contact = ?, notes = ?, audience_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        [body.name || 'Cliente', body.contact || null, body.notes || null, body.audience_id || null, nowIso(), id, user.id],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_clients WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      return sendJson(req, res, 200, { data: rows[0] || null });
+    }
+
+    const campaignInterviewsHypothesesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/hypotheses$/);
+    if (campaignInterviewsHypothesesMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const [projectId, campaignId] = [campaignInterviewsHypothesesMatch[1], campaignInterviewsHypothesesMatch[2]];
+      const campaign = await fetchOwnedCampaignById(campaignId, user.id);
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+      if (req.method === 'GET') {
+        const [rows] = await pool.query('SELECT ih.*, a.name AS audience_name FROM interview_hypotheses ih LEFT JOIN audiences a ON a.id = ih.audience_id WHERE ih.user_id = ? AND ih.project_id = ? AND ih.campaign_id = ? ORDER BY ih.created_at DESC', [user.id, projectId, campaignId]);
+        return sendJson(req, res, 200, { data: rows });
+      }
+      const body = await readBody(req);
+      const now = nowIso();
+      await pool.query(
+        `INSERT INTO interview_hypotheses (id, project_id, campaign_id, audience_id, user_id, type, title, description, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [uuid(), projectId, campaignId, body.audience_id || null, user.id, body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', now, now],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
+      return sendJson(req, res, 200, { data: rows[0] || null });
+    }
+
+    const interviewHypothesisMatch = url.pathname.match(/^\/api\/interview-hypotheses\/([^/]+)$/);
+    if (interviewHypothesisMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const id = interviewHypothesisMatch[1];
+      if (req.method === 'DELETE') {
+        await pool.query('DELETE FROM interview_hypotheses WHERE id = ? AND user_id = ?', [id, user.id]);
+        return sendJson(req, res, 200, { ok: true });
+      }
+      const body = await readBody(req);
+      await pool.query(
+        'UPDATE interview_hypotheses SET type = ?, title = ?, description = ?, status = ?, audience_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        [body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', body.audience_id || null, nowIso(), id, user.id],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      return sendJson(req, res, 200, { data: rows[0] || null });
+    }
+
+    const campaignInterviewsFormsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/forms$/);
+    if (campaignInterviewsFormsMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const [projectId, campaignId] = [campaignInterviewsFormsMatch[1], campaignInterviewsFormsMatch[2]];
+      const campaign = await fetchOwnedCampaignById(campaignId, user.id);
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+      if (req.method === 'GET') {
+        const [rows] = await pool.query('SELECT * FROM interview_forms WHERE user_id = ? AND project_id = ? AND campaign_id = ? ORDER BY created_at DESC', [user.id, projectId, campaignId]);
+        return sendJson(req, res, 200, { data: rows.map((r) => ({ ...r, questions_json: safeParseJsonField(r.questions_json, []) })) });
+      }
+      const body = await readBody(req);
+      const questions = Array.isArray(body.questions) ? body.questions : [];
+      const now = nowIso();
+      await pool.query(
+        `INSERT INTO interview_forms (id, project_id, campaign_id, user_id, title, description, questions_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [uuid(), projectId, campaignId, user.id, body.title || 'Formulario', body.description || null, JSON.stringify(questions), now, now],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_forms WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
+      return sendJson(req, res, 200, { data: { ...rows[0], questions_json: safeParseJsonField(rows[0]?.questions_json, []) } });
+    }
+
+    const interviewFormMatch = url.pathname.match(/^\/api\/interview-forms\/([^/]+)$/);
+    if (interviewFormMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const id = interviewFormMatch[1];
+      if (req.method === 'DELETE') {
+        await pool.query('DELETE FROM interview_forms WHERE id = ? AND user_id = ?', [id, user.id]);
+        return sendJson(req, res, 200, { ok: true });
+      }
+      const body = await readBody(req);
+      await pool.query(
+        'UPDATE interview_forms SET title = ?, description = ?, questions_json = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        [body.title || 'Formulario', body.description || null, JSON.stringify(Array.isArray(body.questions) ? body.questions : []), nowIso(), id, user.id],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_forms WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      return sendJson(req, res, 200, { data: { ...rows[0], questions_json: safeParseJsonField(rows[0]?.questions_json, []) } });
+    }
+
+    const campaignInterviewsSessionsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/sessions$/);
+    if (campaignInterviewsSessionsMatch && (req.method === 'GET' || req.method === 'POST')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const [projectId, campaignId] = [campaignInterviewsSessionsMatch[1], campaignInterviewsSessionsMatch[2]];
+      const campaign = await fetchOwnedCampaignById(campaignId, user.id);
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+      if (req.method === 'GET') {
+        const [rows] = await pool.query(
+          `SELECT s.*, c.name AS client_name, a.name AS audience_name, f.title AS form_title, h.title AS hypothesis_title
+           FROM interview_sessions s
+           LEFT JOIN interview_clients c ON c.id = s.client_id
+           LEFT JOIN audiences a ON a.id = s.audience_id
+           LEFT JOIN interview_forms f ON f.id = s.form_id
+           LEFT JOIN interview_hypotheses h ON h.id = s.interview_hypothesis_id
+           WHERE s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
+           ORDER BY COALESCE(s.conducted_at, s.created_at) DESC`,
+          [user.id, projectId, campaignId],
+        );
+        return sendJson(req, res, 200, { data: rows.map((r) => ({ ...r, responses_json: safeParseJsonField(r.responses_json, {}) })) });
+      }
+      const body = await readBody(req);
+      const [clientRows] = await pool.query('SELECT id, audience_id FROM interview_clients WHERE id = ? AND user_id = ? LIMIT 1', [body.client_id, user.id]);
+      const client = clientRows[0];
+      if (!client) return sendJson(req, res, 400, { error: 'Client not found' });
+      const now = nowIso();
+      await pool.query(
+        `INSERT INTO interview_sessions (id, project_id, campaign_id, user_id, client_id, audience_id, form_id, interview_hypothesis_id, conducted_at, notes, responses_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [uuid(), projectId, campaignId, user.id, body.client_id, client.audience_id || null, body.form_id, body.interview_hypothesis_id || null, body.conducted_at || now, body.notes || null, JSON.stringify(body.responses || {}), now, now],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
+      return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}) } });
+    }
+
+    const interviewSessionMatch = url.pathname.match(/^\/api\/interview-sessions\/([^/]+)$/);
+    if (interviewSessionMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const id = interviewSessionMatch[1];
+      if (req.method === 'DELETE') {
+        await pool.query('DELETE FROM interview_sessions WHERE id = ? AND user_id = ?', [id, user.id]);
+        return sendJson(req, res, 200, { ok: true });
+      }
+      const body = await readBody(req);
+      await pool.query(
+        'UPDATE interview_sessions SET conducted_at = ?, notes = ?, responses_json = ?, interview_hypothesis_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        [body.conducted_at || nowIso(), body.notes || null, JSON.stringify(body.responses || {}), body.interview_hypothesis_id || null, nowIso(), id, user.id],
+      );
+      const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}) } });
     }
 
 

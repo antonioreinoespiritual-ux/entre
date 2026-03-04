@@ -21,6 +21,7 @@ import HypothesisMindMapPage from '@/pages/HypothesisMindMapPage';
 import VideoDetailPage from '@/pages/VideoDetailPage';
 import AbTestPage from '@/pages/AbTestPage';
 import CloudPage from '@/pages/CloudPage';
+import InterviewsPage from '@/pages/InterviewsPage';
 import LoginPage from '@/pages/LoginPage';
 import SignupPage from '@/pages/SignupPage';
 
@@ -71,6 +72,7 @@ const ProtectedApp = () => (
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/videos/:videoId" element={<VideoDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/ab-test" element={<AbTestPage />} />
               <Route path="/projects/:projectId/cloud" element={<CloudPage />} />
+              <Route path="/projects/:projectId/campaigns/:campaignId/interviews" element={<InterviewsPage />} />
               <Route path="*" element={<Navigate to="/projects" replace />} />
             </Routes>
           </HypothesisProvider>
