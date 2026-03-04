@@ -36,7 +36,7 @@ const CampaignDetailPage = () => {
         const videosResult = await fetchCampaignVideos(data.id);
         setVideosCount((videosResult?.data || []).length);
         const key = `campaign-mode-selected:${data.id}`;
-        if (!sessionStorage.getItem(key)) setModeModalOpen(true);
+        if (!localStorage.getItem(key)) setModeModalOpen(true);
       }
       setLoading(false);
     };
@@ -57,7 +57,7 @@ const CampaignDetailPage = () => {
   const interviewsPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/interviews`;
 
   const chooseMode = (mode) => {
-    sessionStorage.setItem(`campaign-mode-selected:${campaign.id}`, mode);
+    localStorage.setItem(`campaign-mode-selected:${campaign.id}`, mode);
     setModeModalOpen(false);
     if (mode === 'interviews') navigate(interviewsPath);
   };
@@ -131,8 +131,14 @@ const CampaignDetailPage = () => {
               <h3 className="text-xl font-semibold">Seleccionar modo</h3>
               <p className="text-sm text-gray-600">Elige cómo quieres trabajar esta campaña.</p>
               <div className="grid grid-cols-2 gap-3">
-                <Button className="bg-indigo-600 text-white" onClick={() => chooseMode('videos')}>Modo videos</Button>
-                <Button className="bg-emerald-600 text-white" onClick={() => chooseMode('interviews')}>Modo entrevistas</Button>
+                <button className="border rounded-xl p-4 text-left hover:border-indigo-400 hover:bg-indigo-50" onClick={() => chooseMode('videos')}>
+                  <p className="font-semibold text-indigo-700">Modo videos</p>
+                  <p className="text-xs text-gray-600 mt-1">Biblioteca, hipótesis de videos, audiencias y cloud.</p>
+                </button>
+                <button className="border rounded-xl p-4 text-left hover:border-emerald-400 hover:bg-emerald-50" onClick={() => chooseMode('interviews')}>
+                  <p className="font-semibold text-emerald-700">Modo entrevistas</p>
+                  <p className="text-xs text-gray-600 mt-1">Clientes, formularios y sesiones cualitativas.</p>
+                </button>
               </div>
             </div>
           </div>
