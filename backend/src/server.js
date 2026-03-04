@@ -1410,6 +1410,11 @@ async function ensureVideoHierarchyMigration() {
 }
 
 async function runMigrations() {
+  // Rebuild Cloud schema from scratch to avoid legacy column/index mismatches.
+  await pool.query('DROP TABLE IF EXISTS cloud_events');
+  await pool.query('DROP TABLE IF EXISTS cloud_edges');
+  await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+
   for (const statement of schemaSql) {
     await pool.query(statement);
   }
