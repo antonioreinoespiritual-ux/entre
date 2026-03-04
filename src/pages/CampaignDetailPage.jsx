@@ -77,7 +77,10 @@ const CampaignDetailPage = () => {
           <div className="bg-white rounded-2xl shadow-xl p-8 mb-6">
             <h1 className="text-3xl font-bold mb-2">{campaign.name}</h1>
             <p className="text-gray-600">{campaign.description || 'Sin descripción'}</p>
-            <Button onClick={openInCloud} className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
+            <div className="mt-4 flex gap-2">
+              <Button onClick={openInCloud} className="bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
+              <Button onClick={() => setModeModalOpen(true)} className="bg-white text-gray-700 border">Cambiar modo</Button>
+            </div>
           </div>
 
           <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-6">

@@ -3948,10 +3948,24 @@ const server = http.createServer(async (req, res) => {
     }
 
     const interviewSessionMatch = url.pathname.match(/^\/api\/interview-sessions\/([^/]+)$/);
-    if (interviewSessionMatch && (req.method === 'PUT' || req.method === 'DELETE')) {
+    if (interviewSessionMatch && (req.method === 'GET' || req.method === 'PUT' || req.method === 'DELETE')) {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const id = interviewSessionMatch[1];
+      if (req.method === 'GET') {
+        const [rows] = await pool.query(
+          `SELECT s.*, c.name AS client_name, a.name AS audience_name, f.title AS form_title, h.title AS hypothesis_title
+           FROM interview_sessions s
+           LEFT JOIN interview_clients c ON c.id = s.client_id
+           LEFT JOIN audiences a ON a.id = s.audience_id
+           LEFT JOIN interview_forms f ON f.id = s.form_id
+           LEFT JOIN interview_hypotheses h ON h.id = s.interview_hypothesis_id
+           WHERE s.id = ? AND s.user_id = ? LIMIT 1`,
+          [id, user.id],
+        );
+        if (!rows.length) return sendJson(req, res, 404, { error: 'Session not found' });
+        return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}) } });
+      }
       if (req.method === 'DELETE') {
         await pool.query('DELETE FROM interview_sessions WHERE id = ? AND user_id = ?', [id, user.id]);
         return sendJson(req, res, 200, { ok: true });
