@@ -71,7 +71,6 @@ const ProtectedApp = () => (
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/videos/:videoId" element={<VideoDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/ab-test" element={<AbTestPage />} />
               <Route path="/cloud" element={<CloudPage />} />
-              <Route path="/cloud/:nodeId" element={<CloudPage />} />
               <Route path="*" element={<Navigate to="/projects" replace />} />
             </Routes>
           </HypothesisProvider>

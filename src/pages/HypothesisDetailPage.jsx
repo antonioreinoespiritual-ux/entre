@@ -46,13 +46,7 @@ const HypothesisDetailPage = () => {
   const [moveSubmitting, setMoveSubmitting] = useState(false);
 
   const openInCloud = async () => {
-    const response = await fetch(`${backendBaseUrl()}/api/cloud/locate?targetType=hypothesis&targetId=${hypothesisId}`, {
-      headers: { Authorization: `Bearer ${token()}` },
-    });
-    if (response.ok) {
-      const json = await response.json();
-      navigate(`/cloud/${json.parentId || json.nodeId}`);
-    }
+    navigate(`/cloud?projectId=${projectId}`);
   };
 
   useEffect(() => {

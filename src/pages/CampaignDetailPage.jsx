@@ -22,15 +22,7 @@ const CampaignDetailPage = () => {
   const [videosCount, setVideosCount] = useState(0);
 
   const openInCloud = async () => {
-    if (!campaign?.id) return;
-    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
-    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/cloud/locate?targetType=campaign&targetId=${campaign.id}`, {
-      headers: { Authorization: `Bearer ${session?.access_token || ''}` },
-    });
-    if (response.ok) {
-      const json = await response.json();
-      navigate(`/cloud/${json.parentId || json.nodeId}`);
-    }
+    navigate(`/cloud?projectId=${campaign.project_id}`);
   };
 
   useEffect(() => {

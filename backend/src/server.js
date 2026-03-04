@@ -210,41 +210,44 @@ const schemaSql = [
   'CREATE INDEX IF NOT EXISTS idx_audience_ab_tests_campaign_id ON audience_ab_tests(campaign_id)',
   `CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
-    parent_id TEXT,
-    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('folder','file')),
     type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    parent_id TEXT,
+    canonical_key TEXT,
+    target_type TEXT,
+    target_id TEXT,
     mime_type TEXT,
     size INTEGER,
     storage_path TEXT,
-    target_type TEXT,
-    target_id TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS cloud_events (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    event_type TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE(project_id, canonical_key)
   )`,
   `CREATE TABLE IF NOT EXISTS cloud_edges (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     parent_id TEXT NOT NULL,
     child_id TEXT NOT NULL,
+    edge_kind TEXT NOT NULL DEFAULT 'link' CHECK(edge_kind IN ('link')),
     created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (parent_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (child_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    UNIQUE(user_id, parent_id, child_id)
+    UNIQUE(project_id, parent_id, child_id)
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_parent ON cloud_nodes(user_id, parent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_project_parent ON cloud_nodes(project_id, parent_id)',
   'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_target ON cloud_nodes(user_id, target_type, target_id)',
-  'CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_target_type ON cloud_nodes(user_id, target_type, target_id, type)',
-  'CREATE INDEX IF NOT EXISTS idx_cloud_edges_user_parent ON cloud_edges(user_id, parent_id)',
-  'CREATE INDEX IF NOT EXISTS idx_cloud_edges_user_child ON cloud_edges(user_id, child_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cloud_edges_project_parent ON cloud_edges(project_id, parent_id)',
+  'CREATE INDEX IF NOT EXISTS idx_cloud_edges_project_child ON cloud_edges(project_id, child_id)',
 ];
 
 const textEncoder = new TextEncoder();
@@ -266,12 +269,7 @@ function autoExternalIdForVideo(videoType, videoId) {
 }
 
 
-async function recordCloudEvent(userId, eventType, payload = {}) {
-  await pool.query(
-    'INSERT INTO cloud_events (id, user_id, event_type, payload_json, created_at) VALUES (?, ?, ?, ?, ?)',
-    [uuid(), userId, eventType, JSON.stringify(payload), nowIso()],
-  );
-}
+async function recordCloudEvent() {}
 
 async function getCloudNodeById(nodeId, userId) {
   const [rows] = await pool.query('SELECT * FROM cloud_nodes WHERE id = ? AND user_id = ?', [nodeId, userId]);
@@ -280,13 +278,17 @@ async function getCloudNodeById(nodeId, userId) {
 
 async function ensureCloudEdge(userId, parentId, childId) {
   if (!parentId || !childId || parentId === childId) return null;
+  const [parentRows] = await pool.query('SELECT project_id FROM cloud_nodes WHERE id = ? AND user_id = ? LIMIT 1', [parentId, userId]);
+  const [childRows] = await pool.query('SELECT project_id FROM cloud_nodes WHERE id = ? AND user_id = ? LIMIT 1', [childId, userId]);
+  const projectId = parentRows[0]?.project_id || childRows[0]?.project_id || null;
+  if (!projectId || (childRows[0]?.project_id && String(childRows[0].project_id) !== String(projectId))) return null;
   await pool.query(
-    'INSERT OR IGNORE INTO cloud_edges (id, user_id, parent_id, child_id, created_at) VALUES (?, ?, ?, ?, ?)',
-    [uuid(), userId, parentId, childId, nowIso()],
+    'INSERT OR IGNORE INTO cloud_edges (id, project_id, user_id, parent_id, child_id, edge_kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [uuid(), projectId, userId, parentId, childId, 'link', nowIso()],
   );
   const [rows] = await pool.query(
-    'SELECT * FROM cloud_edges WHERE user_id = ? AND parent_id = ? AND child_id = ? LIMIT 1',
-    [userId, parentId, childId],
+    'SELECT * FROM cloud_edges WHERE user_id = ? AND project_id = ? AND parent_id = ? AND child_id = ? LIMIT 1',
+    [userId, projectId, parentId, childId],
   );
   return rows[0] || null;
 }
@@ -376,13 +378,27 @@ async function findNodeByName(userId, parentId, name, type = 'folder') {
   return rows[0] || null;
 }
 
-async function createCloudNode({ userId, parentId = null, name, type = 'folder', mimeType = null, size = null, storagePath = null, targetType = null, targetId = null }) {
+async function resolveProjectIdForCloudNode(userId, parentId, explicitProjectId = null) {
+  const normalized = String(explicitProjectId || '').trim();
+  if (normalized) return normalized;
+  if (parentId) {
+    const parent = await getCloudNodeById(parentId, userId);
+    if (parent?.project_id) return parent.project_id;
+  }
+  throw new Error('project_id is required for cloud node');
+}
+
+async function createCloudNode({ userId, parentId = null, projectId = null, name, type = 'folder', canonicalKey = null, mimeType = null, size = null, storagePath = null, targetType = null, targetId = null }) {
+  const resolvedProjectId = await resolveProjectIdForCloudNode(userId, parentId, projectId);
   const node = {
     id: uuid(),
+    project_id: resolvedProjectId,
     user_id: userId,
     parent_id: parentId,
-    name,
+    kind: type === 'file' ? 'file' : 'folder',
     type,
+    name,
+    canonical_key: canonicalKey,
     mime_type: mimeType,
     size,
     storage_path: storagePath,
@@ -392,9 +408,9 @@ async function createCloudNode({ userId, parentId = null, name, type = 'folder',
     updated_at: nowIso(),
   };
   await pool.query(
-    `INSERT INTO cloud_nodes (id, user_id, parent_id, name, type, mime_type, size, storage_path, target_type, target_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [node.id, node.user_id, node.parent_id, node.name, node.type, node.mime_type, node.size, node.storage_path, node.target_type, node.target_id, node.created_at, node.updated_at],
+    `INSERT INTO cloud_nodes (id, project_id, user_id, kind, type, name, parent_id, canonical_key, mime_type, size, storage_path, target_type, target_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [node.id, node.project_id, node.user_id, node.kind, node.type, node.name, node.parent_id, node.canonical_key, node.mime_type, node.size, node.storage_path, node.target_type, node.target_id, node.created_at, node.updated_at],
   );
   return node;
 }
@@ -432,17 +448,35 @@ function videoFolderLabel(video) {
   return `${videoIdentifier || 'video'} - ${videoName || 'sin-nombre'}`.slice(0, 80);
 }
 
-async function ensureProjectVideosRootFolder(userId, projectId) {
-  const [projectRows] = await pool.query(
-    `SELECT id, name FROM projects WHERE id = ? AND user_id = ? LIMIT 1`,
-    [projectId, userId],
-  );
+async function ensureProjectCloudRoots(userId, projectId) {
+  const [projectRows] = await pool.query('SELECT id, name FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, userId]);
   const project = projectRows[0];
   if (!project) return null;
-  const root = await ensureFolder(userId, null, 'Cloud');
-  const projectsFolder = await ensureFolder(userId, root.id, 'Proyectos');
-  const projectFolder = await ensureFolder(userId, projectsFolder.id, project.name || `Proyecto ${project.id}`);
-  return ensureFolder(userId, projectFolder.id, 'Videos');
+
+  const ensureCanonicalFolder = async (canonicalKey, name, parentId = null) => {
+    const [rows] = await pool.query(
+      'SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key = ? LIMIT 1',
+      [userId, projectId, canonicalKey],
+    );
+    const existing = rows[0] || null;
+    if (existing) {
+      if (String(existing.name || '') !== String(name || '') || String(existing.parent_id || '') !== String(parentId || '')) {
+        await pool.query('UPDATE cloud_nodes SET name = ?, parent_id = ?, updated_at = ? WHERE id = ? AND user_id = ?', [name, parentId, nowIso(), existing.id, userId]);
+      }
+      return existing;
+    }
+    return createCloudNode({ userId, projectId, parentId, name, type: 'folder', canonicalKey });
+  };
+
+  const projectRoot = await ensureCanonicalFolder('project_root', project.name || `Proyecto ${project.id}`, null);
+  const videosRoot = await ensureCanonicalFolder('videos_root', 'Videos', projectRoot.id);
+  const hypothesesRoot = await ensureCanonicalFolder('hypotheses_root', 'Hipótesis', projectRoot.id);
+  return { projectRoot, videosRoot, hypothesesRoot };
+}
+
+async function ensureProjectVideosRootFolder(userId, projectId) {
+  const roots = await ensureProjectCloudRoots(userId, projectId);
+  return roots?.videosRoot || null;
 }
 
 async function ensureCampaignVideosRootFolder(userId, campaignId) {
@@ -460,33 +494,30 @@ async function ensureCampaignVideosRootFolder(userId, campaignId) {
 }
 
 async function ensureHypothesisFolder(userId, campaignId, hypothesisId) {
-  const videosRoot = await ensureCampaignVideosRootFolder(userId, campaignId);
-  if (!videosRoot) return null;
-  const [rows] = await pool.query('SELECT id, hypothesis_statement, condition, type FROM hypotheses WHERE id = ? AND campaign_id = ? AND user_id = ? LIMIT 1', [hypothesisId, campaignId, userId]);
+  const [rows] = await pool.query(
+    `SELECT h.id, h.hypothesis_statement, h.condition, h.type, c.project_id
+     FROM hypotheses h
+     JOIN campaigns c ON c.id = h.campaign_id
+     WHERE h.id = ? AND h.campaign_id = ? AND h.user_id = ?
+     LIMIT 1`,
+    [hypothesisId, campaignId, userId],
+  );
   const hypothesis = rows[0];
   if (!hypothesis) return null;
-  const [campaignRows] = await pool.query('SELECT id, name FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, userId]);
-  const campaignName = campaignRows[0]?.name || `Campaña ${campaignId}`;
 
-  const root = await ensureFolder(userId, null, 'Cloud');
-  const projectsFolder = await ensureFolder(userId, root.id, 'Proyectos');
-  const [projectRows] = await pool.query(
-    `SELECT p.id, p.name
-     FROM projects p
-     JOIN campaigns c ON c.project_id = p.id
-     WHERE c.id = ? AND c.user_id = ? AND p.user_id = ?
-     LIMIT 1`,
-    [campaignId, userId, userId],
-  );
-  const project = projectRows[0];
-  if (!project) return null;
-  const projectFolder = await ensureFolder(userId, projectsFolder.id, project.name || `Proyecto ${project.id}`);
-  const campaignsFolder = await ensureFolder(userId, projectFolder.id, 'Campañas');
-  const campaignFolder = await ensureFolder(userId, campaignsFolder.id, campaignName);
-  const hypothesesFolder = await ensureFolder(userId, campaignFolder.id, 'Hipótesis');
+  const roots = await ensureProjectCloudRoots(userId, hypothesis.project_id);
+  if (!roots) return null;
+
   const hypothesisName = String(hypothesis.hypothesis_statement || hypothesis.condition || hypothesis.type || `Hipótesis ${hypothesis.id}`).slice(0, 80);
-  const hypothesisFolder = await ensureFolder(userId, hypothesesFolder.id, hypothesisName);
-  return ensureFolder(userId, hypothesisFolder.id, 'Videos');
+  const hypothesisRootCanonicalKey = `hypothesis_root:${hypothesis.id}`;
+  const [existingRoot] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key = ? LIMIT 1', [userId, hypothesis.project_id, hypothesisRootCanonicalKey]);
+  let hypothesisRoot = existingRoot[0] || null;
+  if (!hypothesisRoot) {
+    hypothesisRoot = await createCloudNode({ userId, projectId: hypothesis.project_id, parentId: roots.hypothesesRoot.id, name: hypothesisName, type: 'folder', canonicalKey: hypothesisRootCanonicalKey, targetType: 'hypothesis', targetId: hypothesis.id });
+  }
+  const [videoFolderRows] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND parent_id = ? AND name = ? AND type = ? LIMIT 1', [userId, hypothesis.project_id, hypothesisRoot.id, 'Videos', 'folder']);
+  if (videoFolderRows[0]) return videoFolderRows[0];
+  return createCloudNode({ userId, projectId: hypothesis.project_id, parentId: hypothesisRoot.id, name: 'Videos', type: 'folder' });
 }
 
 async function ensureVideoCanonicalFolder(userId, video, campaignId = null) {
@@ -510,11 +541,6 @@ async function ensureVideoCanonicalFolder(userId, video, campaignId = null) {
     folder.parent_id = videosRoot.id;
     folder.name = desiredName;
   }
-
-  for (const subfolderName of VIDEO_FOLDER_TEMPLATES) {
-    await ensureFolder(userId, folder.id, subfolderName);
-  }
-  await ensureShortcut(userId, folder.id, 'Abrir dashboard', 'video', video.id);
 
   if (allRows.length > 1) {
     const duplicates = allRows.slice(1);
@@ -683,86 +709,48 @@ async function ensureShortcut(userId, parentId, name, targetType, targetId) {
   return createCloudNode({ userId, parentId, name, type: 'shortcut', targetType, targetId });
 }
 
-async function syncCloudForUser(userId) {
-  await migrateVideoShortcutsToFolders(userId);
-
-  const root = await ensureFolder(userId, null, 'Cloud');
-  const projectsFolder = await ensureFolder(userId, root.id, 'Proyectos');
-
-  const [projects] = await pool.query('SELECT * FROM projects WHERE user_id = ? ORDER BY created_at ASC', [userId]);
-  const [campaigns] = await pool.query('SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at ASC', [userId]);
-  const [audiences] = await pool.query('SELECT * FROM audiences WHERE user_id = ? ORDER BY created_at ASC', [userId]);
-  const [hypotheses] = await pool.query('SELECT * FROM hypotheses WHERE user_id = ? ORDER BY created_at ASC', [userId]);
-  const [videos] = await pool.query('SELECT * FROM videos WHERE user_id = ? ORDER BY created_at ASC', [userId]);
+async function syncCloudForUser(userId, projectId = null) {
+  const projectWhere = projectId ? 'AND p.id = ?' : '';
+  const projectParams = projectId ? [userId, projectId] : [userId];
+  const [projects] = await pool.query(`SELECT p.id, p.name FROM projects p WHERE p.user_id = ? ${projectWhere} ORDER BY p.created_at ASC`, projectParams);
 
   for (const project of projects) {
-    const projectFolder = await ensureFolder(userId, projectsFolder.id, project.name || `Proyecto ${project.id}`);
-    await ensureShortcut(userId, projectFolder.id, 'Abrir proyecto', 'project', project.id);
-    const campaignsFolder = await ensureFolder(userId, projectFolder.id, 'Campañas');
+    const roots = await ensureProjectCloudRoots(userId, project.id);
+    if (!roots) continue;
 
-    const projectCampaigns = campaigns.filter((campaign) => campaign.project_id === project.id);
-    for (const campaign of projectCampaigns) {
-      const campaignFolder = await ensureFolder(userId, campaignsFolder.id, campaign.name || `Campaña ${campaign.id}`);
-      await ensureShortcut(userId, campaignFolder.id, 'Abrir campaña', 'campaign', campaign.id);
+    const [videos] = await pool.query('SELECT * FROM videos WHERE user_id = ? AND project_id = ? ORDER BY created_at ASC', [userId, project.id]);
+    for (const video of videos) {
+      await ensureVideoCanonicalFolder(userId, video, video.campaign_id || null);
+    }
 
-      const audiencesFolder = await ensureFolder(userId, campaignFolder.id, 'Audiencias');
-      const hypothesesFolder = await ensureFolder(userId, campaignFolder.id, 'Hipótesis');
-      const audienceVideosMap = new Map();
-      const campaignVideosRoot = await ensureCampaignVideosRootFolder(userId, campaign.id, campaign.name);
+    const [hypotheses] = await pool.query(
+      `SELECT h.id, h.campaign_id
+       FROM hypotheses h
+       JOIN campaigns c ON c.id = h.campaign_id
+       WHERE h.user_id = ? AND c.project_id = ?`,
+      [userId, project.id],
+    );
 
-      const campaignAudiences = audiences.filter((audience) => audience.campaign_id === campaign.id);
-      for (const audience of campaignAudiences) {
-        const audienceFolder = await ensureFolder(userId, audiencesFolder.id, audience.name || `Audiencia ${audience.id}`);
-        await ensureShortcut(userId, audienceFolder.id, 'Abrir audiencia', 'audience', audience.id);
-        audienceVideosMap.set(audience.id, await ensureFolder(userId, audienceFolder.id, 'Videos'));
-      }
+    for (const hypothesis of hypotheses) {
+      await ensureHypothesisFolder(userId, hypothesis.campaign_id, hypothesis.id);
+    }
 
-      const campaignHypotheses = hypotheses.filter((hypothesis) => hypothesis.campaign_id === campaign.id);
-      const campaignVideos = videos.filter((video) => video.campaign_id === campaign.id);
-      const videoById = new Map(campaignVideos.map((video) => [video.id, video]));
+    const [links] = await pool.query(
+      `SELECT hv.hypothesis_id, hv.video_id, h.campaign_id
+       FROM hypothesis_videos hv
+       JOIN hypotheses h ON h.id = hv.hypothesis_id
+       JOIN campaigns c ON c.id = h.campaign_id
+       WHERE hv.user_id = ? AND h.user_id = ? AND c.project_id = ?`,
+      [userId, userId, project.id],
+    );
 
-      for (const video of campaignVideos) {
-        if (!campaignVideosRoot) continue;
-        await ensureVideoCanonicalFolder(userId, video, campaign.id);
-        if (video.audience_id && audienceVideosMap.has(video.audience_id)) {
-          const canonical = await ensureVideoCanonicalFolder(userId, video, campaign.id);
-          if (canonical) {
-            await ensureCloudEdge(userId, audienceVideosMap.get(video.audience_id).id, canonical.id);
-          }
-        }
-      }
-
-      const [videoLinks] = await pool.query(
-        'SELECT hypothesis_id, video_id FROM hypothesis_videos WHERE user_id = ?',
-        [userId],
-      );
-      const linksByHypothesis = new Map();
-      for (const link of videoLinks) {
-        if (!linksByHypothesis.has(link.hypothesis_id)) linksByHypothesis.set(link.hypothesis_id, []);
-        linksByHypothesis.get(link.hypothesis_id).push(link.video_id);
-      }
-
-      for (const hypothesis of campaignHypotheses) {
-        const hypothesisName = hypothesis.hypothesis_statement || hypothesis.condition || hypothesis.type || `Hipótesis ${hypothesis.id}`;
-        const hypothesisFolder = await ensureFolder(userId, hypothesesFolder.id, hypothesisName.slice(0, 80));
-        await ensureShortcut(userId, hypothesisFolder.id, 'Abrir hipótesis', 'hypothesis', hypothesis.id);
-        const videosFolder = await ensureFolder(userId, hypothesisFolder.id, 'Videos');
-
-        const linkedVideoIds = linksByHypothesis.get(hypothesis.id) || [];
-        const allVideoIds = [...new Set(linkedVideoIds)];
-
-        for (const videoId of allVideoIds) {
-          const video = videoById.get(videoId) || videos.find((item) => item.id === videoId);
-          if (!video || String(video.campaign_id || '') !== String(campaign.id)) continue;
-          const canonicalFolder = await ensureVideoCanonicalFolder(userId, video, campaign.id);
-          if (!canonicalFolder) continue;
-          await ensureCloudEdge(userId, videosFolder.id, canonicalFolder.id);
-        }
-      }
+    for (const link of links) {
+      const [videoRows] = await pool.query('SELECT * FROM videos WHERE id = ? AND user_id = ? LIMIT 1', [link.video_id, userId]);
+      const video = videoRows[0];
+      if (!video) continue;
+      await linkVideoFolderIntoHypothesis(userId, link.campaign_id, link.hypothesis_id, video);
     }
   }
-
-  await recordCloudEvent(userId, 'sync', { scope: 'full' });
 }
 
 async function locateCloudNodeForTarget(userId, targetType, targetId) {
@@ -1271,16 +1259,42 @@ async function ensureVideoHierarchyMigration() {
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
+  await pool.query('DROP TABLE IF EXISTS cloud_events');
+  await pool.query('DROP TABLE IF EXISTS cloud_edges');
+  await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+
+  await pool.query(`CREATE TABLE IF NOT EXISTS cloud_nodes (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('folder','file')),
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    parent_id TEXT,
+    canonical_key TEXT,
+    target_type TEXT,
+    target_id TEXT,
+    mime_type TEXT,
+    size INTEGER,
+    storage_path TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_id, canonical_key)
+  )`);
   await pool.query(`CREATE TABLE IF NOT EXISTS cloud_edges (
     id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     parent_id TEXT NOT NULL,
     child_id TEXT NOT NULL,
+    edge_kind TEXT NOT NULL DEFAULT 'link' CHECK(edge_kind IN ('link')),
     created_at TEXT NOT NULL,
-    UNIQUE(user_id, parent_id, child_id)
+    UNIQUE(project_id, parent_id, child_id)
   )`);
-  await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_edges_user_parent ON cloud_edges(user_id, parent_id)');
-  await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_edges_user_child ON cloud_edges(user_id, child_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_nodes_project_parent ON cloud_nodes(project_id, parent_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_nodes_user_target ON cloud_nodes(user_id, target_type, target_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_edges_project_parent ON cloud_edges(project_id, parent_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cloud_edges_project_child ON cloud_edges(project_id, child_id)');
 
   await pool.query(
     `UPDATE videos
@@ -2845,166 +2859,24 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/cloud/folder' && req.method === 'POST') {
-      const user = authFromRequest(req);
-      if (!user) {
-        sendJson(req, res, 401, { error: 'Unauthorized' });
-        return;
-      }
-      const body = await readBody(req);
-      if (!body.name) {
-        sendJson(req, res, 400, { error: 'name is required' });
-        return;
-      }
-      const parentId = body.parentId || null;
-      if (parentId && !(await getCloudNodeById(parentId, user.id))) {
-        sendJson(req, res, 404, { error: 'Parent not found' });
-        return;
-      }
-      const node = await createCloudNode({ userId: user.id, parentId, name: body.name, type: 'folder' });
-      await recordCloudEvent(user.id, 'create', { type: 'folder', nodeId: node.id });
-      sendJson(req, res, 200, { node });
+      sendJson(req, res, 410, { error: 'Cloud legacy endpoint removed. Use project-scoped sync/overview endpoints.' });
       return;
     }
 
     const cloudNodeMatch = url.pathname.match(/^\/api\/cloud\/node\/([^/]+)$/);
-    if (cloudNodeMatch && req.method === 'PATCH') {
-      const user = authFromRequest(req);
-      if (!user) {
-        sendJson(req, res, 401, { error: 'Unauthorized' });
-        return;
-      }
-      const node = await getCloudNodeById(cloudNodeMatch[1], user.id);
-      if (!node) {
-        sendJson(req, res, 404, { error: 'Node not found' });
-        return;
-      }
-      const body = await readBody(req);
-      const name = body.name ?? node.name;
-      const parentId = body.parentId ?? node.parent_id;
-      if (parentId && !(await getCloudNodeById(parentId, user.id))) {
-        sendJson(req, res, 404, { error: 'Destination parent not found' });
-        return;
-      }
-      await pool.query('UPDATE cloud_nodes SET name = ?, parent_id = ?, updated_at = ? WHERE id = ? AND user_id = ?', [name, parentId, nowIso(), node.id, user.id]);
-      await recordCloudEvent(user.id, 'move', { nodeId: node.id, parentId, name });
-      sendJson(req, res, 200, { ok: true });
-      return;
-    }
-
-    if (cloudNodeMatch && req.method === 'DELETE') {
-      const user = authFromRequest(req);
-      if (!user) {
-        sendJson(req, res, 401, { error: 'Unauthorized' });
-        return;
-      }
-      const node = await getCloudNodeById(cloudNodeMatch[1], user.id);
-      if (!node) {
-        sendJson(req, res, 404, { error: 'Node not found' });
-        return;
-      }
-      const requestedParentId = url.searchParams.get('parentId');
-      if (requestedParentId && String(node.parent_id || '') !== String(requestedParentId || '')) {
-        const [edgeRows] = await pool.query(
-          'SELECT id FROM cloud_edges WHERE user_id = ? AND parent_id = ? AND child_id = ? LIMIT 1',
-          [user.id, requestedParentId, node.id],
-        );
-        if (edgeRows.length) {
-          await unlinkCloudEdge(user.id, requestedParentId, node.id);
-          await recordCloudEvent(user.id, 'unlink', { parentId: requestedParentId, childId: node.id });
-          sendJson(req, res, 200, { ok: true, unlinked: true });
-          return;
-        }
-      }
-
-      const [children] = await pool.query('SELECT id FROM cloud_nodes WHERE user_id = ? AND parent_id = ? LIMIT 1', [user.id, node.id]);
-      const [edgeChildren] = await pool.query('SELECT id FROM cloud_edges WHERE user_id = ? AND parent_id = ? LIMIT 1', [user.id, node.id]);
-      if (children.length) {
-        sendJson(req, res, 400, { error: 'Folder is not empty' });
-        return;
-      }
-      if (edgeChildren.length) {
-        sendJson(req, res, 400, { error: 'Folder has linked children' });
-        return;
-      }
-      if (node.type === 'file' && node.storage_path) {
-        try { fs.unlinkSync(node.storage_path); } catch {}
-      }
-      await pool.query('DELETE FROM cloud_edges WHERE user_id = ? AND child_id = ?', [user.id, node.id]);
-      await pool.query('DELETE FROM cloud_nodes WHERE id = ? AND user_id = ?', [node.id, user.id]);
-      await recordCloudEvent(user.id, 'delete', { nodeId: node.id });
-      sendJson(req, res, 200, { ok: true });
+    if (cloudNodeMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+      sendJson(req, res, 410, { error: 'Cloud legacy endpoint removed. Use link/unlink flows from videos/hypotheses.' });
       return;
     }
 
     if (url.pathname === '/api/cloud/upload' && req.method === 'POST') {
-      const user = authFromRequest(req);
-      if (!user) {
-        sendJson(req, res, 401, { error: 'Unauthorized' });
-        return;
-      }
-      const body = await readBody(req);
-      if (!body.parentId || !body.name || !body.contentBase64) {
-        sendJson(req, res, 400, { error: 'parentId, name and contentBase64 are required' });
-        return;
-      }
-      const parent = await getCloudNodeById(body.parentId, user.id);
-      if (!parent) {
-        sendJson(req, res, 404, { error: 'Parent not found' });
-        return;
-      }
-      const nodeId = uuid();
-      const userFolder = path.join(storageRoot, user.id);
-      fs.mkdirSync(userFolder, { recursive: true });
-      const ext = path.extname(body.name || '') || '';
-      const filePath = path.join(userFolder, `${nodeId}${ext}`);
-      const fileBuffer = Buffer.from(String(body.contentBase64), 'base64');
-      fs.writeFileSync(filePath, fileBuffer);
-      const node = await createCloudNode({
-        userId: user.id,
-        parentId: parent.id,
-        name: body.name,
-        type: 'file',
-        mimeType: body.mimeType || 'application/octet-stream',
-        size: fileBuffer.byteLength,
-        storagePath: filePath,
-      });
-      await recordCloudEvent(user.id, 'upload', { nodeId: node.id, size: node.size });
-      sendJson(req, res, 200, { node });
+      sendJson(req, res, 410, { error: 'Cloud upload is not available in the rebuilt minimal Cloud.' });
       return;
     }
 
     const cloudDownloadMatch = url.pathname.match(/^\/api\/cloud\/download\/([^/]+)$/);
     if (cloudDownloadMatch && req.method === 'GET') {
-      const user = authFromRequest(req);
-      if (!user) {
-        sendJson(req, res, 401, { error: 'Unauthorized' });
-        return;
-      }
-      const node = await getCloudNodeById(cloudDownloadMatch[1], user.id);
-      if (!node) {
-        sendJson(req, res, 404, { error: 'Node not found' });
-        return;
-      }
-      if (node.type === 'shortcut') {
-        const link = await resolveShortcutAppLink(user.id, node.target_type, node.target_id);
-        sendJson(req, res, 200, {
-          shortcut: true,
-          target_type: node.target_type,
-          target_id: node.target_id,
-          link,
-        });
-        return;
-      }
-      if (node.type !== 'file' || !node.storage_path || !fs.existsSync(node.storage_path)) {
-        sendJson(req, res, 400, { error: 'File not available' });
-        return;
-      }
-      await recordCloudEvent(user.id, 'download', { nodeId: node.id });
-      res.writeHead(200, {
-        'Content-Type': node.mime_type || 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${encodeURIComponent(node.name)}"`,
-      });
-      fs.createReadStream(node.storage_path).pipe(res);
+      sendJson(req, res, 410, { error: 'Cloud download is not available in the rebuilt minimal Cloud.' });
       return;
     }
 
@@ -3014,8 +2886,53 @@ const server = http.createServer(async (req, res) => {
         sendJson(req, res, 401, { error: 'Unauthorized' });
         return;
       }
-      await syncCloudForUser(user.id);
-      sendJson(req, res, 200, { ok: true });
+      const projectId = String(url.searchParams.get('projectId') || '').trim() || null;
+      if (projectId) {
+        const [projectRows] = await pool.query('SELECT id FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+        if (!projectRows.length) {
+          sendJson(req, res, 404, { error: 'Project not found' });
+          return;
+        }
+      }
+      await syncCloudForUser(user.id, projectId);
+      sendJson(req, res, 200, { ok: true, project_id: projectId });
+      return;
+    }
+
+    const cloudOverviewMatch = url.pathname.match(/^\/api\/cloud\/projects\/([^/]+)\/overview$/);
+    if (cloudOverviewMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const projectId = cloudOverviewMatch[1];
+      const [projectRows] = await pool.query('SELECT id, name FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, user.id]);
+      if (!projectRows.length) {
+        sendJson(req, res, 404, { error: 'Project not found' });
+        return;
+      }
+      await syncCloudForUser(user.id, projectId);
+      const roots = await ensureProjectCloudRoots(user.id, projectId);
+      const [canonicalVideos] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND parent_id = ? ORDER BY name COLLATE NOCASE ASC', [user.id, projectId, roots.videosRoot.id]);
+      const [hypothesisRoots] = await pool.query("SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key LIKE 'hypothesis_root:%' ORDER BY name COLLATE NOCASE ASC", [user.id, projectId]);
+      const hypothesisItems = [];
+      for (const hypothesisRoot of hypothesisRoots) {
+        const [videosFolderRows] = await pool.query('SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND parent_id = ? AND name = ? LIMIT 1', [user.id, projectId, hypothesisRoot.id, 'Videos']);
+        const videosFolder = videosFolderRows[0] || null;
+        let links = [];
+        if (videosFolder) {
+          const [edgeRows] = await pool.query('SELECT e.*, n.name AS child_name FROM cloud_edges e JOIN cloud_nodes n ON n.id = e.child_id WHERE e.user_id = ? AND e.project_id = ? AND e.parent_id = ? ORDER BY n.name COLLATE NOCASE ASC', [user.id, projectId, videosFolder.id]);
+          links = edgeRows;
+        }
+        hypothesisItems.push({ hypothesis_root: hypothesisRoot, videos_folder: videosFolder, links });
+      }
+      sendJson(req, res, 200, {
+        project: projectRows[0],
+        roots,
+        videos: canonicalVideos,
+        hypotheses: hypothesisItems,
+      });
       return;
     }
 

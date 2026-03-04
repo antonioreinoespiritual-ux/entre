@@ -21,14 +21,7 @@ const ProjectDetailPage = () => {
   const [editingCampaignId, setEditingCampaignId] = useState(null);
 
   const openInCloud = async () => {
-    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
-    const response = await fetch(`${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}/api/cloud/locate?targetType=project&targetId=${id}`, {
-      headers: { Authorization: `Bearer ${session?.access_token || ''}` },
-    });
-    if (response.ok) {
-      const json = await response.json();
-      navigate(`/cloud/${json.parentId || json.nodeId}`);
-    }
+    navigate(`/cloud?projectId=${id}`);
   };
 
   useEffect(() => {
