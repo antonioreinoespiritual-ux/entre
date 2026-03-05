@@ -35,6 +35,7 @@ const InterviewCenterPage = () => {
   const [formSaveError, setFormSaveError] = useState('');
 
   const saveTimerRef = useRef(null);
+  const autosaveSeqRef = useRef(0);
   const lastSavedRef = useRef('');
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
@@ -56,18 +57,24 @@ const InterviewCenterPage = () => {
     setFormSaveStatus('dirty');
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(async () => {
+      const saveSeq = ++autosaveSeqRef.current;
+      const snapshot = { ...formDraft, questions: formDraft.questions || [] };
       try {
         setFormSaveStatus('saving');
         setFormSaveError('');
-        const payload = { ...formDraft, questions: formDraft.questions || [] };
-        const saved = formDraft.id
-          ? await interviewsModuleApi.updateForm(formDraft.id, payload)
-          : await interviewsModuleApi.createForm(projectId, campaignId, payload);
-        setFormDraft(saved);
-        lastSavedRef.current = JSON.stringify(saved);
+        const saved = snapshot.id
+          ? await interviewsModuleApi.updateForm(snapshot.id, snapshot)
+          : await interviewsModuleApi.createForm(projectId, campaignId, snapshot);
+
+        if (saveSeq !== autosaveSeqRef.current) return;
+
+        const committed = { ...snapshot, id: saved.id, status: saved.status, updated_at: saved.updated_at };
+        setFormDraft((prev) => (saveSeq === autosaveSeqRef.current ? { ...prev, id: saved.id, status: saved.status, updated_at: saved.updated_at } : prev));
+        lastSavedRef.current = JSON.stringify(committed);
         setFormSaveStatus('saved');
         await reload();
       } catch (error) {
+        if (saveSeq !== autosaveSeqRef.current) return;
         setFormSaveStatus('error');
         setFormSaveError(error.message);
         toast({ title: 'Error guardando formulario', description: error.message, variant: 'destructive' });
@@ -83,6 +90,7 @@ const InterviewCenterPage = () => {
     setTab('forms');
     const draft = createEmptyFormDraft();
     setFormDraft(draft);
+    autosaveSeqRef.current += 1;
     lastSavedRef.current = JSON.stringify(draft);
     setFormSaveStatus('dirty');
     setFormSaveError('');
@@ -94,6 +102,7 @@ const InterviewCenterPage = () => {
   const openEditForm = (form) => {
     setTab('forms');
     setFormDraft(form);
+    autosaveSeqRef.current += 1;
     lastSavedRef.current = JSON.stringify(form);
     setFormSaveStatus('saved');
     setFormSaveError('');
@@ -193,13 +202,15 @@ const InterviewCenterPage = () => {
                 setActiveQuestionId={setActiveQuestionId}
                 onSave={async () => {
                   setFormSaveStatus('saving');
+                  const snapshot = { ...formDraft, questions: formDraft.questions || [] };
                   try {
-                    const payload = { ...formDraft, questions: formDraft.questions || [] };
-                    const saved = formDraft.id
-                      ? await interviewsModuleApi.updateForm(formDraft.id, payload)
-                      : await interviewsModuleApi.createForm(projectId, campaignId, payload);
-                    setFormDraft(saved);
-                    lastSavedRef.current = JSON.stringify(saved);
+                    const saved = snapshot.id
+                      ? await interviewsModuleApi.updateForm(snapshot.id, snapshot)
+                      : await interviewsModuleApi.createForm(projectId, campaignId, snapshot);
+                    const committed = { ...snapshot, id: saved.id, status: saved.status, updated_at: saved.updated_at };
+                    setFormDraft((prev) => ({ ...prev, id: saved.id, status: saved.status, updated_at: saved.updated_at }));
+                    lastSavedRef.current = JSON.stringify(committed);
+                    autosaveSeqRef.current += 1;
                     setFormSaveStatus('saved');
                     setFormSaveError('');
                     toast({ title: 'Formulario guardado' });
