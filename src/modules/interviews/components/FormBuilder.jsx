@@ -45,6 +45,7 @@ export const FormBuilder = ({
   const [draggedQuestionId, setDraggedQuestionId] = useState(null);
   const [dragOverQuestionId, setDragOverQuestionId] = useState(null);
   const [deleteUndoState, setDeleteUndoState] = useState(null);
+  const [previewResponses, setPreviewResponses] = useState({});
 
   const editorRef = useRef(null);
   const undoTimerRef = useRef(null);
@@ -63,6 +64,11 @@ export const FormBuilder = ({
   useEffect(() => () => {
     if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!preview) return;
+    setPreviewResponses({});
+  }, [preview]);
 
   const canSave = useMemo(() => {
     if (!draft.title?.trim()) return false;
@@ -291,24 +297,89 @@ export const FormBuilder = ({
     }
   };
 
-  const renderPreviewQuestion = (question) => (
-    <div key={`preview_${question.id}`} className="border rounded-xl p-3 bg-white">
-      <p className="font-medium">{question.title || 'Pregunta sin título'} {question.required ? '*' : ''}</p>
-      {!!question.description && <p className="text-xs text-slate-500 mt-1">{question.description}</p>}
-      {(question.type === 'short_text' || question.type === 'long_text') && <input className="mt-2 border rounded p-2 w-full" placeholder={question.type === 'long_text' ? 'Respuesta larga' : 'Respuesta corta'} disabled />}
-      {supportsOptions(question.type) && (
-        <div className="mt-2 space-y-1">
-          {(question.options || []).filter(Boolean).map((option) => <p key={`${question.id}_${option}`} className="text-sm">• {option}</p>)}
-        </div>
-      )}
-      {question.type === 'scale_1_5' && (
-        <div className="mt-2">
-          <input type="range" min={1} max={5} defaultValue={3} disabled />
-          <div className="flex justify-between text-xs text-slate-500"><span>{question.scale_min_label || '1'}</span><span>{question.scale_max_label || '5'}</span></div>
-        </div>
-      )}
-    </div>
-  );
+  const renderPreviewQuestion = (question) => {
+    const value = previewResponses[question.id];
+    const missingRequired = question.required && (value == null || value === '' || (Array.isArray(value) && value.length === 0));
+
+    return (
+      <div key={`preview_${question.id}`} className={`rounded-2xl border bg-white p-5 shadow-sm transition-all duration-200 ${missingRequired ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200 hover:border-slate-300'}`}>
+        <p className="text-base font-semibold text-slate-900">{question.title || 'Pregunta sin título'} {question.required ? '*' : ''}</p>
+        {!!question.description && <p className="mt-1 text-sm text-slate-500">{question.description}</p>}
+
+        {(question.type === 'short_text' || question.type === 'long_text') && (
+          <input
+            className="mt-4 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100"
+            placeholder={question.type === 'long_text' ? 'Respuesta larga' : 'Respuesta corta'}
+            value={value || ''}
+            onChange={(event) => setPreviewResponses((prev) => ({ ...prev, [question.id]: event.target.value }))}
+          />
+        )}
+
+        {supportsOptions(question.type) && (
+          <div className="mt-4 space-y-2">
+            {(question.options || []).filter(Boolean).map((option) => {
+              const checked = question.type === 'single_choice'
+                ? value === option
+                : Array.isArray(value) && value.includes(option);
+              return (
+                <button
+                  key={`${question.id}_${option}`}
+                  type="button"
+                  className={`w-full rounded-xl border px-3 py-2 text-left text-sm transition-all duration-200 ${checked ? 'border-indigo-500 bg-indigo-50 text-indigo-900 shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'} focus:outline-none focus:ring-4 focus:ring-indigo-100`}
+                  onClick={() => {
+                    if (question.type === 'single_choice') {
+                      setPreviewResponses((prev) => ({ ...prev, [question.id]: option }));
+                    } else {
+                      const values = Array.isArray(value) ? value : [];
+                      const next = values.includes(option) ? values.filter((item) => item !== option) : [...values, option];
+                      setPreviewResponses((prev) => ({ ...prev, [question.id]: next }));
+                    }
+                  }}
+                >
+                  {option}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {question.type === 'scale_1_5' && (
+          <div className="mt-4 space-y-3">
+            <div className="grid grid-cols-5 gap-2">
+              {[1, 2, 3, 4, 5].map((scaleValue) => {
+                const selected = Number(value) === scaleValue;
+                return (
+                  <button
+                    key={`${question.id}_scale_${scaleValue}`}
+                    type="button"
+                    className={`rounded-xl border px-0 py-2 text-sm font-semibold transition-all duration-200 ${selected ? 'border-indigo-600 bg-indigo-600 text-white shadow-md' : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-300 hover:text-indigo-700'} focus:outline-none focus:ring-4 focus:ring-indigo-100`}
+                    onClick={() => setPreviewResponses((prev) => ({ ...prev, [question.id]: scaleValue }))}
+                    onKeyDown={(event) => {
+                      if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        const next = Math.min(5, Number(value || 0) + 1);
+                        setPreviewResponses((prev) => ({ ...prev, [question.id]: next || 1 }));
+                      }
+                      if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        const next = Math.max(1, Number(value || 2) - 1);
+                        setPreviewResponses((prev) => ({ ...prev, [question.id]: next }));
+                      }
+                    }}
+                  >
+                    {scaleValue}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex justify-between text-xs text-slate-500"><span>{question.scale_min_label || 'Muy bajo'}</span><span>{question.scale_max_label || 'Muy alto'}</span></div>
+          </div>
+        )}
+
+        {missingRequired && <p className="mt-3 text-xs font-medium text-amber-700">Esta pregunta es requerida.</p>}
+      </div>
+    );
+  };
 
   if (preview) {
     return (
@@ -408,8 +479,8 @@ export const FormBuilder = ({
                   </button>
                   <div className="flex-1 space-y-2">
                     <div className="grid md:grid-cols-8 gap-2 items-center">
-                      <input className="border rounded p-2 md:col-span-4" placeholder={`Pregunta ${index + 1}`} value={question.title || ''} onChange={(e) => updateQuestion(question.id, { title: e.target.value })} />
-                      <select className="border rounded p-2 md:col-span-2" value={question.type} onChange={(e) => {
+                      <input className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100 md:col-span-4" placeholder={`Pregunta ${index + 1}`} value={question.title || ''} onChange={(e) => updateQuestion(question.id, { title: e.target.value })} />
+                      <select className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100 md:col-span-2" value={question.type} onChange={(e) => {
                         const nextType = e.target.value;
                         updateQuestion(question.id, {
                           type: nextType,
@@ -435,14 +506,14 @@ export const FormBuilder = ({
                       </div>
                     </div>
 
-                    <textarea className="border rounded p-2 w-full text-sm" rows={2} placeholder="Descripción (opcional)" value={question.description || ''} onChange={(e) => updateQuestion(question.id, { description: e.target.value })} />
+                    <textarea className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100" rows={2} placeholder="Descripción (opcional)" value={question.description || ''} onChange={(e) => updateQuestion(question.id, { description: e.target.value })} />
 
                     {supportsOptions(question.type) && (
                       <div className="space-y-2">
                         {(question.options || []).map((option, optionIndex) => (
                           <input
                             key={`${question.id}_${optionIndex}`}
-                            className="border rounded p-2 w-full"
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100"
                             placeholder={`Opción ${optionIndex + 1}`}
                             value={option}
                             onChange={(e) => {
@@ -471,8 +542,8 @@ export const FormBuilder = ({
 
                     {question.type === 'scale_1_5' && (
                       <div className="grid md:grid-cols-2 gap-2">
-                        <input className="border rounded p-2" placeholder="Etiqueta mínima" value={question.scale_min_label || ''} onChange={(e) => updateQuestion(question.id, { scale_min_label: e.target.value })} />
-                        <input className="border rounded p-2" placeholder="Etiqueta máxima" value={question.scale_max_label || ''} onChange={(e) => updateQuestion(question.id, { scale_max_label: e.target.value })} />
+                        <input className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100" placeholder="Etiqueta mínima" value={question.scale_min_label || ''} onChange={(e) => updateQuestion(question.id, { scale_min_label: e.target.value })} />
+                        <input className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100" placeholder="Etiqueta máxima" value={question.scale_max_label || ''} onChange={(e) => updateQuestion(question.id, { scale_max_label: e.target.value })} />
                       </div>
                     )}
                   </div>
