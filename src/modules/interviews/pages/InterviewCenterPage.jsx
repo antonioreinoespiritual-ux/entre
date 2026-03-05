@@ -38,6 +38,7 @@ const InterviewCenterPage = () => {
   const [clientAudienceFilter, setClientAudienceFilter] = useState('');
   const [clientSort, setClientSort] = useState('last_interview_desc');
   const [selectedClientId, setSelectedClientId] = useState(null);
+  const [clientActionsMenuId, setClientActionsMenuId] = useState(null);
   const [runInterviewPrefill, setRunInterviewPrefill] = useState({ clientId: null, audienceId: null });
 
   const saveTimerRef = useRef(null);
@@ -223,13 +224,13 @@ const InterviewCenterPage = () => {
 
         {!center.loading && !center.error && tab === 'clients' && (
           <div className="space-y-3">
-            <div className="bg-white border rounded-xl p-3 grid md:grid-cols-4 gap-2">
-              <input className="border rounded p-2" placeholder="Buscar cliente" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
-              <select className="border rounded p-2" value={clientAudienceFilter} onChange={(e) => setClientAudienceFilter(e.target.value)}>
+            <div className="bg-white border rounded-2xl p-3 grid md:grid-cols-4 gap-2">
+              <input className="border rounded-xl p-2" placeholder="Buscar cliente" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+              <select className="border rounded-xl p-2" value={clientAudienceFilter} onChange={(e) => setClientAudienceFilter(e.target.value)}>
                 <option value="">Todas las audiencias</option>
                 {center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}
               </select>
-              <select className="border rounded p-2" value={clientSort} onChange={(e) => setClientSort(e.target.value)}>
+              <select className="border rounded-xl p-2" value={clientSort} onChange={(e) => setClientSort(e.target.value)}>
                 <option value="last_interview_desc">Última entrevista (reciente)</option>
                 <option value="last_interview_asc">Última entrevista (antigua)</option>
                 <option value="name_asc">Nombre (A-Z)</option>
@@ -239,42 +240,45 @@ const InterviewCenterPage = () => {
             </div>
 
             {!visibleClients.length ? <EmptyState title="No hay clientes" description="Crea tu primer cliente para iniciar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={() => setClientModalOpen(true)}>Crear cliente</Button>} /> : (
-              <div className="bg-white border rounded-xl overflow-hidden">
-                <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-slate-50 text-xs font-medium text-slate-500 border-b">
-                  <p className="col-span-3">Nombre</p><p className="col-span-2">Audiencia</p><p className="col-span-2">Contacto</p><p className="col-span-2">Entrevistas</p><p className="col-span-2">Última entrevista</p><p className="col-span-1 text-right">Acciones</p>
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+                <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500 border-b">
+                  <p className="col-span-3">Cliente</p>
+                  <p className="col-span-2">Audiencia</p>
+                  <p className="col-span-2">Contacto</p>
+                  <p className="col-span-2">Entrevistas</p>
+                  <p className="col-span-2">Última entrevista</p>
+                  <p className="col-span-1 text-right">Acciones</p>
                 </div>
                 {visibleClients.map((client) => (
-                  <div key={client.id} className={`grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 cursor-pointer ${String(selectedClientId) === String(client.id) ? 'bg-indigo-50/50' : ''}`} onClick={() => setSelectedClientId(client.id)}>
-                    <div className="col-span-3"><p className="font-medium">{client.name}</p></div>
-                    <p className="col-span-2 text-sm text-slate-600">{client.audience_name || 'Sin audiencia'}</p>
+                  <div
+                    key={client.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedClientId(client.id)}
+                    onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedClientId(client.id); } }}
+                    className="group grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 focus-within:ring-2 focus-within:ring-indigo-200 transition-colors cursor-pointer"
+                  >
+                    <div className="col-span-3 min-w-0">
+                      <p className="font-semibold text-slate-900 truncate">{client.name}</p>
+                    </div>
+                    <p className="col-span-2 text-sm text-slate-600 truncate">{client.audience_name || 'Sin audiencia'}</p>
                     <p className="col-span-2 text-sm text-slate-600 truncate">{client.contact || '—'}</p>
                     <p className="col-span-2 text-sm text-slate-600">{client.interviewsCount}</p>
                     <p className="col-span-2 text-sm text-slate-600">{client.lastInterview ? new Date(client.lastInterview.created_at).toLocaleDateString() : '—'}</p>
-                    <div className="col-span-1 flex justify-end gap-1" onClick={(event) => event.stopPropagation()}>
-                      <Button className="bg-white border" onClick={() => { setClientDraft(client); setClientModalOpen(true); }}>Editar</Button>
-                      <Button className="bg-white border" onClick={() => { setRunInterviewPrefill({ clientId: client.id, audienceId: client.audience_id || null }); setRunModalOpen(true); }}>Entrevistar</Button>
-                      <Button className="bg-amber-50 border text-amber-700" onClick={() => center.runMutation(() => interviewsModuleApi.updateClient(client.id, { ...client, status: client.status === 'archived' ? 'active' : 'archived' }), client.status === 'archived' ? 'Cliente reactivado' : 'Cliente archivado')}>{client.status === 'archived' ? 'Reactivar' : 'Archivar'}</Button>
-                      <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteClient(client.id), 'Cliente eliminado')}>Borrar</Button>
+
+                    <div className="col-span-1 relative flex justify-end" onClick={(event) => event.stopPropagation()}>
+                      <Button className="bg-white border" title="Acciones" onClick={() => setClientActionsMenuId((prev) => (prev === client.id ? null : client.id))}>⋮</Button>
+                      {clientActionsMenuId === client.id && (
+                        <div className="absolute right-0 top-10 z-30 w-44 bg-white border rounded-xl shadow-md p-1">
+                          <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { setClientDraft(client); setClientModalOpen(true); setClientActionsMenuId(null); }}>Editar</button>
+                          <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { setRunInterviewPrefill({ clientId: client.id, audienceId: client.audience_id || null }); setRunModalOpen(true); setClientActionsMenuId(null); }}>Entrevistar</button>
+                          <button className="w-full text-left text-sm px-3 py-2 rounded text-amber-700 hover:bg-amber-50" onClick={() => { center.runMutation(() => interviewsModuleApi.updateClient(client.id, { ...client, status: client.status === 'archived' ? 'active' : 'archived' }), client.status === 'archived' ? 'Cliente reactivado' : 'Cliente archivado'); setClientActionsMenuId(null); }}>{client.status === 'archived' ? 'Reactivar' : 'Archivar'}</button>
+                          <button className="w-full text-left text-sm px-3 py-2 rounded text-red-700 hover:bg-red-50" onClick={() => { center.runMutation(() => interviewsModuleApi.deleteClient(client.id), 'Cliente eliminado'); setClientActionsMenuId(null); }}>Borrar</button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
-              </div>
-            )}
-
-            {selectedClient && (
-              <div className="bg-white border rounded-xl p-4 space-y-3">
-                <h3 className="font-semibold text-lg">Ficha de cliente · {selectedClient.name}</h3>
-                <p className="text-sm text-slate-600">Audiencia: <b>{selectedClient.audience_name || 'Sin audiencia'}</b> · Contacto: <b>{selectedClient.contact || '—'}</b></p>
-                <p className="text-sm text-slate-600">Notas globales: {selectedClient.notes || 'Sin notas'}</p>
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Historial de entrevistas</p>
-                  {!selectedClient.interviews.length ? <p className="text-sm text-slate-500">Sin entrevistas todavía.</p> : selectedClient.interviews.map((session) => (
-                    <button key={session.id} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>
-                      <p className="text-sm font-medium">{session.form_title || 'Formulario'} · {new Date(session.created_at).toLocaleString()}</p>
-                      <p className="text-xs text-slate-500">Estado: {session.status || 'draft'}</p>
-                    </button>
-                  ))}
-                </div>
               </div>
             )}
           </div>
@@ -441,6 +445,38 @@ const InterviewCenterPage = () => {
             setClientModalOpen(false);
           }}>Guardar cliente</Button>
         </div>
+      </Modal>
+
+
+      <Modal title={selectedClient ? `Cliente · ${selectedClient.name}` : 'Cliente'} open={Boolean(selectedClient)} onClose={() => setSelectedClientId(null)}>
+        {selectedClient && (
+          <div className="space-y-4">
+            <div className="border rounded-xl p-4 bg-slate-50/60">
+              <h3 className="text-lg font-semibold">{selectedClient.name}</h3>
+              <p className="text-sm text-slate-600">Audiencia: <b>{selectedClient.audience_name || 'Sin audiencia'}</b> · Contacto: <b>{selectedClient.contact || '—'}</b></p>
+              <div className="flex flex-wrap gap-2 mt-3">
+                <Button className="bg-white border" onClick={() => { setClientDraft(selectedClient); setClientModalOpen(true); }}>Editar cliente</Button>
+                <Button className="bg-indigo-600 text-white" onClick={() => { setRunInterviewPrefill({ clientId: selectedClient.id, audienceId: selectedClient.audience_id || null }); setRunModalOpen(true); }}>Iniciar entrevista</Button>
+                <Button className="bg-amber-50 border text-amber-700" onClick={() => center.runMutation(() => interviewsModuleApi.updateClient(selectedClient.id, { ...selectedClient, status: selectedClient.status === 'archived' ? 'active' : 'archived' }), selectedClient.status === 'archived' ? 'Cliente reactivado' : 'Cliente archivado')}>{selectedClient.status === 'archived' ? 'Reactivar' : 'Archivar'}</Button>
+              </div>
+            </div>
+
+            <div className="bg-white border rounded-xl p-4">
+              <p className="text-sm font-medium mb-1">Notas globales</p>
+              <p className="text-sm text-slate-600 whitespace-pre-wrap">{selectedClient.notes || 'Sin notas'}</p>
+            </div>
+
+            <div className="bg-white border rounded-xl p-4 space-y-2">
+              <p className="text-sm font-medium">Historial de entrevistas</p>
+              {!selectedClient.interviews.length ? <p className="text-sm text-slate-500">Sin entrevistas todavía.</p> : selectedClient.interviews.map((session) => (
+                <button key={session.id} className="w-full text-left border rounded-lg p-3 hover:bg-slate-50 transition-colors" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>
+                  <p className="text-sm font-medium">{new Date(session.created_at).toLocaleString()}</p>
+                  <p className="text-xs text-slate-500">{session.form_title || 'Formulario'} · Estado: {session.status || 'draft'}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </Modal>
 
       <Modal title="Realizar entrevista" open={runModalOpen} onClose={() => { setRunModalOpen(false); setRunInterviewPrefill({ clientId: null, audienceId: null }); }}>
