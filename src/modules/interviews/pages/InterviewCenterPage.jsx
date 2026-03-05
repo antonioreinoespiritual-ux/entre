@@ -8,6 +8,7 @@ import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
 import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewCenterData';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
+import { getLeanScore } from '@/modules/interviews/components/LeanEvaluationPanel';
 
 
 const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
@@ -511,12 +512,18 @@ const InterviewCenterPage = () => {
               <input className="border rounded p-2" type="date" value={sessionFilter.from} onChange={(e) => setSessionFilter((prev) => ({ ...prev, from: e.target.value }))} />
               <input className="border rounded p-2" type="date" value={sessionFilter.to} onChange={(e) => setSessionFilter((prev) => ({ ...prev, to: e.target.value }))} />
             </div>
-            {!filteredSessions.length ? <EmptyState title="No hay entrevistas" description="Inicia una entrevista para ver sesiones aquí." action={<Button className="bg-indigo-600 text-white" onClick={() => setRunModalOpen(true)}>Realizar entrevista</Button>} /> : filteredSessions.map((session) => (
-              <button key={session.id} className="w-full bg-white border rounded-xl p-3 text-left hover:bg-slate-50" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>
-                <p className="font-medium">{session.client_name} · {session.form_title}</p>
-                <p className="text-xs text-slate-500">{session.audience_name || 'Sin audiencia'} · {new Date(session.created_at).toLocaleString()}</p>
-              </button>
-            ))}
+            {!filteredSessions.length ? <EmptyState title="No hay entrevistas" description="Inicia una entrevista para ver sesiones aquí." action={<Button className="bg-indigo-600 text-white" onClick={() => setRunModalOpen(true)}>Realizar entrevista</Button>} /> : filteredSessions.map((session) => {
+              const leanScore = getLeanScore(session.responses_json?.__lean_evaluation || {});
+              return (
+                <button key={session.id} className="w-full bg-white border rounded-xl p-3 text-left hover:bg-slate-50" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-medium">{session.client_name} · {session.form_title}</p>
+                    {leanScore != null && <span className="text-xs px-2 py-0.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700">Lean {leanScore}</span>}
+                  </div>
+                  <p className="text-xs text-slate-500">{session.audience_name || 'Sin audiencia'} · {new Date(session.created_at).toLocaleString()}</p>
+                </button>
+              );
+            })}
           </div>
         )}
       </InterviewModuleShell>

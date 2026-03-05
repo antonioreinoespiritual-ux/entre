@@ -2,16 +2,36 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import { LeanEvaluationPanel } from '@/modules/interviews/components/LeanEvaluationPanel';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
 
 const InterviewSessionDetailPage = () => {
   const { projectId, campaignId, sessionId } = useParams();
   const navigate = useNavigate();
   const [session, setSession] = useState(null);
+  const [leanEvaluation, setLeanEvaluation] = useState({});
+  const [savingLean, setSavingLean] = useState(false);
 
   useEffect(() => {
     interviewsModuleApi.readSession(sessionId).then(setSession).catch(() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`));
   }, [projectId, campaignId, sessionId, navigate]);
+
+  useEffect(() => {
+    if (!session) return;
+    setLeanEvaluation(session.responses_json?.__lean_evaluation || {});
+  }, [session]);
+
+  const saveLeanEvaluation = async () => {
+    if (!session) return;
+    setSavingLean(true);
+    try {
+      const responses = { ...(session.responses_json || {}), __lean_evaluation: leanEvaluation };
+      const updated = await interviewsModuleApi.updateSession(session.id, { ...session, responses, status: session.status || 'completed' });
+      setSession(updated);
+    } finally {
+      setSavingLean(false);
+    }
+  };
 
   const payload = useMemo(() => JSON.stringify(session, null, 2), [session]);
 
@@ -36,6 +56,8 @@ const InterviewSessionDetailPage = () => {
             <Button className="bg-indigo-600 text-white" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`)}>Volver</Button>
           </div>
         </div>
+
+        <LeanEvaluationPanel value={leanEvaluation} onChange={setLeanEvaluation} onSave={saveLeanEvaluation} saving={savingLean} />
 
         <div className="bg-white border rounded-xl p-4 space-y-3">
           <h2 className="font-semibold">Respuestas y notas</h2>

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { LeanEvaluationPanel } from '@/modules/interviews/components/LeanEvaluationPanel';
 
 const inputClass = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm transition-all duration-200 hover:border-slate-300 focus:border-indigo-400 focus:outline-none focus:ring-4 focus:ring-indigo-100';
 
@@ -11,6 +12,7 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [sessionId, setSessionId] = useState(null);
   const [completedSessionId, setCompletedSessionId] = useState(null);
+  const [leanEvaluation, setLeanEvaluation] = useState({});
 
   const [draft, setDraft] = useState({
     audience_id: '',
@@ -50,6 +52,7 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
     responses: {
       ...(draft.responses || {}),
       __question_notes: draft.question_notes || {},
+      __lean_evaluation: leanEvaluation || {},
     },
   });
 
@@ -95,6 +98,7 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
     setSessionId(null);
     setCompletedSessionId(null);
     setSaveState('idle');
+    setLeanEvaluation({});
     setDraft({
       audience_id: String(initialAudienceId || ''),
       client_id: String(initialClientId || ''),
@@ -104,6 +108,12 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
       responses: {},
       question_notes: {},
     });
+  };
+
+
+  const saveLeanEvaluation = async () => {
+    if (!sessionId) return;
+    await onCompleteInterview(sessionId, { ...buildPayload(), status: 'completed' });
   };
 
   return (
@@ -245,14 +255,18 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
       )}
 
       {step === 7 && (
-        <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 space-y-3">
-          <h4 className="font-semibold text-emerald-800">Entrevista completada</h4>
-          <p className="text-sm text-emerald-900">Formulario: <b>{selectedForm?.title || '—'}</b></p>
-          <p className="text-sm text-emerald-900">Cliente: <b>{clients.find((c) => String(c.id) === String(draft.client_id))?.name || '—'}</b></p>
-          <div className="flex flex-wrap gap-2">
-            <Button className="bg-emerald-600 text-white" onClick={() => onViewSession?.(completedSessionId)}>Ver entrevista</Button>
-            <Button className="bg-white border" onClick={resetAll}>Iniciar otra</Button>
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 space-y-3">
+            <h4 className="font-semibold text-emerald-800">Entrevista completada</h4>
+            <p className="text-sm text-emerald-900">Formulario: <b>{selectedForm?.title || '—'}</b></p>
+            <p className="text-sm text-emerald-900">Cliente: <b>{clients.find((c) => String(c.id) === String(draft.client_id))?.name || '—'}</b></p>
+            <div className="flex flex-wrap gap-2">
+              <Button className="bg-emerald-600 text-white" onClick={() => onViewSession?.(completedSessionId)}>Ver entrevista</Button>
+              <Button className="bg-white border" onClick={resetAll}>Iniciar otra</Button>
+            </div>
           </div>
+
+          <LeanEvaluationPanel value={leanEvaluation} onChange={setLeanEvaluation} onSave={saveLeanEvaluation} saving={loading} />
         </div>
       )}
 
