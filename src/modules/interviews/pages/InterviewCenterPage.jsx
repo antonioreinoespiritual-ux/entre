@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
-import { FormBuilder } from '@/modules/interviews/components/FormBuilder';
+import { FormBuilder, createEmptyFormDraft } from '@/modules/interviews/components/FormBuilder';
 import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner';
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
 import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewCenterData';
@@ -11,23 +11,96 @@ import { interviewsModuleApi } from '@/modules/interviews/services/interviewsMod
 
 const blankClient = { name: '', contact: '', notes: '', audience_id: '' };
 const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
-const blankForm = { title: '', description: '', questions: [] };
 
 const InterviewCenterPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
   const center = useInterviewCenterData({ projectId, campaignId, toast });
+  const { reload } = center;
 
   const [tab, setTab] = useState('dashboard');
   const [clientModalOpen, setClientModalOpen] = useState(false);
-  const [formModalOpen, setFormModalOpen] = useState(false);
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [clientDraft, setClientDraft] = useState(blankClient);
-  const [formDraft, setFormDraft] = useState(blankForm);
   const [hypDraft, setHypDraft] = useState(blankHypothesis);
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
+
+  const [formEditorOpen, setFormEditorOpen] = useState(false);
+  const [formPreview, setFormPreview] = useState(false);
+  const [formDraft, setFormDraft] = useState(createEmptyFormDraft());
+  const [activeQuestionId, setActiveQuestionId] = useState(null);
+  const [formSaveStatus, setFormSaveStatus] = useState('saved');
+  const [formSaveError, setFormSaveError] = useState('');
+
+  const saveTimerRef = useRef(null);
+  const lastSavedRef = useRef('');
+
+  const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
+
+  useEffect(() => {
+    if (!formEditorOpen) return undefined;
+    const warn = (event) => {
+      if (formSaveStatus === 'dirty' || formSaveStatus === 'saving') {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [formEditorOpen, formSaveStatus]);
+
+  useEffect(() => {
+    if (!formEditorOpen || !formIsDirty) return;
+    setFormSaveStatus('dirty');
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      try {
+        setFormSaveStatus('saving');
+        setFormSaveError('');
+        const payload = { ...formDraft, questions: formDraft.questions || [] };
+        const saved = formDraft.id
+          ? await interviewsModuleApi.updateForm(formDraft.id, payload)
+          : await interviewsModuleApi.createForm(projectId, campaignId, payload);
+        setFormDraft(saved);
+        lastSavedRef.current = JSON.stringify(saved);
+        setFormSaveStatus('saved');
+        await reload();
+      } catch (error) {
+        setFormSaveStatus('error');
+        setFormSaveError(error.message);
+        toast({ title: 'Error guardando formulario', description: error.message, variant: 'destructive' });
+      }
+    }, 700);
+
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [campaignId, formDraft, formEditorOpen, formIsDirty, projectId, reload, toast]);
+
+  const openCreateForm = () => {
+    setTab('forms');
+    const draft = createEmptyFormDraft();
+    setFormDraft(draft);
+    lastSavedRef.current = JSON.stringify(draft);
+    setFormSaveStatus('dirty');
+    setFormSaveError('');
+    setFormPreview(false);
+    setFormEditorOpen(true);
+    setActiveQuestionId(draft.questions[0]?.id || null);
+  };
+
+  const openEditForm = (form) => {
+    setTab('forms');
+    setFormDraft(form);
+    lastSavedRef.current = JSON.stringify(form);
+    setFormSaveStatus('saved');
+    setFormSaveError('');
+    setFormPreview(false);
+    setFormEditorOpen(true);
+    setActiveQuestionId(form.questions?.[0]?.id || null);
+  };
 
   const createClient = async (payload) => {
     const created = await interviewsModuleApi.createClient(projectId, campaignId, payload);
@@ -45,21 +118,6 @@ const InterviewCenterPage = () => {
     if (sessionFilter.to && time > (new Date(sessionFilter.to).getTime() + 86400000)) return false;
     return true;
   }), [center.sessions, sessionFilter]);
-
-  const saveForm = async () => {
-    setSaving(true);
-    try {
-      await interviewsModuleApi.createForm(projectId, campaignId, formDraft);
-      toast({ title: 'Formulario guardado' });
-      setFormDraft(blankForm);
-      setFormModalOpen(false);
-      await center.reload();
-    } catch (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const runInterview = async (payload) => {
     setSaving(true);
@@ -83,7 +141,7 @@ const InterviewCenterPage = () => {
         activeTab={tab}
         onTabChange={setTab}
         onOpenRun={() => setRunModalOpen(true)}
-        onOpenForm={() => setFormModalOpen(true)}
+        onOpenForm={openCreateForm}
         onOpenClient={() => setClientModalOpen(true)}
       >
         {center.loading && <div className="bg-white border rounded-xl p-6">Cargando...</div>}
@@ -126,24 +184,73 @@ const InterviewCenterPage = () => {
         )}
 
         {!center.loading && !center.error && tab === 'forms' && (
-          <div className="space-y-2">
-            {!center.forms.length ? <EmptyState title="No hay formularios" description="Crea un formulario para ejecutar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={() => setFormModalOpen(true)}>Crear formulario</Button>} /> : center.forms.map((form) => (
-              <div key={form.id} className="bg-white border rounded-xl p-4 flex justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{form.title}</p>
-                  <p className="text-sm text-slate-500">{form.description || 'Sin descripción'}</p>
-                  <p className="text-xs text-slate-500">{form.questions?.length || 0} preguntas · {form.status || 'active'}</p>
-                </div>
-                <div className="flex gap-2">
-                  <Button className="bg-white border" onClick={() => { setFormDraft(form); setFormModalOpen(true); }}>Editar</Button>
-                  <Button className="bg-white border" onClick={async () => {
-                    const clone = { title: `${form.title} (copia)`, description: form.description, questions: form.questions };
-                    await center.runMutation(() => interviewsModuleApi.createForm(projectId, campaignId, clone), 'Formulario duplicado');
-                  }}>Duplicar</Button>
-                  <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteForm(form.id), 'Formulario eliminado')}>Borrar</Button>
-                </div>
-              </div>
-            ))}
+          <div className="space-y-3">
+            {formEditorOpen ? (
+              <FormBuilder
+                draft={formDraft}
+                setDraft={setFormDraft}
+                activeQuestionId={activeQuestionId}
+                setActiveQuestionId={setActiveQuestionId}
+                onSave={async () => {
+                  setFormSaveStatus('saving');
+                  try {
+                    const payload = { ...formDraft, questions: formDraft.questions || [] };
+                    const saved = formDraft.id
+                      ? await interviewsModuleApi.updateForm(formDraft.id, payload)
+                      : await interviewsModuleApi.createForm(projectId, campaignId, payload);
+                    setFormDraft(saved);
+                    lastSavedRef.current = JSON.stringify(saved);
+                    setFormSaveStatus('saved');
+                    setFormSaveError('');
+                    toast({ title: 'Formulario guardado' });
+                    await reload();
+                  } catch (error) {
+                    setFormSaveStatus('error');
+                    setFormSaveError(error.message);
+                    toast({ title: 'Error', description: error.message, variant: 'destructive' });
+                  }
+                }}
+                onClose={() => {
+                  setFormEditorOpen(false);
+                  setFormPreview(false);
+                  setFormDraft(createEmptyFormDraft());
+                  setActiveQuestionId(null);
+                  setFormSaveStatus('saved');
+                  setFormSaveError('');
+                }}
+                saveStatus={formSaveStatus}
+                saveError={formSaveError}
+                preview={formPreview}
+                setPreview={setFormPreview}
+              />
+            ) : (
+              <>
+                <div className="flex justify-end"><Button className="bg-indigo-600 text-white" onClick={openCreateForm}>Crear formulario</Button></div>
+                {!center.forms.length ? <EmptyState title="No hay formularios" description="Crea un formulario para ejecutar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={openCreateForm}>Crear formulario</Button>} /> : center.forms.map((form) => (
+                  <div key={form.id} className="bg-white border rounded-xl p-4 flex justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{form.title}</p>
+                      <p className="text-sm text-slate-500">{form.description || 'Sin descripción'}</p>
+                      <p className="text-xs text-slate-500">{form.questions?.length || 0} preguntas · {form.status || 'active'}</p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button className="bg-white border" onClick={() => openEditForm(form)}>Editar</Button>
+                      <Button className="bg-white border" onClick={async () => {
+                        const clone = { title: `${form.title} (copia)`, description: form.description, questions: form.questions };
+                        const created = await interviewsModuleApi.createForm(projectId, campaignId, clone);
+                        await reload();
+                        openEditForm(created);
+                        toast({ title: 'Formulario duplicado' });
+                      }}>Duplicar</Button>
+                      <Button className="bg-red-50 border text-red-700" onClick={async () => {
+                        if (!window.confirm('¿Borrar formulario?')) return;
+                        await center.runMutation(() => interviewsModuleApi.deleteForm(form.id), 'Formulario eliminado');
+                      }}>Borrar</Button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
 
@@ -203,23 +310,6 @@ const InterviewCenterPage = () => {
             setClientModalOpen(false);
           }}>Guardar cliente</Button>
         </div>
-      </Modal>
-
-      <Modal title="Form Builder" open={formModalOpen} onClose={() => { setFormModalOpen(false); setFormDraft(blankForm); }}>
-        <FormBuilder
-          draft={formDraft}
-          setDraft={setFormDraft}
-          saving={saving}
-          onSave={async () => {
-            if (formDraft.id) {
-              await center.runMutation(() => interviewsModuleApi.updateForm(formDraft.id, formDraft), 'Formulario actualizado');
-              setFormModalOpen(false);
-              setFormDraft(blankForm);
-            } else {
-              await saveForm();
-            }
-          }}
-        />
       </Modal>
 
       <Modal title="Realizar entrevista" open={runModalOpen} onClose={() => setRunModalOpen(false)}>

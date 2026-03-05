@@ -7,7 +7,7 @@
 ## Estructura principal
 - `pages/InterviewCenterPage.jsx`: mini-app con tabs (Dashboard, Clientes, Formularios, Hipótesis, Entrevistas).
 - `pages/InterviewSessionDetailPage.jsx`: detalle completo de sesión.
-- `components/FormBuilder.jsx`: builder de formularios (tipos, required, opciones, orden, preview).
+- `components/FormBuilder.jsx`: editor estilo Google Forms base con cards de preguntas, acciones por pregunta, preview integrado y estado de guardado.
 - `components/InterviewRunner.jsx`: flujo de "Realizar entrevista" en 4 pasos.
 - `components/InterviewModuleShell.jsx`: header, tabs, modal y empty states.
 - `hooks/useInterviewCenterData.js`: carga reactiva, KPIs y utilidades para mutaciones con feedback.
