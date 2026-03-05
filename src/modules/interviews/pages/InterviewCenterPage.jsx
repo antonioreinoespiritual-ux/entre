@@ -129,14 +129,30 @@ const InterviewCenterPage = () => {
     return true;
   }), [center.sessions, sessionFilter]);
 
-  const runInterview = async (payload) => {
+  const startInterviewSession = async (payload) => {
     setSaving(true);
     try {
       const created = await interviewsModuleApi.createSession(projectId, campaignId, payload);
-      toast({ title: 'Entrevista guardada' });
-      setRunModalOpen(false);
       await center.reload();
-      navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${created.id}`);
+      return created;
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const autosaveInterviewSession = async (sessionId, payload) => {
+    await interviewsModuleApi.updateSession(sessionId, { ...payload, status: 'draft' });
+  };
+
+  const completeInterviewSession = async (sessionId, payload) => {
+    setSaving(true);
+    try {
+      const saved = sessionId
+        ? await interviewsModuleApi.updateSession(sessionId, { ...payload, status: 'completed' })
+        : await interviewsModuleApi.createSession(projectId, campaignId, { ...payload, status: 'completed' });
+      toast({ title: 'Entrevista guardada' });
+      await center.reload();
+      return saved;
     } finally {
       setSaving(false);
     }
@@ -363,7 +379,10 @@ const InterviewCenterPage = () => {
           forms={center.forms}
           hypotheses={center.hypotheses}
           onCreateClient={createClient}
-          onSubmit={runInterview}
+          onStartInterview={startInterviewSession}
+          onAutosave={autosaveInterviewSession}
+          onCompleteInterview={completeInterviewSession}
+          onViewSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
           loading={saving}
         />
       </Modal>
