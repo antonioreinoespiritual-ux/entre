@@ -240,7 +240,7 @@ const InterviewCenterPage = () => {
             </div>
 
             {!visibleClients.length ? <EmptyState title="No hay clientes" description="Crea tu primer cliente para iniciar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={() => setClientModalOpen(true)}>Crear cliente</Button>} /> : (
-              <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+              <div className="bg-white border border-slate-200 rounded-2xl overflow-visible">
                 <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500 border-b">
                   <p className="col-span-3">Cliente</p>
                   <p className="col-span-2">Audiencia</p>
@@ -256,7 +256,7 @@ const InterviewCenterPage = () => {
                     tabIndex={0}
                     onClick={() => setSelectedClientId(client.id)}
                     onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedClientId(client.id); } }}
-                    className="group grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 focus-within:ring-2 focus-within:ring-indigo-200 transition-colors cursor-pointer"
+                    className={`group relative grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 focus-within:ring-2 focus-within:ring-indigo-200 transition-colors cursor-pointer ${clientActionsMenuId === client.id ? 'z-20' : ''}`}
                   >
                     <div className="col-span-3 min-w-0">
                       <p className="font-semibold text-slate-900 truncate">{client.name}</p>
