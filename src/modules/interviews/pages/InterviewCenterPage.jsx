@@ -33,6 +33,7 @@ const InterviewCenterPage = () => {
   const [activeQuestionId, setActiveQuestionId] = useState(null);
   const [formSaveStatus, setFormSaveStatus] = useState('saved');
   const [formSaveError, setFormSaveError] = useState('');
+  const [formsMenuOpenId, setFormsMenuOpenId] = useState(null);
 
   const saveTimerRef = useRef(null);
   const autosaveSeqRef = useRef(0);
@@ -237,29 +238,61 @@ const InterviewCenterPage = () => {
             ) : (
               <>
                 <div className="flex justify-end"><Button className="bg-indigo-600 text-white" onClick={openCreateForm}>Crear formulario</Button></div>
-                {!center.forms.length ? <EmptyState title="No hay formularios" description="Crea un formulario para ejecutar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={openCreateForm}>Crear formulario</Button>} /> : center.forms.map((form) => (
-                  <div key={form.id} className="bg-white border rounded-xl p-4 flex justify-between gap-3">
-                    <div>
-                      <p className="font-semibold">{form.title}</p>
-                      <p className="text-sm text-slate-500">{form.description || 'Sin descripción'}</p>
-                      <p className="text-xs text-slate-500">{form.questions?.length || 0} preguntas · {form.status || 'active'}</p>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button className="bg-white border" onClick={() => openEditForm(form)}>Editar</Button>
-                      <Button className="bg-white border" onClick={async () => {
-                        const clone = { title: `${form.title} (copia)`, description: form.description, questions: form.questions };
-                        const created = await interviewsModuleApi.createForm(projectId, campaignId, clone);
-                        await reload();
-                        openEditForm(created);
-                        toast({ title: 'Formulario duplicado' });
-                      }}>Duplicar</Button>
-                      <Button className="bg-red-50 border text-red-700" onClick={async () => {
-                        if (!window.confirm('¿Borrar formulario?')) return;
-                        await center.runMutation(() => interviewsModuleApi.deleteForm(form.id), 'Formulario eliminado');
-                      }}>Borrar</Button>
-                    </div>
+                {!center.forms.length ? <EmptyState title="No hay formularios" description="Crea un formulario para ejecutar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={openCreateForm}>Crear formulario</Button>} /> : (
+                  <div className="space-y-2">
+                    {center.forms.map((form) => {
+                      const isActive = (form.status || 'active') === 'active';
+                      const hasDescription = Boolean(form.description?.trim());
+
+                      return (
+                        <div
+                          key={form.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => openEditForm(form)}
+                          onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openEditForm(form); } }}
+                          className="group bg-white border border-slate-200 rounded-2xl px-4 py-4 transition-all duration-150 hover:border-slate-300 hover:shadow-sm focus-within:ring-2 focus-within:ring-indigo-200"
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 space-y-1.5">
+                              <p className="text-sm font-semibold text-slate-900 truncate">{form.title || 'Formulario sin título'}</p>
+                              <p className="text-sm text-slate-500 line-clamp-2">{hasDescription ? form.description : 'Sin descripción'}</p>
+                              <div className="flex flex-wrap items-center gap-2 pt-1">
+                                <span className="text-xs px-2 py-1 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{form.questions?.length || 0} preguntas</span>
+                                <span className={`text-xs px-2 py-1 rounded-full border ${isActive ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>{isActive ? 'activo' : 'inactivo'}</span>
+                                {!hasDescription && <span className="text-xs px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-700">sin descripción</span>}
+                              </div>
+                            </div>
+
+                            <div className="relative shrink-0 flex items-center gap-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-150" onClick={(event) => event.stopPropagation()}>
+                              <Button className="bg-white border" onClick={() => openEditForm(form)}>Editar</Button>
+                              <Button className="bg-white border" title="Acciones" onClick={() => setFormsMenuOpenId((prev) => (prev === form.id ? null : form.id))}>⋮</Button>
+
+                              {formsMenuOpenId === form.id && (
+                                <div className="absolute right-0 top-10 z-30 w-44 bg-white border rounded-xl shadow-md p-1">
+                                  <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { openEditForm(form); setFormsMenuOpenId(null); }}>Editar</button>
+                                  <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={async () => {
+                                    const clone = { title: `${form.title} (copia)`, description: form.description, questions: form.questions };
+                                    const created = await interviewsModuleApi.createForm(projectId, campaignId, clone);
+                                    await reload();
+                                    openEditForm(created);
+                                    setFormsMenuOpenId(null);
+                                    toast({ title: 'Formulario duplicado' });
+                                  }}>Duplicar</button>
+                                  <button className="w-full text-left text-sm px-3 py-2 rounded text-red-700 hover:bg-red-50" onClick={async () => {
+                                    if (!window.confirm('¿Borrar formulario?')) return;
+                                    await center.runMutation(() => interviewsModuleApi.deleteForm(form.id), 'Formulario eliminado');
+                                    setFormsMenuOpenId(null);
+                                  }}>Borrar</button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                ))}
+                )}
               </>
             )}
           </div>
