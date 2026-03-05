@@ -301,15 +301,15 @@ const InterviewCenterPage = () => {
                     tabIndex={0}
                     onClick={() => setSelectedClientId(client.id)}
                     onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedClientId(client.id); } }}
-                    className={`group relative grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 focus-within:ring-2 focus-within:ring-indigo-200 transition-colors cursor-pointer ${clientActionsMenuId === client.id ? 'z-20' : ''}`}
+                    className={`group relative grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 focus-within:ring-2 focus-within:ring-indigo-200 transition-all duration-150 cursor-pointer ${clientActionsMenuId === client.id ? 'z-20' : ''}`}
                   >
                     <div className="col-span-3 min-w-0">
-                      <p className="font-semibold text-slate-900 truncate">{client.name}</p>
+                      <p className="text-[15px] font-semibold text-slate-900 truncate">{client.name}</p>
                     </div>
-                    <p className="col-span-2 text-sm text-slate-600 truncate">{client.audience_name || 'Sin audiencia'}</p>
-                    <p className="col-span-2 text-sm text-slate-600 truncate">{client.contact || '—'}</p>
-                    <p className="col-span-2 text-sm text-slate-600">{client.interviewsCount}</p>
-                    <p className="col-span-2 text-sm text-slate-600">{client.lastInterview ? new Date(client.lastInterview.created_at).toLocaleDateString() : '—'}</p>
+                    <div className="col-span-2"><span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-700">{client.audience_name || 'Sin audiencia'}</span></div>
+                    <div className="col-span-2"><span className="inline-flex rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">{client.contact || 'Sin contacto'}</span></div>
+                    <div className="col-span-2"><span className="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">{client.interviewsCount} entrevistas</span></div>
+                    <p className="col-span-2 text-sm text-slate-500">{client.lastInterview ? new Date(client.lastInterview.created_at).toLocaleDateString() : '—'}</p>
 
                     <div className="col-span-1 relative flex justify-end" onClick={(event) => event.stopPropagation()}>
                       <Button className="bg-white border" title="Acciones" onClick={() => setClientActionsMenuId((prev) => (prev === client.id ? null : client.id))}>⋮</Button>
@@ -497,7 +497,7 @@ const InterviewCenterPage = () => {
         {selectedClient && (
           <div className="space-y-4">
             <div className="border rounded-xl p-4 bg-slate-50/60">
-              <h3 className="text-lg font-semibold">{selectedClient.name}</h3>
+              <h3 className="text-xl font-semibold tracking-tight text-slate-900">{selectedClient.name}</h3>
               <p className="text-sm text-slate-600">Audiencia: <b>{selectedClient.audience_name || 'Sin audiencia'}</b> · Contacto: <b>{selectedClient.contact || '—'}</b></p>
               <div className="grid md:grid-cols-3 gap-2 mt-3">
                 <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Total entrevistas</p><p className="text-lg font-semibold">{selectedClientSummary?.total || 0}</p></div>
@@ -513,27 +513,27 @@ const InterviewCenterPage = () => {
 
             <div className="bg-white border rounded-xl p-4">
               <div className="flex items-center justify-between mb-2">
-                <p className="text-sm font-medium">Notas globales</p>
+                <p className="text-sm font-semibold tracking-tight">Notas globales</p>
                 <p className={`text-xs ${clientNotesSaveState === 'error' ? 'text-red-600' : 'text-slate-500'}`}>{clientNotesSaveState === 'saving' ? 'Guardando…' : clientNotesSaveState === 'saved' ? 'Guardado' : clientNotesSaveState === 'error' ? 'Error al guardar' : ''}</p>
               </div>
               <textarea className="border rounded-lg p-2 w-full" rows={4} value={clientNotesDraft} onChange={(e) => setClientNotesDraft(e.target.value)} placeholder="Notas acumuladas del cliente" />
             </div>
 
-            <div className="bg-white border rounded-xl p-4 space-y-3">
-              <p className="text-sm font-medium">Timeline de entrevistas</p>
+            <div className="bg-white border rounded-xl p-4 space-y-4">
+              <p className="text-sm font-semibold tracking-tight">Timeline de entrevistas</p>
               {!selectedClientSummary?.interviews.length ? <p className="text-sm text-slate-500">Sin entrevistas todavía.</p> : (
                 <div className="space-y-3">
                   {selectedClientSummary.interviews.map((session, index) => (
-                    <div key={session.id} className="relative pl-8">
+                    <div key={session.id} className="relative pl-8 py-1">
                       {index < selectedClientSummary.interviews.length - 1 && <div className="absolute left-[11px] top-6 bottom-[-14px] w-px bg-slate-200" />}
                       <div className="absolute left-0 top-1 h-6 w-6 rounded-full border border-indigo-200 bg-indigo-50 flex items-center justify-center text-[10px] text-indigo-700">●</div>
-                      <div className="border rounded-lg p-3 hover:bg-slate-50 transition-colors">
+                      <div className="group border rounded-xl p-3 bg-white hover:bg-slate-50 hover:shadow-sm transition-all duration-150">
                         <div className="flex items-center justify-between gap-2">
                           <div>
                             <p className="text-sm font-medium">{session.form_title || 'Formulario'}</p>
-                            <p className="text-xs text-slate-500">{new Date(session.created_at).toLocaleString()} · <span className="capitalize">{session.status || 'draft'}</span></p>
+                            <div className="flex items-center gap-2 mt-1"><p className="text-xs text-slate-500">{new Date(session.created_at).toLocaleString()}</p><span className={`text-[11px] px-2 py-0.5 rounded-full border ${(session.status || 'draft') === 'completed' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>{session.status || 'draft'}</span></div>
                           </div>
-                          <div className="flex gap-1">
+                          <div className="flex gap-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-150">
                             <Button className="bg-white border" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>Abrir</Button>
                             <Button className="bg-white border" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>Editar</Button>
                             {(session.status || 'draft') === 'draft' && <Button className="bg-indigo-600 text-white" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>Continuar</Button>}
