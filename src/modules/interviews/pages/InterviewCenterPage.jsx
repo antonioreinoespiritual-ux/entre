@@ -128,6 +128,12 @@ const InterviewCenterPage = () => {
     return created;
   };
 
+  const openClientEditor = (client, closeProfile = false) => {
+    setClientDraft(client);
+    if (closeProfile) setSelectedClientId(null);
+    setClientModalOpen(true);
+  };
+
   const filteredSessions = useMemo(() => center.sessions.filter((session) => {
     if (sessionFilter.audience_id && String(session.audience_id || '') !== String(sessionFilter.audience_id)) return false;
     if (sessionFilter.client_id && String(session.client_id || '') !== String(sessionFilter.client_id)) return false;
@@ -309,7 +315,7 @@ const InterviewCenterPage = () => {
                       <Button className="bg-white border" title="Acciones" onClick={() => setClientActionsMenuId((prev) => (prev === client.id ? null : client.id))}>⋮</Button>
                       {clientActionsMenuId === client.id && (
                         <div className="absolute right-0 top-10 z-30 w-44 bg-white border rounded-xl shadow-md p-1">
-                          <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { setClientDraft(client); setClientModalOpen(true); setClientActionsMenuId(null); }}>Editar</button>
+                          <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { openClientEditor(client); setClientActionsMenuId(null); }}>Editar</button>
                           <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { setRunInterviewPrefill({ clientId: client.id, audienceId: client.audience_id || null }); setRunModalOpen(true); setClientActionsMenuId(null); }}>Entrevistar</button>
                           <button className="w-full text-left text-sm px-3 py-2 rounded text-amber-700 hover:bg-amber-50" onClick={() => { center.runMutation(() => interviewsModuleApi.updateClient(client.id, { ...client, status: client.status === 'archived' ? 'active' : 'archived' }), client.status === 'archived' ? 'Cliente reactivado' : 'Cliente archivado'); setClientActionsMenuId(null); }}>{client.status === 'archived' ? 'Reactivar' : 'Archivar'}</button>
                           <button className="w-full text-left text-sm px-3 py-2 rounded text-red-700 hover:bg-red-50" onClick={() => { center.runMutation(() => interviewsModuleApi.deleteClient(client.id), 'Cliente eliminado'); setClientActionsMenuId(null); }}>Borrar</button>
@@ -499,7 +505,7 @@ const InterviewCenterPage = () => {
                 <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Formularios usados</p><p className="text-lg font-semibold">{selectedClientSummary?.formsUsed || 0}</p></div>
               </div>
               <div className="flex flex-wrap gap-2 mt-3">
-                <Button className="bg-white border" onClick={() => { setClientDraft(selectedClient); setClientModalOpen(true); }}>Editar cliente</Button>
+                <Button className="bg-white border" onClick={() => openClientEditor(selectedClient, true)}>Editar cliente</Button>
                 <Button className="bg-indigo-600 text-white" onClick={() => { setRunInterviewPrefill({ clientId: selectedClient.id, audienceId: selectedClient.audience_id || null }); setRunModalOpen(true); }}>Iniciar entrevista</Button>
                 <Button className="bg-amber-50 border text-amber-700" onClick={() => center.runMutation(() => interviewsModuleApi.updateClient(selectedClient.id, { ...selectedClient, status: selectedClient.status === 'archived' ? 'active' : 'archived' }), selectedClient.status === 'archived' ? 'Cliente reactivado' : 'Cliente archivado')}>{selectedClient.status === 'archived' ? 'Reactivar' : 'Archivar'}</Button>
               </div>
