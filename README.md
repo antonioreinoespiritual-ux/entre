@@ -112,3 +112,10 @@ curl -s -X POST http://localhost:4000/api/videos/bulk-update \
 3) Validar cambios consultando la tabla con `/api/db/query` o desde la UI.
 
 El endpoint siempre filtra por `user_id` del bearer token, usa transacción y prioriza identificadores en orden: `video_id -> session_id -> video_name`.
+
+## Interview wizard notes
+
+- Interview sessions now support **draft-first** flow (`status: draft|completed`) and persist a `form_snapshot_json` so completed interviews stay readable even if forms are edited later.
+- To extend supported question types, update both:
+  - frontend renderers in `src/pages/InterviewsPage.jsx` and `src/pages/InterviewDetailPage.jsx`
+  - backend normalization/validation helpers in `backend/src/server.js` (`normalizeInterviewQuestion`, `validateInterviewAnswers`).

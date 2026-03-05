@@ -269,7 +269,10 @@ const schemaSql = [
     interview_hypothesis_id TEXT,
     conducted_at TEXT,
     notes TEXT,
+    status TEXT DEFAULT 'draft',
+    completed_at TEXT,
     responses_json TEXT,
+    form_snapshot_json TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -1120,6 +1123,50 @@ function safeParseJsonField(value, fallback) {
   }
 }
 
+function normalizeInterviewQuestion(question, index = 0) {
+  const allowed = new Set(['short_text', 'long_text', 'single_choice', 'multi_choice', 'scale_1_5']);
+  const type = allowed.has(question?.type) ? question.type : 'short_text';
+  const id = String(question?.id || `q_${index + 1}`);
+  return {
+    id,
+    type,
+    title: String(question?.title || question?.label || `Pregunta ${index + 1}`),
+    description: String(question?.description || ''),
+    required: Boolean(question?.required),
+    options: Array.isArray(question?.options) ? question.options.map((v) => String(v)) : [],
+    placeholder: String(question?.placeholder || ''),
+    scale: {
+      minLabel: String(question?.scale?.minLabel || ''),
+      maxLabel: String(question?.scale?.maxLabel || ''),
+    },
+  };
+}
+
+function buildInterviewFormSnapshot(formRow) {
+  const questions = safeParseJsonField(formRow?.questions_json, []).map((q, idx) => normalizeInterviewQuestion(q, idx));
+  return {
+    form_id: formRow?.id || null,
+    title: String(formRow?.title || 'Formulario'),
+    description: String(formRow?.description || ''),
+    questions,
+  };
+}
+
+function validateInterviewAnswers(snapshot, responses) {
+  const errors = [];
+  const map = responses && typeof responses === 'object' ? responses : {};
+  for (const q of snapshot?.questions || []) {
+    if (!q.required) continue;
+    const value = map[q.id];
+    if (q.type === 'multi_choice') {
+      if (!Array.isArray(value) || value.length === 0) errors.push(q.title || q.id);
+      continue;
+    }
+    if (value == null || String(value).trim() === '') errors.push(q.title || q.id);
+  }
+  return errors;
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
   const derived = crypto.pbkdf2Sync(password, salt, 120000, 32, 'sha256').toString('hex');
   return `${salt}:${derived}`;
@@ -1481,6 +1528,16 @@ async function ensureVideoHierarchyMigration() {
 
   if (!(await hasColumn('hypotheses', 'audience_id'))) {
     await pool.query('ALTER TABLE hypotheses ADD COLUMN audience_id TEXT');
+  }
+
+  if (!(await hasColumn('interview_sessions', 'status'))) {
+    await pool.query("ALTER TABLE interview_sessions ADD COLUMN status TEXT DEFAULT 'draft'");
+  }
+  if (!(await hasColumn('interview_sessions', 'completed_at'))) {
+    await pool.query('ALTER TABLE interview_sessions ADD COLUMN completed_at TEXT');
+  }
+  if (!(await hasColumn('interview_sessions', 'form_snapshot_json'))) {
+    await pool.query('ALTER TABLE interview_sessions ADD COLUMN form_snapshot_json TEXT');
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
@@ -3949,23 +4006,39 @@ const server = http.createServer(async (req, res) => {
            LEFT JOIN interview_forms f ON f.id = s.form_id
            LEFT JOIN interview_hypotheses h ON h.id = s.interview_hypothesis_id
            WHERE s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
-           ORDER BY COALESCE(s.conducted_at, s.created_at) DESC`,
+           ORDER BY COALESCE(s.completed_at, s.conducted_at, s.created_at) DESC`,
           [user.id, projectId, campaignId],
         );
-        return sendJson(req, res, 200, { data: rows.map((r) => ({ ...r, responses_json: safeParseJsonField(r.responses_json, {}) })) });
+        return sendJson(req, res, 200, {
+          data: rows.map((r) => ({
+            ...r,
+            responses_json: safeParseJsonField(r.responses_json, {}),
+            form_snapshot_json: safeParseJsonField(r.form_snapshot_json, null),
+          })),
+        });
       }
       const body = await readBody(req);
       const [clientRows] = await pool.query('SELECT id, audience_id FROM interview_clients WHERE id = ? AND user_id = ? LIMIT 1', [body.client_id, user.id]);
       const client = clientRows[0];
       if (!client) return sendJson(req, res, 400, { error: 'Client not found' });
+      const [formRows] = await pool.query('SELECT * FROM interview_forms WHERE id = ? AND user_id = ? LIMIT 1', [body.form_id, user.id]);
+      const form = formRows[0];
+      if (!form) return sendJson(req, res, 400, { error: 'Form not found' });
+      const snapshot = buildInterviewFormSnapshot(form);
+      const responses = body.responses && typeof body.responses === 'object' ? body.responses : {};
+      const status = body.status === 'completed' ? 'completed' : 'draft';
+      const missingRequired = validateInterviewAnswers(snapshot, responses);
+      if (status === 'completed' && missingRequired.length) {
+        return sendJson(req, res, 400, { error: `Missing required responses: ${missingRequired.join(', ')}` });
+      }
       const now = nowIso();
       await pool.query(
-        `INSERT INTO interview_sessions (id, project_id, campaign_id, user_id, client_id, audience_id, form_id, interview_hypothesis_id, conducted_at, notes, responses_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [uuid(), projectId, campaignId, user.id, body.client_id, client.audience_id || null, body.form_id, body.interview_hypothesis_id || null, body.conducted_at || now, body.notes || null, JSON.stringify(body.responses || {}), now, now],
+        `INSERT INTO interview_sessions (id, project_id, campaign_id, user_id, client_id, audience_id, form_id, interview_hypothesis_id, conducted_at, notes, status, completed_at, responses_json, form_snapshot_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [uuid(), projectId, campaignId, user.id, body.client_id, body.audience_id || client.audience_id || null, body.form_id, body.interview_hypothesis_id || null, body.conducted_at || now, body.notes || null, status, status === 'completed' ? now : null, JSON.stringify(responses), JSON.stringify(snapshot), now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
-      return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}) } });
+      return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}), form_snapshot_json: safeParseJsonField(rows[0]?.form_snapshot_json, null) } });
     }
 
     const interviewSessionMatch = url.pathname.match(/^\/api\/interview-sessions\/([^/]+)$/);
@@ -3985,19 +4058,35 @@ const server = http.createServer(async (req, res) => {
           [id, user.id],
         );
         if (!rows.length) return sendJson(req, res, 404, { error: 'Session not found' });
-        return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}) } });
+        return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}), form_snapshot_json: safeParseJsonField(rows[0]?.form_snapshot_json, null) } });
       }
       if (req.method === 'DELETE') {
         await pool.query('DELETE FROM interview_sessions WHERE id = ? AND user_id = ?', [id, user.id]);
         return sendJson(req, res, 200, { ok: true });
       }
       const body = await readBody(req);
+      const [existingRows] = await pool.query('SELECT * FROM interview_sessions WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      const existing = existingRows[0];
+      if (!existing) return sendJson(req, res, 404, { error: 'Session not found' });
+
+      const responses = body.responses && typeof body.responses === 'object' ? body.responses : safeParseJsonField(existing.responses_json, {});
+      let snapshot = safeParseJsonField(existing.form_snapshot_json, null);
+      if (!snapshot) {
+        const [formRows] = await pool.query('SELECT * FROM interview_forms WHERE id = ? AND user_id = ? LIMIT 1', [existing.form_id, user.id]);
+        snapshot = buildInterviewFormSnapshot(formRows[0] || {});
+      }
+      const status = body.status === 'completed' ? 'completed' : (body.status === 'draft' ? 'draft' : (existing.status || 'draft'));
+      const missingRequired = validateInterviewAnswers(snapshot, responses);
+      if (status === 'completed' && missingRequired.length) {
+        return sendJson(req, res, 400, { error: `Missing required responses: ${missingRequired.join(', ')}` });
+      }
+      const completedAt = status === 'completed' ? (existing.completed_at || nowIso()) : null;
       await pool.query(
-        'UPDATE interview_sessions SET conducted_at = ?, notes = ?, responses_json = ?, interview_hypothesis_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
-        [body.conducted_at || nowIso(), body.notes || null, JSON.stringify(body.responses || {}), body.interview_hypothesis_id || null, nowIso(), id, user.id],
+        'UPDATE interview_sessions SET conducted_at = ?, notes = ?, responses_json = ?, interview_hypothesis_id = ?, audience_id = ?, status = ?, completed_at = ?, form_snapshot_json = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        [body.conducted_at || existing.conducted_at || nowIso(), body.notes ?? existing.notes ?? null, JSON.stringify(responses), body.interview_hypothesis_id ?? existing.interview_hypothesis_id ?? null, body.audience_id ?? existing.audience_id ?? null, status, completedAt, JSON.stringify(snapshot), nowIso(), id, user.id],
       );
       const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
-      return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}) } });
+      return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}), form_snapshot_json: safeParseJsonField(rows[0]?.form_snapshot_json, null) } });
     }
 
 
