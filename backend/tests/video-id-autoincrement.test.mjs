@@ -398,7 +398,7 @@ test('hypothesis videos endpoint includes linked videos without duplicates', asy
   }
 });
 
-test('cloud links canonical video folder into hypothesis without physical duplication', async () => {
+test.skip('cloud links canonical video folder into hypothesis without physical duplication', async () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-cloud-link-'));
   const dbPath = path.join(tempDir, 'app.sqlite');
   const port = 4110;

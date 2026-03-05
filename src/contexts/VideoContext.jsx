@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
-import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/contexts/SupabaseAuthContext';
 
@@ -24,36 +23,6 @@ export const VideoProvider = ({ children }) => {
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
   const { currentUser } = useAuth();
-
-  const validateHypothesisForVideo = useCallback(async (hypothesisId, videoMetrics) => {
-    if (!currentUser || !hypothesisId) return;
-    try {
-      const { data: hypothesis, error } = await supabase
-        .from('hypotheses')
-        .select('*')
-        .eq('id', hypothesisId)
-        .eq('user_id', currentUser.id)
-        .single();
-
-      if (error || !hypothesis) return;
-
-      let isValidated = false;
-      const condition = String(hypothesis.condition || '').toLowerCase();
-      if (condition.includes('views') && Number(videoMetrics.views) > 1000) isValidated = true;
-      if (condition.includes('engagement') && Number(videoMetrics.engagement) > 5) isValidated = true;
-      if (condition.includes('likes') && Number(videoMetrics.likes) > 100) isValidated = true;
-
-      if (isValidated && hypothesis.validation_status !== 'Validada') {
-        await supabase
-          .from('hypotheses')
-          .update({ validation_status: 'Validada' })
-          .eq('id', hypothesis.id)
-          .eq('user_id', currentUser.id);
-      }
-    } catch (error) {
-      console.error('Error validating hypothesis:', error);
-    }
-  }, [currentUser]);
 
   const fetchVideos = useCallback(async (hypothesisId, options = {}) => {
     if (!currentUser || !hypothesisId) return [];
@@ -206,44 +175,18 @@ export const VideoProvider = ({ children }) => {
     return json;
   }, [currentUser]);
 
-  const createVideo = useCallback(async (videoData) => {
-    if (!currentUser) return null;
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('videos')
-        .insert([{ ...videoData, user_id: currentUser.id }])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      toast({ title: 'Success', description: 'Video created successfully' });
-
-      await validateHypothesisForVideo(videoData.hypothesis_id, videoData);
-      if (videoData.hypothesis_id) {
-        await fetchVideos(videoData.hypothesis_id);
-      }
-      return data;
-    } catch (error) {
-      toast({ title: 'Error', description: `Failed to create video: ${error.message}`, variant: 'destructive' });
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [toast, fetchVideos, validateHypothesisForVideo, currentUser]);
-
   const deleteVideo = useCallback(async (id, hypothesisId) => {
     if (!currentUser) return false;
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('videos')
-        .delete()
-        .eq('id', id)
-        .eq('user_id', currentUser.id);
-
-      if (error) throw error;
+      const response = await fetch(`${backendBaseUrl()}/api/videos/${id}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${sessionToken()}`,
+        },
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json.error || 'Failed to delete video');
 
       toast({ title: 'Success', description: 'Video deleted successfully' });
 
@@ -271,7 +214,6 @@ export const VideoProvider = ({ children }) => {
     fetchProjectHypotheses,
     linkVideosToHypothesis,
     linkVideoToHypotheses,
-    createVideo,
     deleteVideo,
   };
 
