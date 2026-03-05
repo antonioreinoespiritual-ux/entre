@@ -512,18 +512,48 @@ const InterviewCenterPage = () => {
               <input className="border rounded p-2" type="date" value={sessionFilter.from} onChange={(e) => setSessionFilter((prev) => ({ ...prev, from: e.target.value }))} />
               <input className="border rounded p-2" type="date" value={sessionFilter.to} onChange={(e) => setSessionFilter((prev) => ({ ...prev, to: e.target.value }))} />
             </div>
-            {!filteredSessions.length ? <EmptyState title="No hay entrevistas" description="Inicia una entrevista para ver sesiones aquí." action={<Button className="bg-indigo-600 text-white" onClick={() => setRunModalOpen(true)}>Realizar entrevista</Button>} /> : filteredSessions.map((session) => {
-              const leanScore = getLeanScore(session.responses_json?.__lean_evaluation || {});
-              return (
-                <button key={session.id} className="w-full bg-white border rounded-xl p-3 text-left hover:bg-slate-50" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="font-medium">{session.client_name} · {session.form_title}</p>
-                    {leanScore != null && <span className="text-xs px-2 py-0.5 rounded-full border border-indigo-200 bg-indigo-50 text-indigo-700">Lean {leanScore}</span>}
-                  </div>
-                  <p className="text-xs text-slate-500">{session.audience_name || 'Sin audiencia'} · {new Date(session.created_at).toLocaleString()}</p>
-                </button>
-              );
-            })}
+            {!filteredSessions.length ? <EmptyState title="No hay entrevistas" description="Inicia una entrevista para ver sesiones aquí." action={<Button className="bg-indigo-600 text-white" onClick={() => setRunModalOpen(true)}>Realizar entrevista</Button>} /> : (
+              <div className="space-y-2">
+                <div className="grid grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_auto] gap-3 px-3 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
+                  <p>Cliente — Formulario</p>
+                  <p>Audiencia • Fecha • Hora</p>
+                  <p className="text-right">Análisis</p>
+                </div>
+                {filteredSessions.map((session) => {
+                  const leanScore = getLeanScore(session.responses_json?.__lean_evaluation || {});
+                  const isDraft = String(session.status || '').toLowerCase() === 'draft';
+                  const detailUrl = `/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`;
+                  return (
+                    <button
+                      key={session.id}
+                      className="group w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                      onClick={() => navigate(detailUrl)}
+                    >
+                      <div className="grid grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_auto] items-center gap-3">
+                        <div>
+                          <p className="text-base font-semibold text-slate-900">{session.client_name || 'Sin cliente'}</p>
+                          <p className="text-sm font-medium text-slate-600">{session.form_title || 'Sin formulario'}</p>
+                        </div>
+
+                        <p className="text-xs text-slate-500">{session.audience_name || 'Sin audiencia'} • {new Date(session.created_at).toLocaleDateString()} • {new Date(session.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+
+                        <div className="flex items-center justify-end gap-2">
+                          {leanScore != null ? (
+                            <span className="inline-flex min-w-[76px] justify-center rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">Lean {leanScore}</span>
+                          ) : (
+                            <span className="inline-flex min-w-[76px] justify-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-500">Sin score</span>
+                          )}
+                          <div className="hidden items-center gap-1 group-hover:flex" onClick={(event) => event.stopPropagation()}>
+                            <Button size="sm" className="h-7 bg-white border text-slate-700 hover:bg-slate-50" onClick={() => navigate(detailUrl)}>Abrir</Button>
+                            <Button size="sm" className="h-7 bg-white border text-slate-700 hover:bg-slate-50" onClick={() => navigate(detailUrl)}>{isDraft ? 'Continuar' : 'Ver evaluación'}</Button>
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
       </InterviewModuleShell>
