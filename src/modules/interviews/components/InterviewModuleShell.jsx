@@ -1,4 +1,5 @@
 import React from 'react';
+import { UserPlus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 export const InterviewModuleShell = ({ projectId, campaignId, activeTab, onTabChange, onOpenRun, onOpenForm, onOpenClient, children }) => {
@@ -22,7 +23,7 @@ export const InterviewModuleShell = ({ projectId, campaignId, activeTab, onTabCh
           <div className="flex flex-wrap gap-2">
             <Button className="bg-indigo-600 text-white" onClick={onOpenRun}>Realizar entrevista</Button>
             <Button className="bg-white border text-indigo-700" onClick={onOpenForm}>Crear formulario</Button>
-            <Button className="bg-white border text-indigo-700" onClick={onOpenClient}>Crear cliente</Button>
+            <Button className="bg-indigo-600 text-white" onClick={onOpenClient}><UserPlus className="h-4 w-4 mr-1" />Crear cliente</Button>
           </div>
         </div>
         <div className="bg-white border rounded-xl p-1 flex flex-wrap gap-1">

@@ -9,7 +9,48 @@ import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/co
 import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewCenterData';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
 
-const blankClient = { name: '', contact: '', notes: '', audience_id: '' };
+
+const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
+
+const emptyClientProfile = {
+  demographic: { age: '', gender: '', location: '', marital_status: '', education_level: '', employment_status: '', income_range: '' },
+  psychographic: { core_values: '', main_fears: '', main_desires: '', frustrations: '', personality_traits: '' },
+  behavioral: { problem_frequency: '', previous_attempts: '', tools_used: '', urgency_level: '' },
+};
+
+const parseClientNotes = (notes = '') => {
+  const source = String(notes || '');
+  const idx = source.indexOf(profileMarker);
+  if (idx === -1) return { plainNotes: source, profile: emptyClientProfile };
+
+  const plainNotes = source.slice(0, idx).trimEnd();
+  const rawProfile = source.slice(idx + profileMarker.length).trim();
+  try {
+    const parsed = JSON.parse(rawProfile || '{}');
+    return {
+      plainNotes,
+      profile: {
+        demographic: { ...emptyClientProfile.demographic, ...(parsed.demographic || {}) },
+        psychographic: { ...emptyClientProfile.psychographic, ...(parsed.psychographic || {}) },
+        behavioral: { ...emptyClientProfile.behavioral, ...(parsed.behavioral || {}) },
+      },
+    };
+  } catch {
+    return { plainNotes: source, profile: emptyClientProfile };
+  }
+};
+
+const composeClientNotes = (plainNotes = '', profile = emptyClientProfile) => {
+  const cleanNotes = String(plainNotes || '').trimEnd();
+  const mergedProfile = {
+    demographic: { ...emptyClientProfile.demographic, ...(profile?.demographic || {}) },
+    psychographic: { ...emptyClientProfile.psychographic, ...(profile?.psychographic || {}) },
+    behavioral: { ...emptyClientProfile.behavioral, ...(profile?.behavioral || {}) },
+  };
+  return `${cleanNotes}${profileMarker}${JSON.stringify(mergedProfile)}`;
+};
+
+const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
 const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
 
 const InterviewCenterPage = () => {
@@ -129,7 +170,12 @@ const InterviewCenterPage = () => {
   };
 
   const openClientEditor = (client, closeProfile = false) => {
-    setClientDraft(client);
+    setClientDraft({
+      ...blankClient,
+      ...client,
+      notes: client.plainNotes || '',
+      profile: { ...emptyClientProfile, ...(client.profile || {}) },
+    });
     if (closeProfile) setSelectedClientId(null);
     setClientModalOpen(true);
   };
@@ -149,7 +195,8 @@ const InterviewCenterPage = () => {
   const clientRows = useMemo(() => center.clients.map((client) => {
     const interviews = center.sessions.filter((session) => String(session.client_id) === String(client.id));
     const lastInterview = interviews.length ? interviews.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] : null;
-    return { ...client, interviewsCount: interviews.length, lastInterview, interviews };
+    const { plainNotes, profile } = parseClientNotes(client.notes || '');
+    return { ...client, plainNotes, profile, interviewsCount: interviews.length, lastInterview, interviews };
   }), [center.clients, center.sessions]);
 
   const visibleClients = useMemo(() => {
@@ -174,20 +221,20 @@ const InterviewCenterPage = () => {
 
   useEffect(() => {
     if (!selectedClient) return;
-    setClientNotesDraft(selectedClient.notes || '');
+    setClientNotesDraft(selectedClient.plainNotes || '');
     setClientNotesSaveState('idle');
   }, [selectedClient?.id]);
 
   useEffect(() => {
     if (!selectedClient) return undefined;
-    if (clientNotesDraft === (selectedClient.notes || '')) return undefined;
+    if (clientNotesDraft === (selectedClient.plainNotes || '')) return undefined;
 
     setClientNotesSaveState('saving');
     if (clientNotesTimerRef.current) clearTimeout(clientNotesTimerRef.current);
 
     clientNotesTimerRef.current = setTimeout(async () => {
       try {
-        await interviewsModuleApi.updateClient(selectedClient.id, { ...selectedClient, notes: clientNotesDraft });
+        await interviewsModuleApi.updateClient(selectedClient.id, { ...selectedClient, notes: composeClientNotes(clientNotesDraft, selectedClient.profile) });
         setClientNotesSaveState('saved');
         await reload();
       } catch {
@@ -475,23 +522,68 @@ const InterviewCenterPage = () => {
       </InterviewModuleShell>
 
       <Modal title={clientDraft?.id ? 'Editar cliente' : 'Crear cliente'} open={clientModalOpen} onClose={() => { setClientModalOpen(false); setClientDraft(blankClient); }}>
-        <div className="space-y-2">
-          <input className="border rounded p-2 w-full" placeholder="Nombre" value={clientDraft.name || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, name: e.target.value }))} />
-          <input className="border rounded p-2 w-full" placeholder="Contacto" value={clientDraft.contact || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, contact: e.target.value }))} />
-          <textarea className="border rounded p-2 w-full" rows={3} placeholder="Notas" value={clientDraft.notes || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, notes: e.target.value }))} />
-          <select className="border rounded p-2 w-full" value={clientDraft.audience_id || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Sin audiencia</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
+        <div className="space-y-4">
+          <section className="border rounded-xl p-4 space-y-2">
+            <h4 className="font-semibold">Información básica</h4>
+            <div className="grid md:grid-cols-2 gap-2">
+              <input className="border rounded p-2" placeholder="Nombre" value={clientDraft.name || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, name: e.target.value }))} />
+              <input className="border rounded p-2" placeholder="Contacto" value={clientDraft.contact || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, contact: e.target.value }))} />
+              <select className="border rounded p-2 md:col-span-2" value={clientDraft.audience_id || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Sin audiencia</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
+            </div>
+          </section>
+
+          <section className="border rounded-xl p-4 space-y-2">
+            <h4 className="font-semibold">Segmentación demográfica</h4>
+            <div className="grid md:grid-cols-2 gap-2">
+              <input className="border rounded p-2" placeholder="Edad" value={clientDraft.profile?.demographic?.age || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, demographic: { ...prev.profile.demographic, age: e.target.value } } }))} />
+              <select className="border rounded p-2" value={clientDraft.profile?.demographic?.gender || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, demographic: { ...prev.profile.demographic, gender: e.target.value } } }))}><option value="">Género</option><option value="femenino">Femenino</option><option value="masculino">Masculino</option><option value="no_binario">No binario</option><option value="prefiero_no_decir">Prefiero no decir</option></select>
+              <input className="border rounded p-2" placeholder="Ubicación" value={clientDraft.profile?.demographic?.location || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, demographic: { ...prev.profile.demographic, location: e.target.value } } }))} />
+              <select className="border rounded p-2" value={clientDraft.profile?.demographic?.marital_status || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, demographic: { ...prev.profile.demographic, marital_status: e.target.value } } }))}><option value="">Estado civil</option><option value="soltero">Soltero/a</option><option value="casado">Casado/a</option><option value="union_libre">Unión libre</option><option value="divorciado">Divorciado/a</option></select>
+              <input className="border rounded p-2" placeholder="Nivel educativo" value={clientDraft.profile?.demographic?.education_level || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, demographic: { ...prev.profile.demographic, education_level: e.target.value } } }))} />
+              <input className="border rounded p-2" placeholder="Situación laboral" value={clientDraft.profile?.demographic?.employment_status || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, demographic: { ...prev.profile.demographic, employment_status: e.target.value } } }))} />
+              <select className="border rounded p-2 md:col-span-2" value={clientDraft.profile?.demographic?.income_range || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, demographic: { ...prev.profile.demographic, income_range: e.target.value } } }))}><option value="">Nivel de ingresos</option><option value="bajo">Bajo</option><option value="medio">Medio</option><option value="alto">Alto</option></select>
+            </div>
+          </section>
+
+          <section className="border rounded-xl p-4 space-y-2">
+            <h4 className="font-semibold">Segmentación psicográfica</h4>
+            <textarea className="border rounded p-2 w-full" rows={2} placeholder="Valores principales" value={clientDraft.profile?.psychographic?.core_values || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, psychographic: { ...prev.profile.psychographic, core_values: e.target.value } } }))} />
+            <textarea className="border rounded p-2 w-full" rows={2} placeholder="Miedos principales" value={clientDraft.profile?.psychographic?.main_fears || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, psychographic: { ...prev.profile.psychographic, main_fears: e.target.value } } }))} />
+            <textarea className="border rounded p-2 w-full" rows={2} placeholder="Deseos principales" value={clientDraft.profile?.psychographic?.main_desires || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, psychographic: { ...prev.profile.psychographic, main_desires: e.target.value } } }))} />
+            <textarea className="border rounded p-2 w-full" rows={2} placeholder="Frustraciones" value={clientDraft.profile?.psychographic?.frustrations || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, psychographic: { ...prev.profile.psychographic, frustrations: e.target.value } } }))} />
+            <textarea className="border rounded p-2 w-full" rows={2} placeholder="Rasgos de personalidad percibidos" value={clientDraft.profile?.psychographic?.personality_traits || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, psychographic: { ...prev.profile.psychographic, personality_traits: e.target.value } } }))} />
+          </section>
+
+          <section className="border rounded-xl p-4 space-y-2">
+            <h4 className="font-semibold">Segmentación conductual</h4>
+            <select className="border rounded p-2 w-full" value={clientDraft.profile?.behavioral?.problem_frequency || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, behavioral: { ...prev.profile.behavioral, problem_frequency: e.target.value } } }))}><option value="">Frecuencia del problema</option><option value="baja">Baja</option><option value="media">Media</option><option value="alta">Alta</option></select>
+            <textarea className="border rounded p-2 w-full" rows={2} placeholder="Intentos previos de solución" value={clientDraft.profile?.behavioral?.previous_attempts || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, behavioral: { ...prev.profile.behavioral, previous_attempts: e.target.value } } }))} />
+            <textarea className="border rounded p-2 w-full" rows={2} placeholder="Herramientas utilizadas" value={clientDraft.profile?.behavioral?.tools_used || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, behavioral: { ...prev.profile.behavioral, tools_used: e.target.value } } }))} />
+            <select className="border rounded p-2 w-full" value={clientDraft.profile?.behavioral?.urgency_level || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, profile: { ...prev.profile, behavioral: { ...prev.profile.behavioral, urgency_level: e.target.value } } }))}><option value="">Nivel de urgencia</option><option value="baja">Baja</option><option value="media">Media</option><option value="alta">Alta</option></select>
+          </section>
+
+          <section className="border rounded-xl p-4 space-y-2">
+            <h4 className="font-semibold">Notas</h4>
+            <textarea className="border rounded p-2 w-full" rows={3} placeholder="Notas generales" value={clientDraft.notes || ''} onChange={(e) => setClientDraft((prev) => ({ ...prev, notes: e.target.value }))} />
+          </section>
+
           <Button className="bg-indigo-600 text-white" onClick={async () => {
+            const payload = {
+              ...clientDraft,
+              notes: composeClientNotes(clientDraft.notes, clientDraft.profile),
+            };
             if (clientDraft.id) {
-              await center.runMutation(() => interviewsModuleApi.updateClient(clientDraft.id, clientDraft), 'Cliente actualizado');
+              await center.runMutation(() => interviewsModuleApi.updateClient(clientDraft.id, payload), 'Cliente actualizado');
+              setSelectedClientId(clientDraft.id);
             } else {
-              await createClient(clientDraft);
+              const created = await createClient(payload);
+              setSelectedClientId(created.id);
             }
             setClientDraft(blankClient);
             setClientModalOpen(false);
           }}>Guardar cliente</Button>
         </div>
       </Modal>
-
 
       <Modal title={selectedClient ? `Cliente · ${selectedClient.name}` : 'Cliente'} open={Boolean(selectedClient)} onClose={() => setSelectedClientId(null)}>
         {selectedClient && (
@@ -517,6 +609,35 @@ const InterviewCenterPage = () => {
                 <p className={`text-xs ${clientNotesSaveState === 'error' ? 'text-red-600' : 'text-slate-500'}`}>{clientNotesSaveState === 'saving' ? 'Guardando…' : clientNotesSaveState === 'saved' ? 'Guardado' : clientNotesSaveState === 'error' ? 'Error al guardar' : ''}</p>
               </div>
               <textarea className="border rounded-lg p-2 w-full" rows={4} value={clientNotesDraft} onChange={(e) => setClientNotesDraft(e.target.value)} placeholder="Notas acumuladas del cliente" />
+            </div>
+            <div className="bg-white border rounded-xl p-4 space-y-3">
+              <p className="text-sm font-semibold tracking-tight">Perfil demográfico</p>
+              <div className="grid md:grid-cols-2 gap-2 text-sm">
+                <p><b>Edad:</b> {selectedClient.profile?.demographic?.age || '—'}</p>
+                <p><b>Género:</b> {selectedClient.profile?.demographic?.gender || '—'}</p>
+                <p><b>Ubicación:</b> {selectedClient.profile?.demographic?.location || '—'}</p>
+                <p><b>Estado civil:</b> {selectedClient.profile?.demographic?.marital_status || '—'}</p>
+                <p><b>Nivel educativo:</b> {selectedClient.profile?.demographic?.education_level || '—'}</p>
+                <p><b>Situación laboral:</b> {selectedClient.profile?.demographic?.employment_status || '—'}</p>
+                <p><b>Nivel de ingresos:</b> {selectedClient.profile?.demographic?.income_range || '—'}</p>
+              </div>
+            </div>
+
+            <div className="bg-white border rounded-xl p-4 space-y-2">
+              <p className="text-sm font-semibold tracking-tight">Perfil psicográfico</p>
+              <p className="text-sm"><b>Valores:</b> {selectedClient.profile?.psychographic?.core_values || '—'}</p>
+              <p className="text-sm"><b>Miedos:</b> {selectedClient.profile?.psychographic?.main_fears || '—'}</p>
+              <p className="text-sm"><b>Deseos:</b> {selectedClient.profile?.psychographic?.main_desires || '—'}</p>
+              <p className="text-sm"><b>Frustraciones:</b> {selectedClient.profile?.psychographic?.frustrations || '—'}</p>
+              <p className="text-sm"><b>Rasgos:</b> {selectedClient.profile?.psychographic?.personality_traits || '—'}</p>
+            </div>
+
+            <div className="bg-white border rounded-xl p-4 space-y-2">
+              <p className="text-sm font-semibold tracking-tight">Perfil conductual</p>
+              <p className="text-sm"><b>Frecuencia del problema:</b> {selectedClient.profile?.behavioral?.problem_frequency || '—'}</p>
+              <p className="text-sm"><b>Intentos previos:</b> {selectedClient.profile?.behavioral?.previous_attempts || '—'}</p>
+              <p className="text-sm"><b>Herramientas usadas:</b> {selectedClient.profile?.behavioral?.tools_used || '—'}</p>
+              <p className="text-sm"><b>Urgencia:</b> {selectedClient.profile?.behavioral?.urgency_level || '—'}</p>
             </div>
 
             <div className="bg-white border rounded-xl p-4 space-y-4">
