@@ -34,6 +34,11 @@ const InterviewCenterPage = () => {
   const [formSaveStatus, setFormSaveStatus] = useState('saved');
   const [formSaveError, setFormSaveError] = useState('');
   const [formsMenuOpenId, setFormsMenuOpenId] = useState(null);
+  const [clientSearch, setClientSearch] = useState('');
+  const [clientAudienceFilter, setClientAudienceFilter] = useState('');
+  const [clientSort, setClientSort] = useState('last_interview_desc');
+  const [selectedClientId, setSelectedClientId] = useState(null);
+  const [runInterviewPrefill, setRunInterviewPrefill] = useState({ clientId: null, audienceId: null });
 
   const saveTimerRef = useRef(null);
   const autosaveSeqRef = useRef(0);
@@ -129,6 +134,34 @@ const InterviewCenterPage = () => {
     return true;
   }), [center.sessions, sessionFilter]);
 
+
+
+  const clientRows = useMemo(() => center.clients.map((client) => {
+    const interviews = center.sessions.filter((session) => String(session.client_id) === String(client.id));
+    const lastInterview = interviews.length ? interviews.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] : null;
+    return { ...client, interviewsCount: interviews.length, lastInterview, interviews };
+  }), [center.clients, center.sessions]);
+
+  const visibleClients = useMemo(() => {
+    const q = clientSearch.trim().toLowerCase();
+    const filtered = clientRows.filter((client) => {
+      if (clientAudienceFilter && String(client.audience_id || '') !== String(clientAudienceFilter)) return false;
+      if (q && !`${client.name || ''} ${client.contact || ''}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+
+    const sorted = [...filtered].sort((a, b) => {
+      if (clientSort === 'last_interview_asc') return new Date(a.lastInterview?.created_at || 0) - new Date(b.lastInterview?.created_at || 0);
+      if (clientSort === 'name_asc') return String(a.name || '').localeCompare(String(b.name || ''));
+      if (clientSort === 'name_desc') return String(b.name || '').localeCompare(String(a.name || ''));
+      return new Date(b.lastInterview?.created_at || 0) - new Date(a.lastInterview?.created_at || 0);
+    });
+
+    return sorted;
+  }, [clientRows, clientSearch, clientAudienceFilter, clientSort]);
+
+  const selectedClient = useMemo(() => clientRows.find((client) => String(client.id) === String(selectedClientId)) || null, [clientRows, selectedClientId]);
+
   const startInterviewSession = async (payload) => {
     setSaving(true);
     try {
@@ -189,23 +222,61 @@ const InterviewCenterPage = () => {
         )}
 
         {!center.loading && !center.error && tab === 'clients' && (
-          <div className="space-y-2">
-            {!center.clients.length ? <EmptyState title="No hay clientes" description="Crea tu primer cliente para iniciar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={() => setClientModalOpen(true)}>Crear cliente</Button>} /> : center.clients.map((client) => (
-              <div key={client.id} className="bg-white border rounded-xl p-4">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="font-semibold">{client.name}</p>
-                    <p className="text-sm text-slate-500">{client.contact || 'Sin contacto'} · Audiencia: {client.audience_name || 'Sin audiencia'}</p>
-                    <p className="text-sm mt-1">{client.notes || 'Sin notas'}</p>
-                    <p className="text-xs text-slate-500 mt-2">Entrevistas del cliente: {center.sessions.filter((session) => String(session.client_id) === String(client.id)).length}</p>
+          <div className="space-y-3">
+            <div className="bg-white border rounded-xl p-3 grid md:grid-cols-4 gap-2">
+              <input className="border rounded p-2" placeholder="Buscar cliente" value={clientSearch} onChange={(e) => setClientSearch(e.target.value)} />
+              <select className="border rounded p-2" value={clientAudienceFilter} onChange={(e) => setClientAudienceFilter(e.target.value)}>
+                <option value="">Todas las audiencias</option>
+                {center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}
+              </select>
+              <select className="border rounded p-2" value={clientSort} onChange={(e) => setClientSort(e.target.value)}>
+                <option value="last_interview_desc">Última entrevista (reciente)</option>
+                <option value="last_interview_asc">Última entrevista (antigua)</option>
+                <option value="name_asc">Nombre (A-Z)</option>
+                <option value="name_desc">Nombre (Z-A)</option>
+              </select>
+              <Button className="bg-indigo-600 text-white" onClick={() => setClientModalOpen(true)}>Crear cliente</Button>
+            </div>
+
+            {!visibleClients.length ? <EmptyState title="No hay clientes" description="Crea tu primer cliente para iniciar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={() => setClientModalOpen(true)}>Crear cliente</Button>} /> : (
+              <div className="bg-white border rounded-xl overflow-hidden">
+                <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-slate-50 text-xs font-medium text-slate-500 border-b">
+                  <p className="col-span-3">Nombre</p><p className="col-span-2">Audiencia</p><p className="col-span-2">Contacto</p><p className="col-span-2">Entrevistas</p><p className="col-span-2">Última entrevista</p><p className="col-span-1 text-right">Acciones</p>
+                </div>
+                {visibleClients.map((client) => (
+                  <div key={client.id} className={`grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 cursor-pointer ${String(selectedClientId) === String(client.id) ? 'bg-indigo-50/50' : ''}`} onClick={() => setSelectedClientId(client.id)}>
+                    <div className="col-span-3"><p className="font-medium">{client.name}</p></div>
+                    <p className="col-span-2 text-sm text-slate-600">{client.audience_name || 'Sin audiencia'}</p>
+                    <p className="col-span-2 text-sm text-slate-600 truncate">{client.contact || '—'}</p>
+                    <p className="col-span-2 text-sm text-slate-600">{client.interviewsCount}</p>
+                    <p className="col-span-2 text-sm text-slate-600">{client.lastInterview ? new Date(client.lastInterview.created_at).toLocaleDateString() : '—'}</p>
+                    <div className="col-span-1 flex justify-end gap-1" onClick={(event) => event.stopPropagation()}>
+                      <Button className="bg-white border" onClick={() => { setClientDraft(client); setClientModalOpen(true); }}>Editar</Button>
+                      <Button className="bg-white border" onClick={() => { setRunInterviewPrefill({ clientId: client.id, audienceId: client.audience_id || null }); setRunModalOpen(true); }}>Entrevistar</Button>
+                      <Button className="bg-amber-50 border text-amber-700" onClick={() => center.runMutation(() => interviewsModuleApi.updateClient(client.id, { ...client, status: client.status === 'archived' ? 'active' : 'archived' }), client.status === 'archived' ? 'Cliente reactivado' : 'Cliente archivado')}>{client.status === 'archived' ? 'Reactivar' : 'Archivar'}</Button>
+                      <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteClient(client.id), 'Cliente eliminado')}>Borrar</Button>
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <Button className="bg-white border" onClick={() => { setClientDraft(client); setClientModalOpen(true); }}>Editar</Button>
-                    <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteClient(client.id), 'Cliente eliminado')}>Borrar</Button>
-                  </div>
+                ))}
+              </div>
+            )}
+
+            {selectedClient && (
+              <div className="bg-white border rounded-xl p-4 space-y-3">
+                <h3 className="font-semibold text-lg">Ficha de cliente · {selectedClient.name}</h3>
+                <p className="text-sm text-slate-600">Audiencia: <b>{selectedClient.audience_name || 'Sin audiencia'}</b> · Contacto: <b>{selectedClient.contact || '—'}</b></p>
+                <p className="text-sm text-slate-600">Notas globales: {selectedClient.notes || 'Sin notas'}</p>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Historial de entrevistas</p>
+                  {!selectedClient.interviews.length ? <p className="text-sm text-slate-500">Sin entrevistas todavía.</p> : selectedClient.interviews.map((session) => (
+                    <button key={session.id} className="w-full text-left border rounded-lg p-2 hover:bg-slate-50" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>
+                      <p className="text-sm font-medium">{session.form_title || 'Formulario'} · {new Date(session.created_at).toLocaleString()}</p>
+                      <p className="text-xs text-slate-500">Estado: {session.status || 'draft'}</p>
+                    </button>
+                  ))}
                 </div>
               </div>
-            ))}
+            )}
           </div>
         )}
 
@@ -372,7 +443,7 @@ const InterviewCenterPage = () => {
         </div>
       </Modal>
 
-      <Modal title="Realizar entrevista" open={runModalOpen} onClose={() => setRunModalOpen(false)}>
+      <Modal title="Realizar entrevista" open={runModalOpen} onClose={() => { setRunModalOpen(false); setRunInterviewPrefill({ clientId: null, audienceId: null }); }}>
         <InterviewRunner
           audiences={center.audiences}
           clients={center.clients}
@@ -383,6 +454,8 @@ const InterviewCenterPage = () => {
           onAutosave={autosaveInterviewSession}
           onCompleteInterview={completeInterviewSession}
           onViewSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
+          initialClientId={runInterviewPrefill.clientId}
+          initialAudienceId={runInterviewPrefill.audienceId}
           loading={saving}
         />
       </Modal>

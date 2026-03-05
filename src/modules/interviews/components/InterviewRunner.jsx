@@ -5,7 +5,7 @@ const inputClass = 'w-full rounded-xl border border-slate-200 bg-white px-3 py-2
 
 const getRequiredMissing = (question, value) => question.required && (value == null || value === '' || (Array.isArray(value) && value.length === 0));
 
-export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreateClient, onStartInterview, onAutosave, onCompleteInterview, onViewSession, loading }) => {
+export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreateClient, onStartInterview, onAutosave, onCompleteInterview, onViewSession, initialClientId = null, initialAudienceId = null, loading }) => {
   const [step, setStep] = useState(1);
   const [saveState, setSaveState] = useState('idle');
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -22,6 +22,17 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
     question_notes: {},
   });
   const [quickClient, setQuickClient] = useState({ name: '', contact: '', notes: '' });
+
+
+  useEffect(() => {
+    if (!initialClientId) return;
+    setDraft((prev) => ({
+      ...prev,
+      client_id: String(initialClientId),
+      audience_id: prev.audience_id || String(initialAudienceId || ''),
+    }));
+    setStep(3);
+  }, [initialClientId, initialAudienceId]);
 
   const selectedForm = useMemo(() => forms.find((form) => String(form.id) === String(draft.form_id)), [forms, draft.form_id]);
   const filteredClients = clients.filter((client) => !draft.audience_id || String(client.audience_id || '') === String(draft.audience_id));
@@ -85,8 +96,8 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
     setCompletedSessionId(null);
     setSaveState('idle');
     setDraft({
-      audience_id: '',
-      client_id: '',
+      audience_id: String(initialAudienceId || ''),
+      client_id: String(initialClientId || ''),
       form_id: '',
       interview_hypothesis_id: '',
       notes: '',
