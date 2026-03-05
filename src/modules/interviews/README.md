@@ -1,0 +1,24 @@
+# Módulo Entrevistas (frontend-only)
+
+## Rutas
+- `/projects/:projectId/campaigns/:campaignId/interviews` → Centro de Entrevistas.
+- `/projects/:projectId/campaigns/:campaignId/interviews/:sessionId` → Detalle de sesión.
+
+## Estructura principal
+- `pages/InterviewCenterPage.jsx`: mini-app con tabs (Dashboard, Clientes, Formularios, Hipótesis, Entrevistas).
+- `pages/InterviewSessionDetailPage.jsx`: detalle completo de sesión.
+- `components/FormBuilder.jsx`: builder de formularios (tipos, required, opciones, orden, preview).
+- `components/InterviewRunner.jsx`: flujo de "Realizar entrevista" en 4 pasos.
+- `components/InterviewModuleShell.jsx`: header, tabs, modal y empty states.
+- `hooks/useInterviewCenterData.js`: carga reactiva, KPIs y utilidades para mutaciones con feedback.
+- `services/interviewsModuleApi.js`: wrapper/adaptador para endpoints existentes de entrevistas.
+
+## Contratos esperados (sin cambios de backend)
+El módulo consume exactamente los endpoints y payloads existentes en `src/services/interviewsApi.js`:
+- audiencias de campaña
+- CRUD de clientes de entrevistas
+- CRUD de hipótesis de entrevistas
+- CRUD de formularios de entrevistas
+- CRUD de sesiones/entrevistas
+
+No se agregan ni alteran endpoints ni shape de respuestas; el módulo adapta UI al contrato actual.
