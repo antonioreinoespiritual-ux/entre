@@ -40,10 +40,13 @@ const InterviewCenterPage = () => {
   const [selectedClientId, setSelectedClientId] = useState(null);
   const [clientActionsMenuId, setClientActionsMenuId] = useState(null);
   const [runInterviewPrefill, setRunInterviewPrefill] = useState({ clientId: null, audienceId: null });
+  const [clientNotesDraft, setClientNotesDraft] = useState('');
+  const [clientNotesSaveState, setClientNotesSaveState] = useState('idle');
 
   const saveTimerRef = useRef(null);
   const autosaveSeqRef = useRef(0);
   const lastSavedRef = useRef('');
+  const clientNotesTimerRef = useRef(null);
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
 
@@ -162,6 +165,42 @@ const InterviewCenterPage = () => {
   }, [clientRows, clientSearch, clientAudienceFilter, clientSort]);
 
   const selectedClient = useMemo(() => clientRows.find((client) => String(client.id) === String(selectedClientId)) || null, [clientRows, selectedClientId]);
+
+  useEffect(() => {
+    if (!selectedClient) return;
+    setClientNotesDraft(selectedClient.notes || '');
+    setClientNotesSaveState('idle');
+  }, [selectedClient?.id]);
+
+  useEffect(() => {
+    if (!selectedClient) return undefined;
+    if (clientNotesDraft === (selectedClient.notes || '')) return undefined;
+
+    setClientNotesSaveState('saving');
+    if (clientNotesTimerRef.current) clearTimeout(clientNotesTimerRef.current);
+
+    clientNotesTimerRef.current = setTimeout(async () => {
+      try {
+        await interviewsModuleApi.updateClient(selectedClient.id, { ...selectedClient, notes: clientNotesDraft });
+        setClientNotesSaveState('saved');
+        await reload();
+      } catch {
+        setClientNotesSaveState('error');
+      }
+    }, 600);
+
+    return () => {
+      if (clientNotesTimerRef.current) clearTimeout(clientNotesTimerRef.current);
+    };
+  }, [clientNotesDraft, selectedClient?.id]);
+
+  const selectedClientSummary = useMemo(() => {
+    if (!selectedClient) return null;
+    const interviews = [...(selectedClient.interviews || [])].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    const lastInterview = interviews[0] || null;
+    const formsUsed = new Set(interviews.map((session) => String(session.form_id || session.form_title || '')).filter(Boolean)).size;
+    return { interviews, total: interviews.length, lastInterview, formsUsed };
+  }, [selectedClient]);
 
   const startInterviewSession = async (payload) => {
     setSaving(true);
@@ -454,6 +493,11 @@ const InterviewCenterPage = () => {
             <div className="border rounded-xl p-4 bg-slate-50/60">
               <h3 className="text-lg font-semibold">{selectedClient.name}</h3>
               <p className="text-sm text-slate-600">Audiencia: <b>{selectedClient.audience_name || 'Sin audiencia'}</b> · Contacto: <b>{selectedClient.contact || '—'}</b></p>
+              <div className="grid md:grid-cols-3 gap-2 mt-3">
+                <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Total entrevistas</p><p className="text-lg font-semibold">{selectedClientSummary?.total || 0}</p></div>
+                <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Última entrevista</p><p className="text-sm font-medium">{selectedClientSummary?.lastInterview ? new Date(selectedClientSummary.lastInterview.created_at).toLocaleString() : 'Sin entrevistas'}</p></div>
+                <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Formularios usados</p><p className="text-lg font-semibold">{selectedClientSummary?.formsUsed || 0}</p></div>
+              </div>
               <div className="flex flex-wrap gap-2 mt-3">
                 <Button className="bg-white border" onClick={() => { setClientDraft(selectedClient); setClientModalOpen(true); }}>Editar cliente</Button>
                 <Button className="bg-indigo-600 text-white" onClick={() => { setRunInterviewPrefill({ clientId: selectedClient.id, audienceId: selectedClient.audience_id || null }); setRunModalOpen(true); }}>Iniciar entrevista</Button>
@@ -462,18 +506,38 @@ const InterviewCenterPage = () => {
             </div>
 
             <div className="bg-white border rounded-xl p-4">
-              <p className="text-sm font-medium mb-1">Notas globales</p>
-              <p className="text-sm text-slate-600 whitespace-pre-wrap">{selectedClient.notes || 'Sin notas'}</p>
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-sm font-medium">Notas globales</p>
+                <p className={`text-xs ${clientNotesSaveState === 'error' ? 'text-red-600' : 'text-slate-500'}`}>{clientNotesSaveState === 'saving' ? 'Guardando…' : clientNotesSaveState === 'saved' ? 'Guardado' : clientNotesSaveState === 'error' ? 'Error al guardar' : ''}</p>
+              </div>
+              <textarea className="border rounded-lg p-2 w-full" rows={4} value={clientNotesDraft} onChange={(e) => setClientNotesDraft(e.target.value)} placeholder="Notas acumuladas del cliente" />
             </div>
 
-            <div className="bg-white border rounded-xl p-4 space-y-2">
-              <p className="text-sm font-medium">Historial de entrevistas</p>
-              {!selectedClient.interviews.length ? <p className="text-sm text-slate-500">Sin entrevistas todavía.</p> : selectedClient.interviews.map((session) => (
-                <button key={session.id} className="w-full text-left border rounded-lg p-3 hover:bg-slate-50 transition-colors" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>
-                  <p className="text-sm font-medium">{new Date(session.created_at).toLocaleString()}</p>
-                  <p className="text-xs text-slate-500">{session.form_title || 'Formulario'} · Estado: {session.status || 'draft'}</p>
-                </button>
-              ))}
+            <div className="bg-white border rounded-xl p-4 space-y-3">
+              <p className="text-sm font-medium">Timeline de entrevistas</p>
+              {!selectedClientSummary?.interviews.length ? <p className="text-sm text-slate-500">Sin entrevistas todavía.</p> : (
+                <div className="space-y-3">
+                  {selectedClientSummary.interviews.map((session, index) => (
+                    <div key={session.id} className="relative pl-8">
+                      {index < selectedClientSummary.interviews.length - 1 && <div className="absolute left-[11px] top-6 bottom-[-14px] w-px bg-slate-200" />}
+                      <div className="absolute left-0 top-1 h-6 w-6 rounded-full border border-indigo-200 bg-indigo-50 flex items-center justify-center text-[10px] text-indigo-700">●</div>
+                      <div className="border rounded-lg p-3 hover:bg-slate-50 transition-colors">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-medium">{session.form_title || 'Formulario'}</p>
+                            <p className="text-xs text-slate-500">{new Date(session.created_at).toLocaleString()} · <span className="capitalize">{session.status || 'draft'}</span></p>
+                          </div>
+                          <div className="flex gap-1">
+                            <Button className="bg-white border" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>Abrir</Button>
+                            <Button className="bg-white border" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>Editar</Button>
+                            {(session.status || 'draft') === 'draft' && <Button className="bg-indigo-600 text-white" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${session.id}`)}>Continuar</Button>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
