@@ -45,15 +45,39 @@ const InterviewSessionDetailPage = () => {
       <Helmet><title>Detalle de entrevista</title></Helmet>
       <div className="max-w-5xl mx-auto space-y-4">
         <p className="text-sm text-slate-500"><Link className="hover:underline" to={`/projects/${projectId}/campaigns/${campaignId}/interviews`}>Proyecto &gt; Campaña &gt; Entrevistas</Link> / Sesión</p>
-        <div className="bg-white border rounded-xl p-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-bold">Sesión de entrevista #{session.id}</h1>
-            <p className="text-sm text-slate-500">{session.client_name} · {session.form_title} · {new Date(session.created_at).toLocaleString()}</p>
-            <p className="text-sm text-slate-600 mt-1">Audiencia: {session.audience_name || 'Sin audiencia'} · Hipótesis: {session.hypothesis_title || 'Sin hipótesis'}</p>
+        <div className="bg-white border rounded-2xl p-4 shadow-sm space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-bold">Sesión de entrevista #{session.id}</h1>
+              <p className="text-xs text-slate-500 mt-1">{new Date(session.created_at).toLocaleString()}</p>
+            </div>
+            <div className="flex gap-2">
+              <Button className="bg-white border" onClick={() => navigator.clipboard.writeText(payload)}>Copiar JSON</Button>
+              <Button className="bg-indigo-600 text-white" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`)}>Volver</Button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button className="bg-white border" onClick={() => navigator.clipboard.writeText(payload)}>Copiar JSON</Button>
-            <Button className="bg-indigo-600 text-white" onClick={() => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`)}>Volver</Button>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-5 gap-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Cliente</p>
+              <p className="text-sm font-medium text-slate-900">{session.client_name || '—'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Formulario</p>
+              <p className="text-sm font-medium text-slate-900">{session.form_title || '—'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Audiencia</p>
+              <p className="text-sm font-medium text-slate-900">{session.audience_name || 'Sin audiencia'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Hipótesis</p>
+              <p className="text-sm font-medium text-slate-900">{session.hypothesis_title || 'Sin hipótesis'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">Fecha</p>
+              <p className="text-sm font-medium text-slate-900">{new Date(session.created_at).toLocaleDateString()}</p>
+            </div>
           </div>
         </div>
 
@@ -67,8 +91,11 @@ const InterviewSessionDetailPage = () => {
               <p className="text-sm text-slate-600 mt-1">{Array.isArray(answers[question.id]) ? answers[question.id].join(', ') : String(answers[question.id] ?? '—')}</p>
             </div>
           ))}
+        </div>
+
+        <div className="bg-white border rounded-xl p-4">
+          <h2 className="font-semibold mb-2">Notas del entrevistador</h2>
           <div className="border rounded-lg p-3 bg-slate-50">
-            <p className="font-medium">Notas</p>
             <p className="text-sm text-slate-600">{session.notes || 'Sin notas'}</p>
           </div>
         </div>
