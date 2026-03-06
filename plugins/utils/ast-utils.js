@@ -4,10 +4,9 @@ import { fileURLToPath } from 'node:url';
 import generate from '@babel/generator';
 import { parse } from '@babel/parser';
 import traverseBabel from '@babel/traverse';
-import {
-	isJSXIdentifier,
-	isJSXMemberExpression,
-} from '@babel/types';
+import babelTypes from '@babel/types';
+
+const { isJSXIdentifier, isJSXMemberExpression } = babelTypes;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
