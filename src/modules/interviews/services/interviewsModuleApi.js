@@ -60,4 +60,7 @@ export const interviewsModuleApi = {
 
   listCloudOverview: interviewsApi.listInterviewCloudOverview,
   listCloudNodes: interviewsApi.listInterviewCloudNodes,
+  readCloudDocument: interviewsApi.readInterviewCloudDocument,
+  listDocumentFragments: interviewsApi.listInterviewDocumentFragments,
+  createDocumentFragment: interviewsApi.createInterviewDocumentFragment,
 };

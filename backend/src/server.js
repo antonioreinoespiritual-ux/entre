@@ -4,6 +4,8 @@ import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { createPool, validateDbEnv } from './config/db.js';
 import { loadBackendEnv } from './config/env.js';
 
@@ -71,7 +73,7 @@ const schemaSql = [
   'CREATE INDEX IF NOT EXISTS idx_campaigns_user_id ON campaigns(user_id)',
   `CREATE TABLE IF NOT EXISTS audiences (
     id TEXT PRIMARY KEY,
-    campaign_id TEXT NOT NULL,
+    campaign_id TEXT,
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
@@ -284,6 +286,26 @@ const schemaSql = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_interview_sessions_campaign ON interview_sessions(campaign_id, client_id)',
+  `CREATE TABLE IF NOT EXISTS interview_semantic_fragments (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT,
+    interview_session_id TEXT,
+    document_node_id TEXT NOT NULL,
+    source_type TEXT NOT NULL CHECK(source_type IN ('selection','manual')),
+    selected_text TEXT NOT NULL,
+    start_offset INTEGER,
+    end_offset INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (interview_session_id) REFERENCES interview_sessions(id) ON DELETE SET NULL,
+    FOREIGN KEY (document_node_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_interview_semantic_fragments_document ON interview_semantic_fragments(document_node_id, created_at)',
   `CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -1231,6 +1253,69 @@ function safeParseJsonField(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function decodeWordDocumentBinary(buffer) {
+  const candidates = [
+    buffer.toString('utf8'),
+    buffer.toString('latin1'),
+    buffer.toString('utf16le'),
+  ];
+  const cleaned = candidates
+    .map((value) => String(value || '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]+/g, ' '))
+    .map((value) => value.replace(/[^\S\r\n]+/g, ' '))
+    .map((value) => value.replace(/\s+\n/g, '\n').trim())
+    .sort((a, b) => b.length - a.length);
+  return cleaned[0] || '';
+}
+
+function extractDocxTextWithSystemUnzip(storagePath) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-docx-'));
+  try {
+    const xml = execFileSync('unzip', ['-p', storagePath, 'word/document.xml'], { encoding: 'utf8', maxBuffer: 12 * 1024 * 1024 });
+    const paragraphs = String(xml || '')
+      .replace(/<w:p[^>]*>/g, '\n')
+      .replace(/<w:tab\/?\s*>/g, '\t')
+      .replace(/<w:br\/?\s*>/g, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[^\S\r\n]+/g, ' ')
+      .trim();
+    return paragraphs;
+  } finally {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+function readInterviewDocumentForNode(node) {
+  const name = String(node?.name || '').toLowerCase();
+  const ext = path.extname(name);
+  if (!node?.storage_path || !fs.existsSync(node.storage_path)) {
+    return { text: '', format: 'unknown', warning: 'Archivo no encontrado en storage.' };
+  }
+
+  const buffer = fs.readFileSync(node.storage_path);
+
+  if (ext === '.txt' || ext === '.md' || ext === '.log' || (node.mime_type || '').startsWith('text/')) {
+    return { text: buffer.toString('utf8'), format: 'text' };
+  }
+
+  if (ext === '.docx') {
+    try {
+      const text = extractDocxTextWithSystemUnzip(node.storage_path);
+      return { text, format: 'docx' };
+    } catch (error) {
+      return { text: '', format: 'docx', warning: `No se pudo parsear .docx: ${error?.message || String(error)}` };
+    }
+  }
+
+  if (ext === '.doc') {
+    const text = decodeWordDocumentBinary(buffer);
+    return { text, format: 'doc', warning: 'Lectura .doc en modo compatibilidad (texto aproximado).' };
+  }
+
+  return { text: '', format: ext.replace('.', '') || 'unknown', warning: 'Formato no soportado aún para lectura enriquecida.' };
 }
 
 function normalizeInterviewQuestion(question, index = 0) {
@@ -3285,6 +3370,8 @@ const server = http.createServer(async (req, res) => {
           updatedAt: row.updated_at,
           mimeType: row.mime_type,
           isShortcut: Boolean(row.is_linked_from_edge),
+          targetType: row.target_type || null,
+          targetEntityId: row.target_id || null,
         })),
         total: rows.length,
         breadcrumbs,
@@ -3412,6 +3499,128 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+
+    if (url.pathname === '/api/interviews/cloud/document' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const nodeId = String(url.searchParams.get('nodeId') || '').trim();
+      if (!nodeId) {
+        sendJson(req, res, 400, { error: 'nodeId is required' });
+        return;
+      }
+      const node = await getCloudNodeById(nodeId, user.id);
+      if (!node || node.type !== 'file') {
+        sendJson(req, res, 404, { error: 'Document not found' });
+        return;
+      }
+
+      const [contextRows] = await pool.query(
+        `SELECT s.id AS interview_id, s.project_id, s.campaign_id
+         FROM cloud_nodes d
+         LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
+         LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
+         LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
+         WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
+        [nodeId, user.id],
+      );
+      const context = contextRows[0] || {};
+      const parsed = readInterviewDocumentForNode(node);
+      sendJson(req, res, 200, {
+        data: {
+          node_id: node.id,
+          name: node.name,
+          mime_type: node.mime_type,
+          size: node.size,
+          interview_id: context.interview_id || null,
+          project_id: context.project_id || node.project_id,
+          campaign_id: context.campaign_id || null,
+          format: parsed.format,
+          warning: parsed.warning || null,
+          text: parsed.text || '',
+        },
+      });
+      return;
+    }
+
+    if (url.pathname === '/api/interviews/fragments' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const documentNodeId = String(url.searchParams.get('documentNodeId') || '').trim();
+      if (!documentNodeId) return sendJson(req, res, 400, { error: 'documentNodeId is required' });
+      const [rows] = await pool.query(
+        `SELECT * FROM interview_semantic_fragments
+         WHERE user_id = ? AND document_node_id = ?
+         ORDER BY created_at DESC`,
+        [user.id, documentNodeId],
+      );
+      sendJson(req, res, 200, { data: rows });
+      return;
+    }
+
+    if (url.pathname === '/api/interviews/fragments' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const documentNodeId = String(body?.document_node_id || '').trim();
+      const sourceType = String(body?.source_type || '').trim().toLowerCase();
+      const selectedText = String(body?.selected_text || '').trim();
+      if (!documentNodeId || !['selection', 'manual'].includes(sourceType) || !selectedText) {
+        return sendJson(req, res, 400, { error: 'document_node_id, source_type(selection|manual) y selected_text son obligatorios' });
+      }
+
+      const node = await getCloudNodeById(documentNodeId, user.id);
+      if (!node || node.type !== 'file') return sendJson(req, res, 404, { error: 'Document not found' });
+
+      const [contextRows] = await pool.query(
+        `SELECT s.id AS interview_id, s.project_id, s.campaign_id
+         FROM cloud_nodes d
+         LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
+         LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
+         LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
+         WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
+        [documentNodeId, user.id],
+      );
+      const context = contextRows[0] || {};
+      const fragment = {
+        id: uuid(),
+        user_id: user.id,
+        project_id: context.project_id || node.project_id,
+        campaign_id: context.campaign_id || null,
+        interview_session_id: body?.interview_session_id || context.interview_id || null,
+        document_node_id: documentNodeId,
+        source_type: sourceType,
+        selected_text: selectedText,
+        start_offset: Number.isFinite(Number(body?.start_offset)) ? Number(body.start_offset) : null,
+        end_offset: Number.isFinite(Number(body?.end_offset)) ? Number(body.end_offset) : null,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
+
+      await pool.query(
+        `INSERT INTO interview_semantic_fragments
+         (id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          fragment.id,
+          fragment.user_id,
+          fragment.project_id,
+          fragment.campaign_id,
+          fragment.interview_session_id,
+          fragment.document_node_id,
+          fragment.source_type,
+          fragment.selected_text,
+          fragment.start_offset,
+          fragment.end_offset,
+          fragment.created_at,
+          fragment.updated_at,
+        ],
+      );
+      sendJson(req, res, 201, { data: fragment });
+      return;
+    }
 
     if (url.pathname === '/api/cloud/search' && req.method === 'GET') {
       const user = authFromRequest(req);

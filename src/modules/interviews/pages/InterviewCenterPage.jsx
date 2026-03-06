@@ -89,6 +89,7 @@ const InterviewCenterPage = () => {
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
+  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', fragments: [] });
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -378,6 +379,74 @@ const InterviewCenterPage = () => {
       toast({ title: 'Error subiendo archivo', description: error.message, variant: 'destructive' });
     }
   }, [authHeader, cloudState.parentId, loadInterviewCloudFolder, projectId, toast]);
+
+  const loadDocumentFragments = useCallback(async (nodeId) => {
+    if (!nodeId) return;
+    try {
+      const fragments = await interviewsModuleApi.listDocumentFragments(nodeId);
+      setDocReader((prev) => ({ ...prev, fragments }));
+    } catch {
+      setDocReader((prev) => ({ ...prev, fragments: [] }));
+    }
+  }, []);
+
+  const openDocumentReader = useCallback(async (item) => {
+    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null }));
+    try {
+      const document = await interviewsModuleApi.readCloudDocument(item.id);
+      setDocReader((prev) => ({ ...prev, loading: false, document, error: '' }));
+      await loadDocumentFragments(item.id);
+    } catch (error) {
+      setDocReader((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo abrir documento', document: null }));
+    }
+  }, [loadDocumentFragments]);
+
+  const captureSelection = useCallback(() => {
+    const selection = window.getSelection();
+    if (!selection || !selection.toString().trim()) return;
+    const text = selection.toString().trim();
+    const docText = String(docReader.document?.text || '');
+    const anchor = docText.indexOf(text);
+    const range = anchor >= 0 ? { start_offset: anchor, end_offset: anchor + text.length } : null;
+    setDocReader((prev) => ({ ...prev, selectionText: text, selectionRange: range }));
+  }, [docReader.document?.text]);
+
+  const createSelectionFragment = useCallback(async () => {
+    if (!docReader.document?.node_id || !docReader.selectionText) return;
+    const payload = {
+      document_node_id: docReader.document.node_id,
+      interview_session_id: docReader.document.interview_id || null,
+      selected_text: docReader.selectionText,
+      start_offset: docReader.selectionRange?.start_offset ?? null,
+      end_offset: docReader.selectionRange?.end_offset ?? null,
+      source_type: 'selection',
+    };
+    try {
+      await interviewsModuleApi.createDocumentFragment(payload);
+      setDocReader((prev) => ({ ...prev, selectionText: '', selectionRange: null }));
+      await loadDocumentFragments(docReader.document.node_id);
+      toast({ title: 'Fragmento creado', description: 'Se guardó desde selección con trazabilidad.' });
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }, [docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, toast]);
+
+  const createManualFragment = useCallback(async () => {
+    if (!docReader.document?.node_id || !docReader.manualText.trim()) return;
+    try {
+      await interviewsModuleApi.createDocumentFragment({
+        document_node_id: docReader.document.node_id,
+        interview_session_id: docReader.document.interview_id || null,
+        selected_text: docReader.manualText.trim(),
+        source_type: 'manual',
+      });
+      setDocReader((prev) => ({ ...prev, manualText: '' }));
+      await loadDocumentFragments(docReader.document.node_id);
+      toast({ title: 'Fragmento manual creado' });
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }, [docReader.document, docReader.manualText, loadDocumentFragments, toast]);
 
   useEffect(() => {
     if (tab !== 'cloud') return;
@@ -724,7 +793,16 @@ const InterviewCenterPage = () => {
               <div className="space-y-2">
                 {(cloudState.items || []).map((item) => (
                   <div key={item.id} className="flex items-center justify-between rounded-lg border p-3">
-                    <button className="flex items-center gap-2 text-left" onClick={() => loadInterviewCloudFolder(item.targetId || item.id)}>
+                    <button
+                      className="flex items-center gap-2 text-left"
+                      onClick={() => {
+                        if (item.kind === 'file') {
+                          openDocumentReader(item);
+                          return;
+                        }
+                        loadInterviewCloudFolder(item.targetId || item.id);
+                      }}
+                    >
                       {item.kind === 'folder' || item.kind === 'shortcut' ? <FolderOpen className="h-4 w-4 text-indigo-600" /> : <FileText className="h-4 w-4 text-slate-500" />}
                       <span className="font-medium text-slate-800">{item.name}</span>
                       {String(item.name || '').toLowerCase().includes('audio') ? <Headphones className="h-4 w-4 text-emerald-600" /> : null}
@@ -734,6 +812,64 @@ const InterviewCenterPage = () => {
                 ))}
               </div>
             </div>
+
+            {docReader.document || docReader.loading || docReader.error ? (
+              <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+                <div className="rounded-2xl border bg-[#f8fafc] p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <h4 className="font-semibold text-slate-900">Lector de documento</h4>
+                      <p className="text-xs text-slate-500">Lectura enriquecida para transcripción (.doc/.docx/txt) con extracción de fragmentos.</p>
+                    </div>
+                    {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
+                  </div>
+                  {docReader.loading ? <p className="text-sm text-slate-500">Abriendo documento...</p> : null}
+                  {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
+                  {docReader.document ? (
+                    <>
+                      <div
+                        className="mx-auto min-h-[320px] max-w-3xl rounded-xl border bg-white px-12 py-10 text-[15px] leading-7 text-slate-800 shadow-sm whitespace-pre-wrap"
+                        onMouseUp={captureSelection}
+                      >
+                        {docReader.document.text || 'No se pudo renderizar texto de este documento.'}
+                      </div>
+                      <div className="mt-3 rounded-lg border bg-white p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
+                        <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
+                          {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+
+                <div className="rounded-2xl border bg-white p-4 space-y-3">
+                  <h4 className="font-semibold text-slate-900">Fragmentos del documento</h4>
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Agregar fragmento manual</p>
+                    <textarea
+                      className="w-full min-h-[120px] rounded-md border p-2 text-sm"
+                      placeholder="Escribe una observación semántica o resumen manual..."
+                      value={docReader.manualText}
+                      onChange={(event) => setDocReader((prev) => ({ ...prev, manualText: event.target.value }))}
+                    />
+                    <Button className="bg-slate-900 text-white" onClick={createManualFragment} disabled={!docReader.manualText.trim()}>Guardar fragmento manual</Button>
+                  </div>
+
+                  <div className="space-y-2 max-h-[420px] overflow-auto pr-1">
+                    {(docReader.fragments || []).map((fragment) => (
+                      <div key={fragment.id} className="rounded-lg border p-3">
+                        <p className="text-sm text-slate-800">{fragment.selected_text}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">{fragment.source_type} · {new Date(fragment.created_at).toLocaleString()} {fragment.start_offset != null ? `· ${fragment.start_offset}-${fragment.end_offset}` : ''}</p>
+                      </div>
+                    ))}
+                    {!docReader.fragments?.length ? <p className="text-sm text-slate-500">Aún no hay fragmentos para este documento.</p> : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </section>
         )}
 
