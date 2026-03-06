@@ -8,7 +8,7 @@ import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
 import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewCenterData';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
-import { getLeanScore } from '@/modules/interviews/components/LeanEvaluationPanel';
+import { getLeanProblemScore, getLeanScore, getLeanSolutionScore } from '@/modules/interviews/components/LeanEvaluationPanel';
 
 
 const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
@@ -197,7 +197,28 @@ const InterviewCenterPage = () => {
     const interviews = center.sessions.filter((session) => String(session.client_id) === String(client.id));
     const lastInterview = interviews.length ? interviews.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] : null;
     const { plainNotes, profile } = parseClientNotes(client.notes || '');
-    return { ...client, plainNotes, profile, interviewsCount: interviews.length, lastInterview, interviews };
+
+    const evaluatedInterviews = interviews
+      .map((session) => session.responses_json?.__lean_evaluation || null)
+      .filter(Boolean);
+
+    const problemScores = evaluatedInterviews.map((evaluation) => getLeanProblemScore(evaluation)).filter((score) => score != null);
+    const solutionScores = evaluatedInterviews.map((evaluation) => getLeanSolutionScore(evaluation)).filter((score) => score != null);
+
+    const aggregateProblemScore = problemScores.length ? Number((problemScores.reduce((acc, score) => acc + score, 0) / problemScores.length).toFixed(1)) : null;
+    const aggregateSolutionScore = solutionScores.length ? Number((solutionScores.reduce((acc, score) => acc + score, 0) / solutionScores.length).toFixed(1)) : null;
+
+    return {
+      ...client,
+      plainNotes,
+      profile,
+      interviewsCount: interviews.length,
+      lastInterview,
+      interviews,
+      evaluatedInterviewsCount: Math.max(problemScores.length, solutionScores.length),
+      aggregateProblemScore,
+      aggregateSolutionScore,
+    };
   }), [center.clients, center.sessions]);
 
   const visibleClients = useMemo(() => {
@@ -334,12 +355,13 @@ const InterviewCenterPage = () => {
 
             {!visibleClients.length ? <EmptyState title="No hay clientes" description="Crea tu primer cliente para iniciar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={() => setClientModalOpen(true)}>Crear cliente</Button>} /> : (
               <div className="bg-white border border-slate-200 rounded-2xl overflow-visible">
-                <div className="grid grid-cols-12 gap-2 px-4 py-2 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500 border-b">
+                <div className="grid grid-cols-14 gap-2 px-4 py-2 bg-slate-100 text-[11px] font-semibold uppercase tracking-wide text-slate-700 border-b">
                   <p className="col-span-3">Cliente</p>
                   <p className="col-span-2">Audiencia</p>
                   <p className="col-span-2">Contacto</p>
                   <p className="col-span-2">Entrevistas</p>
-                  <p className="col-span-2">Última entrevista</p>
+                  <p className="col-span-2">Score problema</p>
+                  <p className="col-span-2">Score solución</p>
                   <p className="col-span-1 text-right">Acciones</p>
                 </div>
                 {visibleClients.map((client) => (
@@ -349,7 +371,7 @@ const InterviewCenterPage = () => {
                     tabIndex={0}
                     onClick={() => setSelectedClientId(client.id)}
                     onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedClientId(client.id); } }}
-                    className={`group relative grid grid-cols-12 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 focus-within:ring-2 focus-within:ring-indigo-200 transition-all duration-150 cursor-pointer ${clientActionsMenuId === client.id ? 'z-20' : ''}`}
+                    className={`group relative grid grid-cols-14 gap-2 px-4 py-3 border-b last:border-b-0 hover:bg-slate-50 focus-within:ring-2 focus-within:ring-indigo-200 transition-all duration-150 cursor-pointer ${clientActionsMenuId === client.id ? 'z-20' : ''}`}
                   >
                     <div className="col-span-3 min-w-0">
                       <p className="text-[15px] font-semibold text-slate-900 truncate">{client.name}</p>
@@ -357,7 +379,20 @@ const InterviewCenterPage = () => {
                     <div className="col-span-2"><span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-700">{client.audience_name || 'Sin audiencia'}</span></div>
                     <div className="col-span-2"><span className="inline-flex rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">{client.contact || 'Sin contacto'}</span></div>
                     <div className="col-span-2"><span className="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">{client.interviewsCount} entrevistas</span></div>
-                    <p className="col-span-2 text-sm text-slate-500">{client.lastInterview ? new Date(client.lastInterview.created_at).toLocaleDateString() : '—'}</p>
+                    <div className="col-span-2">
+                      {client.aggregateProblemScore != null ? (
+                        <span className="inline-flex rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">{client.aggregateProblemScore}</span>
+                      ) : (
+                        <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">Sin evaluación</span>
+                      )}
+                    </div>
+                    <div className="col-span-2">
+                      {client.aggregateSolutionScore != null ? (
+                        <span className="inline-flex rounded-full border border-sky-200 bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-700">{client.aggregateSolutionScore}</span>
+                      ) : (
+                        <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-500">Sin evaluación</span>
+                      )}
+                    </div>
 
                     <div className="col-span-1 relative flex justify-end" onClick={(event) => event.stopPropagation()}>
                       <Button className="bg-white border" title="Acciones" onClick={() => setClientActionsMenuId((prev) => (prev === client.id ? null : client.id))}>⋮</Button>
@@ -632,6 +667,24 @@ const InterviewCenterPage = () => {
                 <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Total entrevistas</p><p className="text-lg font-semibold">{selectedClientSummary?.total || 0}</p></div>
                 <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Última entrevista</p><p className="text-sm font-medium">{selectedClientSummary?.lastInterview ? new Date(selectedClientSummary.lastInterview.created_at).toLocaleString() : 'Sin entrevistas'}</p></div>
                 <div className="bg-white border rounded-lg p-3"><p className="text-xs text-slate-500">Formularios usados</p><p className="text-lg font-semibold">{selectedClientSummary?.formsUsed || 0}</p></div>
+              </div>
+
+              <div className="mt-3 rounded-xl border border-slate-200 bg-white p-3">
+                <p className="text-sm font-semibold text-slate-900">Evaluación acumulada del cliente</p>
+                <div className="mt-2 grid md:grid-cols-3 gap-2">
+                  <div className="rounded-lg border border-indigo-100 bg-indigo-50/70 p-3">
+                    <p className="text-xs text-slate-500">Score Problema</p>
+                    <p className="text-lg font-semibold text-indigo-700">{selectedClient.aggregateProblemScore ?? 'Sin evaluación'}</p>
+                  </div>
+                  <div className="rounded-lg border border-sky-100 bg-sky-50/70 p-3">
+                    <p className="text-xs text-slate-500">Score Solución</p>
+                    <p className="text-lg font-semibold text-sky-700">{selectedClient.aggregateSolutionScore ?? 'Sin evaluación'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-xs text-slate-500">Entrevistas evaluadas</p>
+                    <p className="text-lg font-semibold text-slate-800">{selectedClient.evaluatedInterviewsCount || 0}</p>
+                  </div>
+                </div>
               </div>
               <div className="flex flex-wrap gap-2 mt-3">
                 <Button className="bg-white border" onClick={() => openClientEditor(selectedClient, true)}>Editar cliente</Button>
