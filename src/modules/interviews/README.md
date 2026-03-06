@@ -10,10 +10,10 @@
 - `components/FormBuilder.jsx`: editor estilo Google Forms base con cards de preguntas, acciones por pregunta, preview integrado y estado de guardado.
 - `components/InterviewRunner.jsx`: flujo de "Realizar entrevista" en 4 pasos.
 - `components/InterviewModuleShell.jsx`: header, tabs, modal y empty states.
-- `components/SemanticAnalysisLab.jsx`: laboratorio semántico (clusters, sentimientos, temas, topic modeling heurístico y trazabilidad a evidencia).
+- `components/SemanticAnalysisLab.jsx`: laboratorio cualitativo con flujo entrevista → fragmentos → códigos → clusters → distribución/mapa semántico, codificación manual y trazabilidad.
 - `hooks/useInterviewCenterData.js`: carga reactiva, KPIs y utilidades para mutaciones con feedback.
 - `services/interviewsModuleApi.js`: wrapper/adaptador para endpoints existentes de entrevistas.
-- `services/semanticAnalysis.js`: utilidades de NLP híbrido frontend-only para análisis de respuestas abiertas sobre el corpus cargado.
+- `services/semanticAnalysis.js`: motor de análisis cualitativo estructurado (fragmentación, codebook, clusters narrativos, distribución, saturación y mapa semántico).
 
 ## Contratos esperados (sin cambios de backend)
 El módulo consume exactamente los endpoints y payloads existentes en `src/services/interviewsApi.js`:
