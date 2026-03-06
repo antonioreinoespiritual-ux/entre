@@ -6,8 +6,6 @@ import editModeDevPlugin from './plugins/visual-editor/vite-plugin-edit-mode.js'
 import iframeRouteRestorationPlugin from './plugins/vite-plugin-iframe-route-restoration.js';
 import selectionModePlugin from './plugins/selection-mode/vite-plugin-selection-mode.js';
 
-const isDev = process.env.NODE_ENV !== 'production';
-
 const configHorizonsViteErrorHandler = `
 const observer = new MutationObserver((mutations) => {
 	for (const mutation of mutations) {
@@ -84,7 +82,7 @@ console.error = function(...args) {
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
 		if (arg instanceof Error) {
-			errorString = arg.stack || \`\${arg.name}: \${arg.message}\`;
+				errorString = arg.stack || (arg.name + ': ' + arg.message);
 			break;
 		}
 	}
@@ -106,7 +104,6 @@ const originalFetch = window.fetch;
 window.fetch = function(...args) {
 	const url = args[0] instanceof Request ? args[0].url : args[0];
 
-	// Skip WebSocket URLs
 	if (url.startsWith('ws:') || url.startsWith('wss:')) {
 		return originalFetch.apply(this, args);
 	}
@@ -115,7 +112,6 @@ window.fetch = function(...args) {
 		.then(async response => {
 			const contentType = response.headers.get('Content-Type') || '';
 
-			// Exclude HTML document responses
 			const isDocumentResponse =
 				contentType.includes('text/html') ||
 				contentType.includes('application/xhtml+xml');
@@ -124,7 +120,7 @@ window.fetch = function(...args) {
 					const responseClone = response.clone();
 					const errorFromRes = await responseClone.text();
 					const requestUrl = response.url;
-					console.error(\`Fetch error from \${requestUrl}: \${errorFromRes}\`);
+					console.error('Fetch error from ' + requestUrl + ': ' + errorFromRes);
 			}
 
 			return response;
@@ -164,103 +160,96 @@ if (window.navigation && window.self !== window.top) {
 }
 `;
 
-const addTransformIndexHtml = {
-	name: 'add-transform-index-html',
-	transformIndexHtml(html) {
-		const tags = [
-			{
-				tag: 'script',
-				attrs: { type: 'module' },
-				children: configHorizonsRuntimeErrorHandler,
-				injectTo: 'head',
-			},
-			{
-				tag: 'script',
-				attrs: { type: 'module' },
-				children: configHorizonsViteErrorHandler,
-				injectTo: 'head',
-			},
-			{
-				tag: 'script',
-				attrs: {type: 'module'},
-				children: configHorizonsConsoleErrroHandler,
-				injectTo: 'head',
-			},
-			{
-				tag: 'script',
-				attrs: { type: 'module' },
-				children: configWindowFetchMonkeyPatch,
-				injectTo: 'head',
-			},
-			{
-				tag: 'script',
-				attrs: { type: 'module' },
-				children: configNavigationHandler,
-				injectTo: 'head',
-			},
-		];
+function createHorizonDevOverlayPlugin() {
+  return {
+    name: 'add-transform-index-html',
+    apply: 'serve',
+    transformIndexHtml(html) {
+      const tags = [
+        { tag: 'script', attrs: { type: 'module' }, children: configHorizonsRuntimeErrorHandler, injectTo: 'head' },
+        { tag: 'script', attrs: { type: 'module' }, children: configHorizonsViteErrorHandler, injectTo: 'head' },
+        { tag: 'script', attrs: { type: 'module' }, children: configHorizonsConsoleErrroHandler, injectTo: 'head' },
+        { tag: 'script', attrs: { type: 'module' }, children: configWindowFetchMonkeyPatch, injectTo: 'head' },
+        { tag: 'script', attrs: { type: 'module' }, children: configNavigationHandler, injectTo: 'head' },
+      ];
 
-		if (!isDev && process.env.TEMPLATE_BANNER_SCRIPT_URL && process.env.TEMPLATE_REDIRECT_URL) {
-			tags.push(
-				{
-					tag: 'script',
-					attrs: {
-						src: process.env.TEMPLATE_BANNER_SCRIPT_URL,
-						'template-redirect-url': process.env.TEMPLATE_REDIRECT_URL,
-					},
-					injectTo: 'head',
-				}
-			);
-		}
-
-		return {
-			html,
-			tags,
-		};
-	},
-};
-
-console.warn = () => {};
-
-const logger = createLogger()
-const loggerError = logger.error
-
-logger.error = (msg, options) => {
-	if (options?.error?.toString().includes('CssSyntaxError: [postcss]')) {
-		return;
-	}
-
-	loggerError(msg, options);
+      return { html, tags };
+    },
+  };
 }
 
-export default defineConfig({
-	customLogger: logger,
-	plugins: [
-		...(isDev ? [inlineEditPlugin(), editModeDevPlugin(), iframeRouteRestorationPlugin(), selectionModePlugin()] : []),
-		react(),
-		addTransformIndexHtml
-	],
-	server: {
-		cors: true,
-		headers: {
-			'Cross-Origin-Embedder-Policy': 'credentialless',
-		},
-		allowedHosts: true,
-	},
-	resolve: {
-		extensions: ['.jsx', '.js', '.tsx', '.ts', '.json', ],
-		alias: {
-			'@': path.resolve(__dirname, './src'),
-		},
-	},
-	build: {
-		rollupOptions: {
-			external: [
-				'@babel/parser',
-				'@babel/traverse',
-				'@babel/generator',
-				'@babel/types'
-			]
-		}
-	}
+function createTemplateBannerPlugin() {
+  return {
+    name: 'template-banner-script',
+    apply: 'build',
+    transformIndexHtml(html) {
+      if (!process.env.TEMPLATE_BANNER_SCRIPT_URL || !process.env.TEMPLATE_REDIRECT_URL) {
+        return html;
+      }
+
+      return {
+        html,
+        tags: [
+          {
+            tag: 'script',
+            attrs: {
+              src: process.env.TEMPLATE_BANNER_SCRIPT_URL,
+              'template-redirect-url': process.env.TEMPLATE_REDIRECT_URL,
+            },
+            injectTo: 'head',
+          },
+        ],
+      };
+    },
+  };
+}
+
+const logger = createLogger();
+const loggerError = logger.error;
+
+logger.error = (msg, options) => {
+  if (options?.error?.toString().includes('CssSyntaxError: [postcss]')) {
+    return;
+  }
+
+  loggerError(msg, options);
+};
+
+export default defineConfig(({ command }) => {
+  const isServe = command === 'serve';
+  const enableVisualEditor = isServe && process.env.VITE_ENABLE_VISUAL_EDITOR !== 'false';
+
+  return {
+    customLogger: logger,
+    plugins: [
+      ...(enableVisualEditor
+        ? [inlineEditPlugin(), editModeDevPlugin(), iframeRouteRestorationPlugin(), selectionModePlugin(), createHorizonDevOverlayPlugin()]
+        : []),
+      react(),
+      createTemplateBannerPlugin(),
+    ],
+    server: {
+      cors: true,
+      headers: {
+        'Cross-Origin-Embedder-Policy': 'credentialless',
+      },
+      allowedHosts: true,
+    },
+    resolve: {
+      extensions: ['.jsx', '.js', '.tsx', '.ts', '.json'],
+      alias: {
+        '@': path.resolve(__dirname, './src'),
+      },
+    },
+    build: {
+      rollupOptions: {
+        external: [
+          '@babel/parser',
+          '@babel/traverse',
+          '@babel/generator',
+          '@babel/types',
+        ],
+      },
+    },
+  };
 });

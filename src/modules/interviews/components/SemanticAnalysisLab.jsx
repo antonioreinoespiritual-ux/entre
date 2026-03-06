@@ -1,0 +1,491 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { getLeanProblemScore, getLeanSolutionScore } from '@/modules/interviews/components/LeanEvaluationPanel';
+import { buildSemanticAnalysis, defaultSemanticClusters, defaultSemanticCodebook } from '@/modules/interviews/services/semanticAnalysis';
+
+const card = 'rounded-xl border border-slate-200 bg-white p-4';
+const tabButton = 'rounded-lg px-3 py-1.5 text-sm border transition-colors';
+const STORAGE_KEY = 'interviews.semantic.lab.workspace.v1';
+
+const defaultFilters = {
+  audience_id: '',
+  form_id: '',
+  client_id: '',
+  from: '',
+  to: '',
+  minProblem: '',
+  minSolution: '',
+};
+
+const formatDate = (value) => {
+  if (!value) return 'Sin fecha';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Sin fecha';
+  return date.toLocaleString();
+};
+
+const emptyNewCode = { name: '', slug: '', category: 'interpretacion', description: '' };
+
+export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], onOpenSession }) => {
+  const [filters, setFilters] = useState(defaultFilters);
+  const [activeTab, setActiveTab] = useState('interviews');
+  const [openInterviewId, setOpenInterviewId] = useState(null);
+  const [openCluster, setOpenCluster] = useState(null);
+  const [selectedFragmentId, setSelectedFragmentId] = useState(null);
+  const [newCode, setNewCode] = useState(emptyNewCode);
+  const [workspace, setWorkspace] = useState({
+    manualFragments: [],
+    customCodebook: [],
+    codeAssignments: {},
+    clusterNameOverrides: {},
+  });
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      setWorkspace((prev) => ({ ...prev, ...parsed }));
+    } catch (error) {
+      // Ignore corrupt local workspace and keep defaults.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(workspace));
+    } catch (error) {
+      // Ignore storage errors in constrained environments.
+    }
+  }, [workspace]);
+
+  const filteredSessions = useMemo(
+    () => sessions
+      .filter((session) => {
+        if (filters.audience_id && String(session.audience_id || '') !== String(filters.audience_id)) return false;
+        if (filters.form_id && String(session.form_id || '') !== String(filters.form_id)) return false;
+        if (filters.client_id && String(session.client_id || '') !== String(filters.client_id)) return false;
+        const time = new Date(session.created_at).getTime();
+        if (filters.from && time < new Date(filters.from).getTime()) return false;
+        if (filters.to && time > (new Date(filters.to).getTime() + 86400000)) return false;
+        const evaluation = session.responses_json?.__lean_evaluation || {};
+        const problemScore = getLeanProblemScore(evaluation);
+        const solutionScore = getLeanSolutionScore(evaluation);
+        if (filters.minProblem && (problemScore == null || problemScore < Number(filters.minProblem))) return false;
+        if (filters.minSolution && (solutionScore == null || solutionScore < Number(filters.minSolution))) return false;
+        return true;
+      })
+      .map((session) => {
+        const evaluation = session.responses_json?.__lean_evaluation || {};
+        return {
+          ...session,
+          __problemScore: getLeanProblemScore(evaluation),
+          __solutionScore: getLeanSolutionScore(evaluation),
+        };
+      }),
+    [sessions, filters],
+  );
+
+  const audiencesById = useMemo(() => Object.fromEntries(audiences.map((audience) => [String(audience.id), audience])), [audiences]);
+  const formsById = useMemo(() => Object.fromEntries(forms.map((form) => [String(form.id), form])), [forms]);
+  const clientsById = useMemo(() => Object.fromEntries(clients.map((client) => [String(client.id), client])), [clients]);
+
+  const analysis = useMemo(
+    () => buildSemanticAnalysis({
+      sessions: filteredSessions,
+      audiencesById,
+      formsById,
+      clientsById,
+      manualFragments: workspace.manualFragments,
+      customCodebook: workspace.customCodebook,
+      codeAssignments: workspace.codeAssignments,
+      clusterNameOverrides: workspace.clusterNameOverrides,
+    }),
+    [filteredSessions, audiencesById, formsById, clientsById, workspace],
+  );
+
+  const interviewById = useMemo(() => Object.fromEntries(analysis.interviews.map((interview) => [String(interview.id), interview])), [analysis.interviews]);
+  const selectedInterview = openInterviewId ? interviewById[String(openInterviewId)] : null;
+  const selectedFragment = selectedFragmentId ? analysis.fragments.find((fragment) => fragment.id === selectedFragmentId) : null;
+
+  const addManualFragment = (interview, text, originRef) => {
+    const trimmed = String(text || '').trim();
+    if (!trimmed) return;
+    const interviewFragments = analysis.fragments.filter((fragment) => String(fragment.interview_id) === String(interview.id));
+    const nextPosition = (interviewFragments.at(-1)?.position || 0) + 1;
+    const newFragment = {
+      id: `manual_${interview.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      interview_id: interview.id,
+      text: trimmed,
+      position: nextPosition,
+      originRef: originRef || `manual#${nextPosition}`,
+      sourceType: 'manual',
+    };
+
+    setWorkspace((prev) => ({
+      ...prev,
+      manualFragments: [...prev.manualFragments, newFragment],
+    }));
+    setSelectedFragmentId(newFragment.id);
+    setActiveTab('fragments');
+  };
+
+  const toggleFragmentCode = (fragmentId, codeSlug) => {
+    setWorkspace((prev) => {
+      const current = prev.codeAssignments[fragmentId] || [];
+      const next = current.includes(codeSlug)
+        ? current.filter((slug) => slug !== codeSlug)
+        : [...current, codeSlug];
+      return {
+        ...prev,
+        codeAssignments: {
+          ...prev.codeAssignments,
+          [fragmentId]: next,
+        },
+      };
+    });
+  };
+
+  const createCode = () => {
+    const name = newCode.name.trim();
+    if (!name) return;
+    const slug = (newCode.slug || name)
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[^a-z0-9\s_-]/g, '')
+      .replace(/\s+/g, '_');
+
+    if (!slug || analysis.codes.some((code) => code.slug === slug)) return;
+
+    setWorkspace((prev) => ({
+      ...prev,
+      customCodebook: [...prev.customCodebook, {
+        slug,
+        name,
+        category: newCode.category || 'interpretacion',
+        description: newCode.description.trim(),
+      }],
+    }));
+    setNewCode(emptyNewCode);
+  };
+
+  const updateClusterName = (slug, name) => {
+    setWorkspace((prev) => ({
+      ...prev,
+      clusterNameOverrides: {
+        ...prev.clusterNameOverrides,
+        [slug]: name,
+      },
+    }));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className={card}>
+        <h3 className="text-base font-semibold text-slate-900">Laboratorio semántico cualitativo</h3>
+        <p className="text-xs text-slate-500">Flujo científico: entrevista → fragmentos → códigos → clusters → distribución → mapa semántico. Toda conclusión mantiene trazabilidad a evidencia.</p>
+        <div className="mt-3 grid md:grid-cols-7 gap-2">
+          <select className="border rounded p-2" value={filters.audience_id} onChange={(e) => setFilters((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia</option>{audiences.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+          <select className="border rounded p-2" value={filters.form_id} onChange={(e) => setFilters((prev) => ({ ...prev, form_id: e.target.value }))}><option value="">Formulario</option>{forms.map((f) => <option key={f.id} value={f.id}>{f.title}</option>)}</select>
+          <select className="border rounded p-2" value={filters.client_id} onChange={(e) => setFilters((prev) => ({ ...prev, client_id: e.target.value }))}><option value="">Cliente</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+          <input className="border rounded p-2" type="date" value={filters.from} onChange={(e) => setFilters((prev) => ({ ...prev, from: e.target.value }))} />
+          <input className="border rounded p-2" type="date" value={filters.to} onChange={(e) => setFilters((prev) => ({ ...prev, to: e.target.value }))} />
+          <select className="border rounded p-2" value={filters.minProblem} onChange={(e) => setFilters((prev) => ({ ...prev, minProblem: e.target.value }))}><option value="">Min score problema</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}+</option>)}</select>
+          <select className="border rounded p-2" value={filters.minSolution} onChange={(e) => setFilters((prev) => ({ ...prev, minSolution: e.target.value }))}><option value="">Min score solución</option>{[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}+</option>)}</select>
+        </div>
+      </div>
+
+      <div className="grid md:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className={card}><p className="text-xs text-slate-500">Entrevistas</p><p className="text-2xl font-semibold">{analysis.dashboard.interviewsAnalyzed}</p></div>
+        <div className={card}><p className="text-xs text-slate-500">Fragmentos analizados</p><p className="text-2xl font-semibold">{analysis.dashboard.fragmentsAnalyzed}</p></div>
+        <div className={card}><p className="text-xs text-slate-500">Fragmentos codificados</p><p className="text-2xl font-semibold">{analysis.dashboard.codedFragments}</p></div>
+        <div className={card}><p className="text-xs text-slate-500">Clusters activos</p><p className="text-2xl font-semibold">{analysis.dashboard.clustersDetected}</p></div>
+        <div className={card}><p className="text-xs text-slate-500">Audiencias incluidas</p><p className="text-sm font-semibold">{analysis.dashboard.audiencesIncluded.length || 0}</p></div>
+        <div className={card}><p className="text-xs text-slate-500">Formularios incluidos</p><p className="text-sm font-semibold">{analysis.dashboard.formsIncluded.length || 0}</p></div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 flex flex-wrap gap-2">
+        {[
+          { id: 'interviews', label: 'Entrevistas' },
+          { id: 'fragments', label: 'Fragmentos' },
+          { id: 'codes', label: 'Códigos' },
+          { id: 'clusters', label: 'Clusters' },
+          { id: 'distribution', label: 'Distribución / mapa' },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            className={`${tabButton} ${activeTab === tab.id ? 'bg-white border-slate-300 text-slate-900' : 'bg-transparent border-transparent text-slate-600 hover:bg-white'}`}
+            onClick={() => setActiveTab(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'interviews' && (
+        <div className="grid lg:grid-cols-[1.1fr_1.4fr] gap-4">
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Entrevistas fuente</h4>
+            <p className="text-xs text-slate-500 mt-1">Selecciona una entrevista para extraer fragmentos semánticos con trazabilidad.</p>
+            <div className="mt-3 space-y-2 max-h-[520px] overflow-y-auto pr-1">
+              {analysis.interviews.map((interview) => (
+                <button
+                  key={interview.id}
+                  type="button"
+                  onClick={() => setOpenInterviewId(interview.id)}
+                  className={`w-full text-left rounded-lg border p-3 transition ${openInterviewId === interview.id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                >
+                  <p className="font-medium text-slate-900">{interview.clientName}</p>
+                  <p className="text-xs text-slate-500">{interview.audienceName} · {interview.formName}</p>
+                  <p className="text-xs text-slate-500">{formatDate(interview.date)} · {interview.interviewer}</p>
+                  <p className="mt-1 text-xs text-slate-600">Contexto: {interview.context || 'Sin contexto cargado'}</p>
+                </button>
+              ))}
+              {!analysis.interviews.length && <p className="text-sm text-slate-500">No hay entrevistas para los filtros actuales.</p>}
+            </div>
+          </div>
+
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Extracción de fragmentos</h4>
+            {!selectedInterview && <p className="text-sm text-slate-500 mt-2">Elige una entrevista para revisar transcripción y crear fragmentos.</p>}
+            {selectedInterview && (
+              <div className="space-y-3 mt-2">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-sm text-slate-700"><b>Entrevistado:</b> {selectedInterview.clientName}</p>
+                  <p className="text-sm text-slate-700"><b>Segmento:</b> {selectedInterview.audienceName}</p>
+                  <p className="text-sm text-slate-700"><b>Transcripción:</b> {selectedInterview.transcript ? 'Disponible' : 'Solo respuestas abiertas'}</p>
+                </div>
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+                  {selectedInterview.responseTexts.flatMap((response) => response.text.split(/[\n.!?]+/g).map((sentence, idx) => ({
+                    sentence: sentence.trim(),
+                    questionId: response.questionId,
+                    idx,
+                  }))).filter((row) => row.sentence.length > 0).map((row) => (
+                    <div key={`${row.questionId}_${row.idx}_${row.sentence.slice(0, 12)}`} className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-sm text-slate-700">{row.sentence}</p>
+                      <div className="mt-2 flex justify-end">
+                        <Button className="bg-white border" onClick={() => addManualFragment(selectedInterview, row.sentence, `respuesta:${row.questionId}#${row.idx + 1}`)}>Convertir en fragmento</Button>
+                      </div>
+                    </div>
+                  ))}
+                  {!selectedInterview.responseTexts.length && <p className="text-sm text-slate-500">No hay respuestas abiertas disponibles.</p>}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'fragments' && (
+        <div className="grid lg:grid-cols-[1.2fr_1fr] gap-4">
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Fragmentos semánticos</h4>
+            <p className="text-xs text-slate-500 mt-1">Unidad mínima de significado (id, entrevista, posición y origen).</p>
+            <div className="mt-3 space-y-2 max-h-[520px] overflow-y-auto pr-1">
+              {analysis.fragments.map((fragment) => {
+                const interview = interviewById[String(fragment.interview_id)];
+                return (
+                  <button
+                    type="button"
+                    key={fragment.id}
+                    onClick={() => setSelectedFragmentId(fragment.id)}
+                    className={`w-full text-left rounded-lg border p-3 transition ${selectedFragmentId === fragment.id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                  >
+                    <p className="text-sm text-slate-800">{fragment.text}</p>
+                    <p className="mt-1 text-xs text-slate-500">{interview?.clientName || 'Sin cliente'} · pos {fragment.position} · origen {fragment.originRef} · {fragment.sourceType}</p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {fragment.codeSlugs.map((slug) => (
+                        <span key={slug} className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">{slug}</span>
+                      ))}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Codificación del fragmento</h4>
+            {!selectedFragment && <p className="text-sm text-slate-500 mt-2">Selecciona un fragmento para asignarle códigos.</p>}
+            {selectedFragment && (
+              <div className="space-y-3 mt-2">
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-sm text-slate-700">{selectedFragment.text}</p>
+                  <p className="text-xs text-slate-500 mt-1">Fragmento: {selectedFragment.id}</p>
+                </div>
+                <div className="max-h-[360px] overflow-y-auto space-y-2 pr-1">
+                  {analysis.codes.map((code) => {
+                    const checked = selectedFragment.codeSlugs.includes(code.slug);
+                    return (
+                      <label key={code.slug} className="flex items-start gap-2 rounded border border-slate-200 p-2 bg-white">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleFragmentCode(selectedFragment.id, code.slug)}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <span className="text-sm font-medium text-slate-800">{code.name}</span>
+                          <span className="block text-xs text-slate-500">{code.category} · {code.description || 'Sin descripción'}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'codes' && (
+        <div className="grid lg:grid-cols-[1fr_1.2fr] gap-4">
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Codebook</h4>
+            <p className="text-xs text-slate-500 mt-1">Diccionario de códigos para consistencia semántica.</p>
+            <div className="mt-3 space-y-2 max-h-[460px] overflow-y-auto pr-1">
+              {analysis.codes.map((code) => (
+                <div key={code.slug} className="rounded-lg border border-slate-200 bg-white p-3">
+                  <p className="text-sm font-medium text-slate-900">{code.name}</p>
+                  <p className="text-xs text-slate-500">{code.slug} · {code.category}</p>
+                  <p className="text-xs text-slate-600 mt-1">{code.description || 'Sin descripción'}</p>
+                  <p className="text-xs text-slate-500 mt-1">{code.fragmentCount} fragmentos · {code.interviewCount} entrevistas</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Crear código</h4>
+            <p className="text-xs text-slate-500 mt-1">Permite extender el análisis sin romper trazabilidad.</p>
+            <div className="mt-3 grid gap-2">
+              <input className="border rounded p-2" value={newCode.name} onChange={(e) => setNewCode((prev) => ({ ...prev, name: e.target.value }))} placeholder="Nombre visible" />
+              <input className="border rounded p-2" value={newCode.slug} onChange={(e) => setNewCode((prev) => ({ ...prev, slug: e.target.value }))} placeholder="slug_estable (opcional)" />
+              <select className="border rounded p-2" value={newCode.category} onChange={(e) => setNewCode((prev) => ({ ...prev, category: e.target.value }))}>
+                {['tipo_problema', 'interpretacion', 'emocion', 'comportamiento', 'intento_solucion'].map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+              <textarea className="border rounded p-2" rows={3} value={newCode.description} onChange={(e) => setNewCode((prev) => ({ ...prev, description: e.target.value }))} placeholder="Descripción opcional" />
+              <Button onClick={createCode}>Agregar al codebook</Button>
+            </div>
+            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs text-slate-600">Códigos base cargados: {defaultSemanticCodebook.length}. Clusters base disponibles: {defaultSemanticClusters.length}.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'clusters' && (
+        <div className={card}>
+          <h4 className="font-semibold text-slate-900">Clusters semánticos</h4>
+          <p className="text-xs text-slate-500 mt-1">Cada cluster agrupa códigos y evidencia narrativa trazable.</p>
+          <div className="mt-3 space-y-3">
+            {analysis.clusters.map((cluster) => (
+              <div key={cluster.slug} className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="flex flex-wrap items-center gap-2 justify-between">
+                  <input
+                    className="text-base font-semibold text-slate-900 bg-transparent border-b border-transparent focus:border-slate-300 focus:outline-none"
+                    value={cluster.name}
+                    onChange={(e) => updateClusterName(cluster.slug, e.target.value)}
+                  />
+                  <Button className="bg-white border" onClick={() => setOpenCluster((prev) => (prev === cluster.slug ? null : cluster.slug))}>{openCluster === cluster.slug ? 'Cerrar' : 'Explorar'}</Button>
+                </div>
+                <p className="text-sm text-slate-600">{cluster.description}</p>
+                <p className="mt-1 text-xs text-slate-500">{cluster.interviewCount} entrevistas · {cluster.fragmentCount} fragmentos · audiencias: {cluster.audiences.join(', ') || '—'}</p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {cluster.dominantCodes.map((entry) => (
+                    <span key={entry.slug} className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">{entry.slug} ({entry.count})</span>
+                  ))}
+                </div>
+                {openCluster === cluster.slug && (
+                  <div className="mt-3 grid lg:grid-cols-2 gap-3">
+                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
+                      <p className="text-xs font-medium text-slate-700">Fragmentos relacionados</p>
+                      <div className="mt-2 space-y-2 max-h-52 overflow-y-auto pr-1">
+                        {cluster.fragments.slice(0, 20).map((fragment) => (
+                          <button
+                            key={fragment.id}
+                            type="button"
+                            onClick={() => {
+                              setActiveTab('fragments');
+                              setSelectedFragmentId(fragment.id);
+                            }}
+                            className="w-full text-left rounded border border-slate-200 bg-white p-2 text-sm hover:border-slate-300"
+                          >
+                            {fragment.text}
+                            <span className="block text-[11px] text-slate-500 mt-1">{fragment.originRef}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="rounded border border-slate-200 p-2 bg-slate-50">
+                      <p className="text-xs font-medium text-slate-700">Entrevistas fuente</p>
+                      <div className="mt-2 space-y-2">
+                        {cluster.interviews.slice(0, 12).map((interview) => (
+                          <div key={interview.id} className="rounded border border-slate-200 bg-white p-2 text-sm flex items-center justify-between gap-2">
+                            <div>
+                              <p className="text-slate-800">{interview.clientName}</p>
+                              <p className="text-xs text-slate-500">{interview.audienceName} · {formatDate(interview.date)}</p>
+                            </div>
+                            <Button className="bg-white border" onClick={() => onOpenSession?.(interview.id)}>Abrir entrevista</Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'distribution' && (
+        <div className="grid xl:grid-cols-[1.1fr_1fr] gap-4">
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Distribución de clusters</h4>
+            <div className="mt-3 space-y-2">
+              {analysis.distribution.map((item) => (
+                <div key={item.slug} className="rounded border border-slate-200 bg-white p-3">
+                  <p className="text-sm font-medium text-slate-900">{item.name}</p>
+                  <p className="text-xs text-slate-500">{item.interviews} entrevistas · {item.fragments} fragmentos</p>
+                  <p className="text-xs text-slate-500">Audiencias: {item.audiences.join(', ') || '—'}</p>
+                </div>
+              ))}
+            </div>
+            <h5 className="font-semibold text-slate-900 mt-4">Saturación semántica por audiencia</h5>
+            <div className="mt-2 space-y-2">
+              {analysis.saturationByAudience.map((entry) => (
+                <div key={entry.audienceName} className="rounded border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-sm font-medium text-slate-900">{entry.audienceName}</p>
+                  <p className="text-xs text-slate-500">{entry.interviews} entrevistas · {entry.fragments} fragmentos · señal de saturación: {entry.hasSaturationSignal ? 'Sí' : 'No'}</p>
+                  <p className="text-xs text-slate-500">Clusters repetidos: {entry.repeatedClusters.map((cluster) => `${cluster.slug} (${cluster.count})`).join(', ') || '—'}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className={card}>
+            <h4 className="font-semibold text-slate-900">Mapa semántico del mercado</h4>
+            <p className="text-xs text-slate-500 mt-1">Relación cluster ↔ código con peso por evidencia.</p>
+            <div className="mt-3 space-y-2 max-h-[300px] overflow-y-auto pr-1">
+              {analysis.semanticMap.edges.map((edge) => (
+                <div key={`${edge.from}_${edge.to}`} className="rounded border border-slate-200 bg-white p-2 text-xs text-slate-700">
+                  {edge.from.replace('cluster:', '')} → {edge.to.replace('code:', '')} · peso {edge.weight}
+                </div>
+              ))}
+            </div>
+            <h5 className="font-semibold text-slate-900 mt-4">Output analítico</h5>
+            <div className="mt-2 space-y-2 text-sm">
+              <p><b>Problemas dominantes:</b> {analysis.output.dominantProblems.map((item) => item.name).join(', ') || '—'}</p>
+              <p><b>Emociones principales:</b> {analysis.output.dominantEmotions.map((item) => item.name).join(', ') || '—'}</p>
+              <p><b>Comportamientos recurrentes:</b> {analysis.output.recurrentBehaviors.map((item) => item.name).join(', ') || '—'}</p>
+              <p><b>Narrativas del mercado:</b> {analysis.output.marketNarratives.map((item) => item.name).join(', ') || '—'}</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
