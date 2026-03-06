@@ -641,6 +641,114 @@ async function ensureCampaignCloudFolders(userId, campaignId) {
   return { campaign, roots, campaignRoot, videosFolder, hypothesesFolder, audiencesFolder };
 }
 
+function interviewSessionFolderLabel(session = {}) {
+  const interviewCode = String(session?.id || '').slice(0, 8).toUpperCase() || 'ENTREVISTA';
+  const clientName = String(session?.client_name || 'Cliente sin nombre').trim();
+  return `${interviewCode} · ${clientName}`.slice(0, 80);
+}
+
+async function ensureInterviewCloudFolders(userId, projectId, campaignId) {
+  const [campaignRows] = await pool.query(
+    `SELECT c.id, c.name, c.project_id
+     FROM campaigns c
+     JOIN projects p ON p.id = c.project_id
+     WHERE c.id = ? AND c.project_id = ? AND c.user_id = ? AND p.user_id = ?
+     LIMIT 1`,
+    [campaignId, projectId, userId, userId],
+  );
+  const campaign = campaignRows[0] || null;
+  if (!campaign) return null;
+
+  const roots = await ensureProjectCloudRoots(userId, projectId);
+  if (!roots?.projectRoot?.id) return null;
+
+  const ensureCanonicalFolder = async (canonicalKey, name, parentId, targetType = null, targetId = null) => {
+    const [found] = await pool.query(
+      'SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key = ? LIMIT 1',
+      [userId, projectId, canonicalKey],
+    );
+    const existing = found[0] || null;
+    if (existing) {
+      if (String(existing.name || '') !== String(name || '') || String(existing.parent_id || '') !== String(parentId || '')) {
+        await pool.query('UPDATE cloud_nodes SET name = ?, parent_id = ?, updated_at = ? WHERE id = ? AND user_id = ?', [name, parentId, nowIso(), existing.id, userId]);
+      }
+      return existing;
+    }
+    return createCloudNode({ userId, projectId, parentId, name, type: 'folder', canonicalKey, targetType, targetId });
+  };
+
+  const cloudRoot = await ensureCanonicalFolder(`interviews_cloud_root:${campaign.id}`, `Centro de Entrevistas · ${campaign.name || campaign.id}`, roots.projectRoot.id, 'interview_center', campaign.id);
+  const audiencesRoot = await ensureCanonicalFolder(`interviews_cloud_audiences_root:${campaign.id}`, 'Audiencias', cloudRoot.id);
+  const interviewsRoot = await ensureCanonicalFolder(`interviews_cloud_sessions_root:${campaign.id}`, 'Entrevistas', cloudRoot.id);
+  const hypothesesRoot = await ensureCanonicalFolder(`interviews_cloud_hypotheses_root:${campaign.id}`, 'Hipótesis', cloudRoot.id);
+
+  const [audiences] = await pool.query(
+    `SELECT a.id, a.name
+     FROM audiences a
+     WHERE a.user_id = ? AND a.campaign_id = ?
+     ORDER BY a.created_at ASC`,
+    [userId, campaign.id],
+  );
+
+  const audienceFoldersById = new Map();
+  for (const audience of audiences) {
+    const folder = await ensureCanonicalFolder(
+      `interviews_cloud_audience:${campaign.id}:${audience.id}`,
+      String(audience.name || 'Audiencia sin nombre').slice(0, 80),
+      audiencesRoot.id,
+      'audience',
+      audience.id,
+    );
+    audienceFoldersById.set(String(audience.id), folder);
+  }
+
+  const [sessions] = await pool.query(
+    `SELECT s.id, s.audience_id, c.name AS client_name
+     FROM interview_sessions s
+     LEFT JOIN interview_clients c ON c.id = s.client_id
+     WHERE s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
+     ORDER BY s.created_at ASC`,
+    [userId, projectId, campaign.id],
+  );
+
+  for (const session of sessions) {
+    const sessionFolder = await ensureCanonicalFolder(
+      `interviews_cloud_session:${campaign.id}:${session.id}`,
+      interviewSessionFolderLabel(session),
+      interviewsRoot.id,
+      'interview_session',
+      session.id,
+    );
+    await ensureFolder(userId, sessionFolder.id, 'Transcripción');
+    await ensureFolder(userId, sessionFolder.id, 'Audio');
+    await ensureFolder(userId, sessionFolder.id, 'Notas');
+    await ensureFolder(userId, sessionFolder.id, 'Archivos');
+
+    const audienceFolder = audienceFoldersById.get(String(session.audience_id || ''));
+    if (audienceFolder) await ensureCloudEdge(userId, audienceFolder.id, sessionFolder.id);
+  }
+
+  const [hypotheses] = await pool.query(
+    `SELECT id, title
+     FROM interview_hypotheses
+     WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+     ORDER BY created_at ASC`,
+    [userId, projectId, campaign.id],
+  );
+
+  for (const hypothesis of hypotheses) {
+    await ensureCanonicalFolder(
+      `interviews_cloud_hypothesis:${campaign.id}:${hypothesis.id}`,
+      String(hypothesis.title || `Hipótesis ${hypothesis.id}`).slice(0, 80),
+      hypothesesRoot.id,
+      'interview_hypothesis',
+      hypothesis.id,
+    );
+  }
+
+  return { cloudRoot, audiencesRoot, interviewsRoot, hypothesesRoot };
+}
+
 async function ensureHypothesisFolder(userId, campaignId, hypothesisId) {
   const [rows] = await pool.query(
     `SELECT h.id, h.hypothesis_statement, h.condition, h.type, c.project_id
@@ -944,6 +1052,8 @@ async function syncCloudForUser(userId, projectId = null) {
       for (const audience of campaignAudiences) {
         await ensureAudienceFolder(userId, campaign.id, audience.id);
       }
+
+      await ensureInterviewCloudFolders(userId, project.id, campaign.id);
     }
 
     const [videos] = await pool.query('SELECT * FROM videos WHERE user_id = ? AND project_id = ? ORDER BY created_at ASC', [userId, project.id]);
@@ -4039,6 +4149,65 @@ const server = http.createServer(async (req, res) => {
       );
       const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
       return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}), form_snapshot_json: safeParseJsonField(rows[0]?.form_snapshot_json, null) } });
+    }
+
+
+    const campaignInterviewsCloudMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/cloud$/);
+    if (campaignInterviewsCloudMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const [projectId, campaignId] = [campaignInterviewsCloudMatch[1], campaignInterviewsCloudMatch[2]];
+      const campaign = await fetchOwnedCampaignById(campaignId, user.id);
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      const folders = await ensureInterviewCloudFolders(user.id, projectId, campaignId);
+      if (!folders) return sendJson(req, res, 404, { error: 'Interview cloud unavailable' });
+
+      const [audiences] = await pool.query(
+        `SELECT a.id, a.name,
+                COUNT(DISTINCT s.id) AS interviews_count
+         FROM audiences a
+         LEFT JOIN interview_sessions s ON s.audience_id = a.id AND s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
+         WHERE a.user_id = ? AND a.campaign_id = ?
+         GROUP BY a.id, a.name
+         ORDER BY a.name COLLATE NOCASE ASC`,
+        [user.id, projectId, campaignId, user.id, campaignId],
+      );
+
+      const [interviews] = await pool.query(
+        `SELECT s.id, s.status, s.created_at, s.updated_at, s.completed_at,
+                c.name AS client_name, c.contact AS client_contact,
+                a.id AS audience_id, a.name AS audience_name,
+                n.id AS cloud_node_id
+         FROM interview_sessions s
+         LEFT JOIN interview_clients c ON c.id = s.client_id
+         LEFT JOIN audiences a ON a.id = s.audience_id
+         LEFT JOIN cloud_nodes n ON n.user_id = s.user_id AND n.project_id = s.project_id AND n.canonical_key = ('interviews_cloud_session:' || s.campaign_id || ':' || s.id)
+         WHERE s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
+         ORDER BY COALESCE(s.completed_at, s.updated_at, s.created_at) DESC`,
+        [user.id, projectId, campaignId],
+      );
+
+      const [hypotheses] = await pool.query(
+        `SELECT h.id, h.title, h.type, h.status, h.audience_id, a.name AS audience_name,
+                n.id AS cloud_node_id
+         FROM interview_hypotheses h
+         LEFT JOIN audiences a ON a.id = h.audience_id
+         LEFT JOIN cloud_nodes n ON n.user_id = h.user_id AND n.project_id = h.project_id AND n.canonical_key = ('interviews_cloud_hypothesis:' || h.campaign_id || ':' || h.id)
+         WHERE h.user_id = ? AND h.project_id = ? AND h.campaign_id = ?
+         ORDER BY h.created_at DESC`,
+        [user.id, projectId, campaignId],
+      );
+
+      sendJson(req, res, 200, {
+        data: {
+          roots: folders,
+          audiences,
+          interviews,
+          hypotheses,
+        },
+      });
+      return;
     }
 
     const interviewSessionMatch = url.pathname.match(/^\/api\/interview-sessions\/([^/]+)$/);

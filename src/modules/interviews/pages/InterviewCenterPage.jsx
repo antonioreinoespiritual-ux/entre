@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
+import { Download, FileText, FolderOpen, Headphones } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
@@ -13,6 +14,15 @@ import { getLeanProblemScore, getLeanScore, getLeanSolutionScore } from '@/modul
 
 
 const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
+
+
+const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const sessionStorageKey = 'mysql_backend_session';
+
+function token() {
+  try { return JSON.parse(localStorage.getItem(sessionStorageKey) || 'null')?.access_token || ''; } catch { return ''; }
+}
+
 
 const emptyClientProfile = {
   demographic: { age: '', gender: '', location: '', marital_status: '', education_level: '', employment_status: '', income_range: '' },
@@ -78,6 +88,7 @@ const InterviewCenterPage = () => {
   const [hypDraft, setHypDraft] = useState(blankHypothesis);
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
+  const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -315,6 +326,69 @@ const InterviewCenterPage = () => {
       setSaving(false);
     }
   };
+
+
+  const authHeader = useMemo(() => ({ Authorization: `Bearer ${token()}` }), []);
+
+  const loadInterviewCloudOverview = useCallback(async () => {
+    if (!projectId || !campaignId) return;
+    setCloudState((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const data = await interviewsModuleApi.listCloudOverview(projectId, campaignId);
+      const rootId = data?.roots?.cloudRoot?.id || '';
+      setCloudState((prev) => ({ ...prev, loading: false, error: '', overview: data, rootId, parentId: prev.parentId || rootId }));
+    } catch (error) {
+      setCloudState((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar cloud research' }));
+    }
+  }, [campaignId, projectId]);
+
+  const loadInterviewCloudFolder = useCallback(async (targetParentId) => {
+    if (!projectId || !targetParentId) return;
+    setCloudState((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const url = new URL(`${apiBaseUrl}/api/cloud/list`);
+      url.searchParams.set('projectId', projectId);
+      url.searchParams.set('parentId', targetParentId);
+      const response = await fetch(url.toString(), { headers: authHeader });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error || 'No se pudo listar carpeta');
+      setCloudState((prev) => ({ ...prev, loading: false, parentId: targetParentId, items: json.data || [], breadcrumbs: json.breadcrumbs || [] }));
+    } catch (error) {
+      setCloudState((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo listar carpeta' }));
+    }
+  }, [authHeader, projectId]);
+
+  const uploadInterviewCloudFiles = useCallback(async (event) => {
+    const files = [...(event.target.files || [])];
+    if (!files.length || !cloudState.parentId) return;
+    try {
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append('projectId', String(projectId));
+        fd.append('parentId', String(cloudState.parentId));
+        fd.append('file', file);
+        const response = await fetch(`${apiBaseUrl}/api/cloud/upload`, { method: 'POST', headers: authHeader, body: fd });
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(json?.error || 'No se pudo subir archivo');
+      }
+      event.target.value = '';
+      await loadInterviewCloudFolder(cloudState.parentId);
+      toast({ title: 'Archivo subido', description: 'Se guardó evidencia en el cloud de entrevistas.' });
+    } catch (error) {
+      toast({ title: 'Error subiendo archivo', description: error.message, variant: 'destructive' });
+    }
+  }, [authHeader, cloudState.parentId, loadInterviewCloudFolder, projectId, toast]);
+
+  useEffect(() => {
+    if (tab !== 'cloud') return;
+    loadInterviewCloudOverview();
+  }, [loadInterviewCloudOverview, tab]);
+
+  useEffect(() => {
+    if (tab !== 'cloud') return;
+    if (!cloudState.parentId) return;
+    loadInterviewCloudFolder(cloudState.parentId);
+  }, [cloudState.parentId, loadInterviewCloudFolder, tab]);
 
   return (
     <>
@@ -606,6 +680,61 @@ const InterviewCenterPage = () => {
               </div>
             )}
           </div>
+        )}
+
+
+        {!center.loading && !center.error && tab === 'cloud' && (
+          <section className="space-y-4">
+            <div className="rounded-2xl border bg-white p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Cloud de investigación cualitativa</h3>
+                <p className="text-sm text-slate-600">Espacio documental independiente para audiencias, entrevistas, hipótesis y evidencia primaria.</p>
+              </div>
+              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border bg-indigo-600 text-white cursor-pointer text-sm">
+                Subir archivo
+                <input type="file" multiple className="hidden" onChange={uploadInterviewCloudFiles} />
+              </label>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border bg-white p-3">
+                <p className="text-xs text-slate-500">Audiencias</p>
+                <p className="text-xl font-semibold">{cloudState.overview?.audiences?.length || 0}</p>
+              </div>
+              <div className="rounded-xl border bg-white p-3">
+                <p className="text-xs text-slate-500">Entrevistas</p>
+                <p className="text-xl font-semibold">{cloudState.overview?.interviews?.length || 0}</p>
+              </div>
+              <div className="rounded-xl border bg-white p-3">
+                <p className="text-xs text-slate-500">Hipótesis de entrevistas</p>
+                <p className="text-xl font-semibold">{cloudState.overview?.hypotheses?.length || 0}</p>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border bg-white p-4 space-y-3">
+              <div className="flex flex-wrap gap-2 text-sm text-slate-600">
+                {(cloudState.breadcrumbs || []).map((crumb, idx) => (
+                  <button key={crumb.id} className="hover:underline" onClick={() => loadInterviewCloudFolder(crumb.id)}>
+                    {idx ? ' / ' : ''}{crumb.name}
+                  </button>
+                ))}
+              </div>
+              {cloudState.error ? <p className="text-sm text-red-600">{cloudState.error}</p> : null}
+              {cloudState.loading ? <p className="text-sm text-slate-500">Cargando cloud...</p> : null}
+              <div className="space-y-2">
+                {(cloudState.items || []).map((item) => (
+                  <div key={item.id} className="flex items-center justify-between rounded-lg border p-3">
+                    <button className="flex items-center gap-2 text-left" onClick={() => loadInterviewCloudFolder(item.targetId || item.id)}>
+                      {item.kind === 'folder' || item.kind === 'shortcut' ? <FolderOpen className="h-4 w-4 text-indigo-600" /> : <FileText className="h-4 w-4 text-slate-500" />}
+                      <span className="font-medium text-slate-800">{item.name}</span>
+                      {String(item.name || '').toLowerCase().includes('audio') ? <Headphones className="h-4 w-4 text-emerald-600" /> : null}
+                    </button>
+                    {item.kind === 'file' ? <a className="text-slate-500 hover:text-slate-900" href={`${apiBaseUrl}/api/cloud/download?nodeId=${encodeURIComponent(item.id)}`} target="_blank" rel="noreferrer"><Download className="h-4 w-4" /></a> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
         )}
 
         {!center.loading && !center.error && tab === 'semantic' && (
