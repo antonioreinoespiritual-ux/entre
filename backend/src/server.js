@@ -3549,15 +3549,32 @@ const server = http.createServer(async (req, res) => {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const documentNodeId = String(url.searchParams.get('documentNodeId') || '').trim();
-      if (!documentNodeId) return sendJson(req, res, 400, { error: 'documentNodeId is required' });
-      const [rows] = await pool.query(
-        `SELECT * FROM interview_semantic_fragments
-         WHERE user_id = ? AND document_node_id = ?
-         ORDER BY created_at DESC`,
-        [user.id, documentNodeId],
-      );
-      sendJson(req, res, 200, { data: rows });
-      return;
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+
+      if (documentNodeId) {
+        const [rows] = await pool.query(
+          `SELECT * FROM interview_semantic_fragments
+           WHERE user_id = ? AND document_node_id = ?
+           ORDER BY created_at DESC`,
+          [user.id, documentNodeId],
+        );
+        sendJson(req, res, 200, { data: rows });
+        return;
+      }
+
+      if (projectId && campaignId) {
+        const [rows] = await pool.query(
+          `SELECT * FROM interview_semantic_fragments
+           WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+           ORDER BY created_at DESC`,
+          [user.id, projectId, campaignId],
+        );
+        sendJson(req, res, 200, { data: rows });
+        return;
+      }
+
+      return sendJson(req, res, 400, { error: 'documentNodeId o (projectId y campaignId) son obligatorios' });
     }
 
     if (url.pathname === '/api/interviews/fragments' && req.method === 'POST') {

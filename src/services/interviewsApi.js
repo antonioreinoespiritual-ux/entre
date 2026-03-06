@@ -54,6 +54,7 @@ export const interviewsApi = {
 
   readInterviewCloudDocument: (nodeId) => request(`/api/interviews/cloud/document?nodeId=${encodeURIComponent(nodeId)}`).then((r) => r.data || null),
   listInterviewDocumentFragments: (documentNodeId) => request(`/api/interviews/fragments?documentNodeId=${encodeURIComponent(documentNodeId)}`).then((r) => r.data || []),
+  listInterviewProjectFragments: (projectId, campaignId) => request(`/api/interviews/fragments?projectId=${encodeURIComponent(projectId)}&campaignId=${encodeURIComponent(campaignId)}`).then((r) => r.data || []),
   createInterviewDocumentFragment: (payload) => request('/api/interviews/fragments', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || null),
 
 };

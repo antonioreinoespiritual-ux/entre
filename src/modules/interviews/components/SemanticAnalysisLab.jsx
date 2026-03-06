@@ -26,7 +26,7 @@ const formatDate = (value) => {
 
 const emptyNewCode = { name: '', slug: '', category: 'interpretacion', description: '' };
 
-export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], onOpenSession }) => {
+export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], persistedFragments = [], onOpenSession }) => {
   const [filters, setFilters] = useState(defaultFilters);
   const [activeTab, setActiveTab] = useState('interviews');
   const [openInterviewId, setOpenInterviewId] = useState(null);
@@ -86,6 +86,27 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     [sessions, filters],
   );
 
+  const persistedManualFragments = useMemo(() => (persistedFragments || []).map((fragment, index) => ({
+    id: String(fragment.id),
+    interview_id: fragment.interview_session_id || fragment.interview_id || null,
+    text: String(fragment.selected_text || fragment.text || '').trim(),
+    position: Number(fragment.start_offset ?? index + 1) || (index + 1),
+    originRef: fragment.document_node_id ? `cloud:${fragment.document_node_id}` : `cloud#${index + 1}`,
+    sourceType: fragment.source_type || 'manual',
+  })).filter((fragment) => fragment.text), [persistedFragments]);
+
+  const mergedManualFragments = useMemo(() => {
+    const seen = new Set();
+    const merged = [];
+    [...persistedManualFragments, ...(workspace.manualFragments || [])].forEach((fragment) => {
+      const id = String(fragment.id || '');
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      merged.push(fragment);
+    });
+    return merged;
+  }, [persistedManualFragments, workspace.manualFragments]);
+
   const audiencesById = useMemo(() => Object.fromEntries(audiences.map((audience) => [String(audience.id), audience])), [audiences]);
   const formsById = useMemo(() => Object.fromEntries(forms.map((form) => [String(form.id), form])), [forms]);
   const clientsById = useMemo(() => Object.fromEntries(clients.map((client) => [String(client.id), client])), [clients]);
@@ -96,7 +117,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       audiencesById,
       formsById,
       clientsById,
-      manualFragments: workspace.manualFragments,
+      manualFragments: mergedManualFragments,
       customCodebook: workspace.customCodebook,
       codeAssignments: workspace.codeAssignments,
       clusterNameOverrides: workspace.clusterNameOverrides,

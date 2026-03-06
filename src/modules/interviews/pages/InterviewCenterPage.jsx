@@ -90,6 +90,7 @@ const InterviewCenterPage = () => {
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
   const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', fragments: [] });
+  const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -390,6 +391,16 @@ const InterviewCenterPage = () => {
     }
   }, []);
 
+  const loadSemanticCloudFragments = useCallback(async () => {
+    if (!projectId || !campaignId) return;
+    try {
+      const fragments = await interviewsModuleApi.listProjectFragments(projectId, campaignId);
+      setSemanticCloudFragments(fragments || []);
+    } catch {
+      setSemanticCloudFragments([]);
+    }
+  }, [campaignId, projectId]);
+
   const openDocumentReader = useCallback(async (item) => {
     setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null }));
     try {
@@ -425,11 +436,12 @@ const InterviewCenterPage = () => {
       await interviewsModuleApi.createDocumentFragment(payload);
       setDocReader((prev) => ({ ...prev, selectionText: '', selectionRange: null }));
       await loadDocumentFragments(docReader.document.node_id);
+      await loadSemanticCloudFragments();
       toast({ title: 'Fragmento creado', description: 'Se guardó desde selección con trazabilidad.' });
     } catch (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
-  }, [docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, toast]);
+  }, [docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
   const createManualFragment = useCallback(async () => {
     if (!docReader.document?.node_id || !docReader.manualText.trim()) return;
@@ -442,11 +454,12 @@ const InterviewCenterPage = () => {
       });
       setDocReader((prev) => ({ ...prev, manualText: '' }));
       await loadDocumentFragments(docReader.document.node_id);
+      await loadSemanticCloudFragments();
       toast({ title: 'Fragmento manual creado' });
     } catch (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
-  }, [docReader.document, docReader.manualText, loadDocumentFragments, toast]);
+  }, [docReader.document, docReader.manualText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
   useEffect(() => {
     if (tab !== 'cloud') return;
@@ -458,6 +471,11 @@ const InterviewCenterPage = () => {
     if (!cloudState.parentId) return;
     loadInterviewCloudFolder(cloudState.parentId);
   }, [cloudState.parentId, loadInterviewCloudFolder, tab]);
+
+  useEffect(() => {
+    if (tab !== 'semantic') return;
+    loadSemanticCloudFragments();
+  }, [loadSemanticCloudFragments, tab]);
 
   return (
     <>
@@ -879,6 +897,7 @@ const InterviewCenterPage = () => {
             audiences={center.audiences}
             forms={center.forms}
             clients={center.clients}
+            persistedFragments={semanticCloudFragments}
             onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
           />
         )}
