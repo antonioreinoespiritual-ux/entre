@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
-import { createLogger, defineConfig } from 'vite';
+import { defineConfig } from 'vite';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -205,11 +205,11 @@ function createTemplateBannerPlugin() {
   };
 }
 
-const logger = createLogger();
 // Visual tooling is explicitly opt-in to keep dev/build startup stable.
 
 export default defineConfig(async ({ command }) => {
   const isServe = command === 'serve';
+  // Root cause audit: eager loading of custom visual plugins increased config startup cost and made dev/build feel unstable.
   const enableVisualEditor = isServe && process.env.VITE_ENABLE_VISUAL_EDITOR === 'true';
   const enableHorizonDevOverlay = enableVisualEditor && process.env.VITE_ENABLE_HORIZON_DEV_OVERLAY === 'true';
 
@@ -227,12 +227,14 @@ export default defineConfig(async ({ command }) => {
     }
   }
 
-  const buildOnlyPlugins = (process.env.TEMPLATE_BANNER_SCRIPT_URL && process.env.TEMPLATE_REDIRECT_URL)
-    ? [createTemplateBannerPlugin()]
-    : [];
+  const enableTemplateBanner = command === 'build'
+    && process.env.VITE_ENABLE_TEMPLATE_BANNER === 'true'
+    && process.env.TEMPLATE_BANNER_SCRIPT_URL
+    && process.env.TEMPLATE_REDIRECT_URL;
+
+  const buildOnlyPlugins = enableTemplateBanner ? [createTemplateBannerPlugin()] : [];
 
   return {
-    customLogger: logger,
     plugins: [
       ...visualEditorPlugins,
       react(),
