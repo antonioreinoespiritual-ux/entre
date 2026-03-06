@@ -3,3 +3,5 @@ dist/
 .env
 vite.config.js.timestamp-*
 *.timestamp-*.mjs
+node_modules/.vite
+dist

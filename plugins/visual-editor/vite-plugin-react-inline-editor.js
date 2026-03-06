@@ -89,6 +89,7 @@ function validateImageSrc(openingNode) {
 export default function inlineEditPlugin() {
 	return {
 		name: 'vite-inline-edit-plugin',
+		apply: 'serve',
 		enforce: 'pre',
 
 		transform(code, id) {
