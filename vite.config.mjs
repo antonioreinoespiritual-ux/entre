@@ -206,19 +206,12 @@ function createTemplateBannerPlugin() {
 }
 
 const logger = createLogger();
-const loggerError = logger.error;
-
-logger.error = (msg, options) => {
-  if (options?.error?.toString().includes('CssSyntaxError: [postcss]')) {
-    return;
-  }
-
-  loggerError(msg, options);
-};
+// Visual tooling is explicitly opt-in to keep dev/build startup stable.
 
 export default defineConfig(async ({ command }) => {
   const isServe = command === 'serve';
   const enableVisualEditor = isServe && process.env.VITE_ENABLE_VISUAL_EDITOR === 'true';
+  const enableHorizonDevOverlay = enableVisualEditor && process.env.VITE_ENABLE_HORIZON_DEV_OVERLAY === 'true';
 
   const visualEditorPlugins = [];
   if (enableVisualEditor) {
@@ -228,15 +221,22 @@ export default defineConfig(async ({ command }) => {
       import('./plugins/vite-plugin-iframe-route-restoration.js'),
       import('./plugins/selection-mode/vite-plugin-selection-mode.js'),
     ]);
-    visualEditorPlugins.push(inlineEditPlugin(), editModeDevPlugin(), iframeRouteRestorationPlugin(), selectionModePlugin(), createHorizonDevOverlayPlugin());
+    visualEditorPlugins.push(inlineEditPlugin(), editModeDevPlugin(), iframeRouteRestorationPlugin(), selectionModePlugin());
+    if (enableHorizonDevOverlay) {
+      visualEditorPlugins.push(createHorizonDevOverlayPlugin());
+    }
   }
+
+  const buildOnlyPlugins = (process.env.TEMPLATE_BANNER_SCRIPT_URL && process.env.TEMPLATE_REDIRECT_URL)
+    ? [createTemplateBannerPlugin()]
+    : [];
 
   return {
     customLogger: logger,
     plugins: [
       ...visualEditorPlugins,
       react(),
-      createTemplateBannerPlugin(),
+      ...buildOnlyPlugins,
     ],
     cacheDir: 'node_modules/.vite',
     server: {
