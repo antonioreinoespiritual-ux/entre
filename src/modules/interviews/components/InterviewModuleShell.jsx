@@ -9,6 +9,7 @@ export const InterviewModuleShell = ({ projectId, campaignId, activeTab, onTabCh
     ['forms', 'Formularios'],
     ['hypotheses', 'Hipótesis'],
     ['sessions', 'Entrevistas'],
+    ['semantic', 'Análisis semántico'],
   ];
 
   return (

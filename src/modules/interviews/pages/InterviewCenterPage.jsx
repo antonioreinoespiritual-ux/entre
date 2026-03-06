@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 import { FormBuilder, createEmptyFormDraft } from '@/modules/interviews/components/FormBuilder';
 import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner';
+import { SemanticAnalysisLab } from '@/modules/interviews/components/SemanticAnalysisLab';
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
 import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewCenterData';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
@@ -605,6 +606,16 @@ const InterviewCenterPage = () => {
               </div>
             )}
           </div>
+        )}
+
+        {!center.loading && !center.error && tab === 'semantic' && (
+          <SemanticAnalysisLab
+            sessions={center.sessions}
+            audiences={center.audiences}
+            forms={center.forms}
+            clients={center.clients}
+            onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
+          />
         )}
       </InterviewModuleShell>
 
