@@ -36,6 +36,7 @@ export const Toolbar = ({
 }) => {
   const [hoverExpanded, setHoverExpanded] = useState(false);
   const isExpanded = useMemo(() => !collapsed || hoverExpanded, [collapsed, hoverExpanded]);
+  const tabContentClassName = 'px-2 py-1.5 data-[state=inactive]:hidden';
 
   return (
     <Tabs.Root
@@ -72,7 +73,7 @@ export const Toolbar = ({
         transition={{ duration: 0.18, ease: 'easeOut' }}
         style={{ overflow: 'hidden' }}
       >
-        <Tabs.Content value="archivo" className="px-2 py-1.5" forceMount hidden={!isExpanded}>
+        <Tabs.Content value="archivo" className={tabContentClassName} forceMount hidden={!isExpanded}>
           <div className="flex flex-nowrap items-center overflow-x-auto">
             <ToolbarGroup>
               <ToolbarButton icon={FolderOpen} tooltip="Volver al cloud" onClick={onBackToCloud} />
@@ -81,7 +82,7 @@ export const Toolbar = ({
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="fragmentos" className="px-2 py-1.5" forceMount hidden={!isExpanded}>
+        <Tabs.Content value="fragmentos" className={tabContentClassName} forceMount hidden={!isExpanded}>
           <div className="flex flex-nowrap items-center overflow-x-auto">
             <ToolbarGroup>
               <ToolbarButton icon={Scissors} tooltip="Crear fragmento" onClick={onCreateFragment} disabled={!canCreateFragment} />
@@ -91,7 +92,7 @@ export const Toolbar = ({
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="codigos" className="px-2 py-1.5" forceMount hidden={!isExpanded}>
+        <Tabs.Content value="codigos" className={tabContentClassName} forceMount hidden={!isExpanded}>
           <div className="flex flex-nowrap items-center overflow-x-auto">
             <ToolbarGroup>
               <ToolbarButton icon={Tags} tooltip="Ver códigos" onClick={onViewCodes} />
@@ -100,7 +101,7 @@ export const Toolbar = ({
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="clusters" className="px-2 py-1.5" forceMount hidden={!isExpanded}>
+        <Tabs.Content value="clusters" className={tabContentClassName} forceMount hidden={!isExpanded}>
           <div className="flex flex-nowrap items-center overflow-x-auto">
             <ToolbarGroup>
               <ToolbarButton icon={Blocks} tooltip="Ver clusters" onClick={onViewClusters} />
@@ -108,7 +109,7 @@ export const Toolbar = ({
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="notas" className="px-2 py-1.5" forceMount hidden={!isExpanded}>
+        <Tabs.Content value="notas" className={tabContentClassName} forceMount hidden={!isExpanded}>
           <div className="flex flex-nowrap items-center overflow-x-auto">
             <ToolbarGroup>
               <ToolbarButton icon={StickyNote} tooltip="Crear memo" onClick={onCreateMemo} />
@@ -116,7 +117,7 @@ export const Toolbar = ({
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="vista" className="px-2 py-1.5" forceMount hidden={!isExpanded}>
+        <Tabs.Content value="vista" className={tabContentClassName} forceMount hidden={!isExpanded}>
           <div className="flex flex-nowrap items-center overflow-x-auto">
             <ToolbarGroup>
               <ToolbarButton icon={BookOpenText} tooltip={`Cambiar vista (${viewLabel})`} onClick={onToggleView} />
@@ -124,7 +125,7 @@ export const Toolbar = ({
           </div>
         </Tabs.Content>
 
-        <Tabs.Content value="analisis" className="px-2 py-1.5" forceMount hidden={!isExpanded}>
+        <Tabs.Content value="analisis" className={tabContentClassName} forceMount hidden={!isExpanded}>
           <div className="flex flex-nowrap items-center overflow-x-auto">
             <ToolbarGroup>
               <ToolbarButton icon={Brain} tooltip="Técnicas de análisis" onClick={onActivateAnalysis} />
