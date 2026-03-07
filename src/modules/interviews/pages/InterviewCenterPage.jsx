@@ -119,8 +119,8 @@ const InterviewCenterPage = () => {
   const autosaveSeqRef = useRef(0);
   const lastSavedRef = useRef('');
   const clientNotesTimerRef = useRef(null);
-  const fragmentsPanelRef = useRef(null);
-  const panelFragmentRefs = useRef({});
+  const fragmentsRailRef = useRef(null);
+  const railFragmentRefs = useRef({});
   const documentFragmentRefs = useRef({});
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
@@ -635,19 +635,19 @@ const InterviewCenterPage = () => {
     if (activeFragmentId && !fragmentIds.has(String(activeFragmentId))) setActiveFragmentId(null);
   }, [activeFragmentId, docReader.fragments]);
 
-  const focusFragment = useCallback((fragmentId, origin = 'panel') => {
+  const focusFragment = useCallback((fragmentId, origin = 'rail') => {
     const normalizedId = String(fragmentId);
     setActiveFragmentId(normalizedId);
     setHighlightFragmentId(normalizedId);
 
-    if (origin === 'panel') {
+    if (origin === 'rail') {
       const docNode = documentFragmentRefs.current[normalizedId];
       docNode?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     if (origin === 'document') {
-      const panelNode = panelFragmentRefs.current[normalizedId];
-      panelNode?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      const railNode = railFragmentRefs.current[normalizedId];
+      railNode?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, []);
 
@@ -1058,7 +1058,7 @@ const InterviewCenterPage = () => {
                     }}
                     onCreateFragment={createSelectionFragment}
                     onCreateManualFragment={() => setManualFragmentModalOpen(true)}
-                    onViewFragments={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                    onViewFragments={() => fragmentsRailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
                     onViewCodes={() => announcePendingTool('Ver códigos')}
                     onLinkCode={() => announcePendingTool('Vincular código')}
                     onViewClusters={() => announcePendingTool('Ver clusters')}
@@ -1075,7 +1075,7 @@ const InterviewCenterPage = () => {
                   {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
                   {docReader.document ? (
                     <>
-                      <div className="mx-auto grid w-full max-w-6xl gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+                      <div className="mx-auto grid w-full max-w-6xl gap-3 xl:grid-cols-[minmax(0,1fr)_188px]">
                         <div>
                           <div
                             className={`min-h-[320px] rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
@@ -1100,7 +1100,7 @@ const InterviewCenterPage = () => {
                                   <button
                                     type="button"
                                     className={`mr-1 inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}
-                                    title="Ir al fragmento en panel"
+                                    title="Ir a cita enlazada"
                                     onClick={() => focusFragment(fragmentId, 'document')}
                                   >
                                     ¶
@@ -1124,9 +1124,7 @@ const InterviewCenterPage = () => {
                           </div>
                         </div>
 
-                        <aside ref={fragmentsPanelRef} className="rounded-xl border border-slate-200 bg-white p-2">
-                          <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fragmentos enlazados</p>
-                          <div className="relative min-h-[320px]">
+                        <div ref={fragmentsRailRef} className="relative min-h-[320px]">
                             {fragmentRailCards.map((card) => {
                               const fragmentId = card.id;
                               const fragment = card.fragment;
@@ -1137,24 +1135,23 @@ const InterviewCenterPage = () => {
                                   key={fragment.id}
                                   type="button"
                                   ref={(node) => {
-                                    if (node) panelFragmentRefs.current[fragmentId] = node;
-                                    else delete panelFragmentRefs.current[fragmentId];
+                                    if (node) railFragmentRefs.current[fragmentId] = node;
+                                    else delete railFragmentRefs.current[fragmentId];
                                   }}
-                                  onClick={() => focusFragment(fragmentId, 'panel')}
+                                  onClick={() => focusFragment(fragmentId, 'rail')}
                                   style={{ top: `${card.topPercent}%` }}
-                                  className={`absolute left-0 right-0 rounded-lg border px-2 py-1.5 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                                  className={`absolute right-0 w-[178px] rounded-md border px-1.5 py-1 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white/95 hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
                                 >
-                                  <div className="mb-0.5 flex items-center gap-1.5">
-                                    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
-                                    <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Fragmento</span>
+                                  <div className="mb-0.5 flex items-center gap-1">
+                                    <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded text-[9px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
+                                    <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">Cita</span>
                                   </div>
-                                  <p className="text-[11px] leading-4 text-slate-700">{card.shortPreview}</p>
+                                  <p className="line-clamp-2 text-[10px] leading-3.5 text-slate-700">{card.shortPreview}</p>
                                 </button>
                               );
                             })}
-                            {!docReader.fragments?.length ? <p className="px-1 text-sm text-slate-500">Aún no hay fragmentos para este documento.</p> : null}
-                          </div>
-                        </aside>
+                            {!docReader.fragments?.length ? <p className="px-1 text-xs text-slate-500">Sin citas enlazadas.</p> : null}
+                        </div>
                       </div>
 
                       {docSelectionMenu.open && docReader.selectionText ? (
