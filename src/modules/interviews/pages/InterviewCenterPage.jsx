@@ -91,6 +91,8 @@ const InterviewCenterPage = () => {
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
   const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', fragments: [] });
+  const [activeFragmentId, setActiveFragmentId] = useState(null);
+  const [highlightFragmentId, setHighlightFragmentId] = useState(null);
   const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
   const [docSelectionMenu, setDocSelectionMenu] = useState({ open: false, x: 0, y: 0 });
   const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
@@ -118,6 +120,8 @@ const InterviewCenterPage = () => {
   const lastSavedRef = useRef('');
   const clientNotesTimerRef = useRef(null);
   const fragmentsPanelRef = useRef(null);
+  const panelFragmentRefs = useRef({});
+  const documentFragmentRefs = useRef({});
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
 
@@ -231,7 +235,79 @@ const InterviewCenterPage = () => {
     return true;
   }), [center.sessions, sessionFilter]);
 
+  const mappedDocumentFragments = useMemo(() => {
+    const source = String(docReader.document?.text || '');
+    const usedRanges = [];
 
+    const intersects = (start, end) => usedRanges.some((range) => start < range.end && end > range.start);
+
+    return (docReader.fragments || []).map((fragment) => {
+      const fragmentText = String(fragment.selected_text || '').trim();
+      const rawStart = Number(fragment.start_offset);
+      const rawEnd = Number(fragment.end_offset);
+      let start = Number.isFinite(rawStart) ? rawStart : null;
+      let end = Number.isFinite(rawEnd) ? rawEnd : null;
+
+      const hasValidOffsets = start != null && end != null && start >= 0 && end > start && end <= source.length;
+
+      if (!hasValidOffsets && fragmentText) {
+        const candidates = [];
+        let searchFrom = 0;
+        while (searchFrom < source.length) {
+          const foundAt = source.indexOf(fragmentText, searchFrom);
+          if (foundAt === -1) break;
+          candidates.push({ start: foundAt, end: foundAt + fragmentText.length });
+          searchFrom = foundAt + Math.max(fragmentText.length, 1);
+        }
+
+        const freeCandidate = candidates.find((candidate) => !intersects(candidate.start, candidate.end));
+        if (freeCandidate) {
+          start = freeCandidate.start;
+          end = freeCandidate.end;
+        }
+      }
+
+      const hasRange = start != null && end != null && start >= 0 && end > start && end <= source.length;
+      if (hasRange) usedRanges.push({ start, end });
+
+      return {
+        ...fragment,
+        mappedStart: hasRange ? start : null,
+        mappedEnd: hasRange ? end : null,
+        hasRange,
+      };
+    });
+  }, [docReader.document?.text, docReader.fragments]);
+
+  const documentFragmentsSegments = useMemo(() => {
+    const source = String(docReader.document?.text || '');
+    if (!source) return [];
+
+    const ranged = mappedDocumentFragments
+      .filter((fragment) => fragment.hasRange)
+      .sort((a, b) => a.mappedStart - b.mappedStart);
+
+    if (!ranged.length) return [{ type: 'text', value: source }];
+
+    let cursor = 0;
+    const segments = [];
+
+    ranged.forEach((fragment) => {
+      if (fragment.mappedStart > cursor) {
+        segments.push({ type: 'text', value: source.slice(cursor, fragment.mappedStart) });
+      }
+      segments.push({
+        type: 'fragment',
+        id: String(fragment.id),
+        value: source.slice(fragment.mappedStart, fragment.mappedEnd),
+        fragment,
+      });
+      cursor = Math.max(cursor, fragment.mappedEnd);
+    });
+
+    if (cursor < source.length) segments.push({ type: 'text', value: source.slice(cursor) });
+    return segments;
+  }, [docReader.document?.text, mappedDocumentFragments]);
 
   const clientRows = useMemo(() => center.clients.map((client) => {
     const interviews = center.sessions.filter((session) => String(session.client_id) === String(client.id));
@@ -421,6 +497,8 @@ const InterviewCenterPage = () => {
   const openDocumentReader = useCallback(async (item) => {
     setDocSelectionMenu((prev) => ({ ...prev, open: false }));
     setManualFragmentModalOpen(false);
+    setActiveFragmentId(null);
+    setHighlightFragmentId(null);
     setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null }));
     try {
       const document = await interviewsModuleApi.readCloudDocument(item.id);
@@ -522,6 +600,33 @@ const InterviewCenterPage = () => {
     if (tab !== 'semantic') return;
     loadSemanticCloudFragments();
   }, [loadSemanticCloudFragments, tab]);
+
+  useEffect(() => {
+    if (!highlightFragmentId) return undefined;
+    const timer = setTimeout(() => setHighlightFragmentId(null), 1800);
+    return () => clearTimeout(timer);
+  }, [highlightFragmentId]);
+
+  useEffect(() => {
+    const fragmentIds = new Set((docReader.fragments || []).map((fragment) => String(fragment.id)));
+    if (activeFragmentId && !fragmentIds.has(String(activeFragmentId))) setActiveFragmentId(null);
+  }, [activeFragmentId, docReader.fragments]);
+
+  const focusFragment = useCallback((fragmentId, origin = 'panel') => {
+    const normalizedId = String(fragmentId);
+    setActiveFragmentId(normalizedId);
+    setHighlightFragmentId(normalizedId);
+
+    if (origin === 'panel') {
+      const docNode = documentFragmentRefs.current[normalizedId];
+      docNode?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    if (origin === 'document') {
+      const panelNode = panelFragmentRefs.current[normalizedId];
+      panelNode?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, []);
 
   const announcePendingTool = useCallback((label) => {
     toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
@@ -952,7 +1057,35 @@ const InterviewCenterPage = () => {
                         onMouseUp={captureSelection}
                         onContextMenu={openSelectionMenu}
                       >
-                        {docReader.document.text || 'No se pudo renderizar texto de este documento.'}
+                        {documentFragmentsSegments.length ? documentFragmentsSegments.map((segment, index) => {
+                          if (segment.type === 'text') return <React.Fragment key={`seg-text-${index}`}>{segment.value}</React.Fragment>;
+
+                          const fragmentId = String(segment.id);
+                          const isActive = activeFragmentId === fragmentId;
+                          const isHighlighted = highlightFragmentId === fragmentId;
+                          return (
+                            <span
+                              key={`seg-fragment-${fragmentId}-${index}`}
+                              ref={(node) => {
+                                if (node) documentFragmentRefs.current[fragmentId] = node;
+                                else delete documentFragmentRefs.current[fragmentId];
+                              }}
+                              className={`group mx-0.5 inline rounded-md border px-1 py-0.5 align-baseline transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-cyan-200 bg-cyan-50/70'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                            >
+                              <button
+                                type="button"
+                                className={`mr-1 inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}
+                                title="Ir al fragmento en panel"
+                                onClick={() => focusFragment(fragmentId, 'document')}
+                              >
+                                ¶
+                              </button>
+                              <span className="cursor-pointer" onClick={() => focusFragment(fragmentId, 'document')}>
+                                {segment.value}
+                              </span>
+                            </span>
+                          );
+                        }) : (docReader.document.text || 'No se pudo renderizar texto de este documento.')}
                       </div>
                       <div className="mt-3 rounded-lg border bg-white p-3">
                         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
@@ -998,12 +1131,30 @@ const InterviewCenterPage = () => {
                   </div>
 
                   <div className="space-y-2 max-h-[420px] overflow-auto pr-1">
-                    {(docReader.fragments || []).map((fragment) => (
-                      <div key={fragment.id} className="rounded-lg border p-3">
-                        <p className="text-sm text-slate-800">{fragment.selected_text}</p>
-                        <p className="mt-1 text-[11px] text-slate-500">{fragment.source_type} · {new Date(fragment.created_at).toLocaleString()} {fragment.start_offset != null ? `· ${fragment.start_offset}-${fragment.end_offset}` : ''}</p>
-                      </div>
-                    ))}
+                    {mappedDocumentFragments.map((fragment) => {
+                      const fragmentId = String(fragment.id);
+                      const isActive = activeFragmentId === fragmentId;
+                      const isHighlighted = highlightFragmentId === fragmentId;
+                      return (
+                        <button
+                          key={fragment.id}
+                          type="button"
+                          ref={(node) => {
+                            if (node) panelFragmentRefs.current[fragmentId] = node;
+                            else delete panelFragmentRefs.current[fragmentId];
+                          }}
+                          onClick={() => focusFragment(fragmentId, 'panel')}
+                          className={`w-full rounded-lg border p-3 text-left transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                        >
+                          <div className="mb-1 flex items-center gap-2">
+                            <span className={`inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
+                            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fragmento enlazado</span>
+                          </div>
+                          <p className="text-sm text-slate-800">{fragment.selected_text}</p>
+                          <p className="mt-1 text-[11px] text-slate-500">{fragment.source_type} · {new Date(fragment.created_at).toLocaleString()} {fragment.start_offset != null ? `· ${fragment.start_offset}-${fragment.end_offset}` : ''}</p>
+                        </button>
+                      );
+                    })}
                     {!docReader.fragments?.length ? <p className="text-sm text-slate-500">Aún no hay fragmentos para este documento.</p> : null}
                   </div>
                 </div>
