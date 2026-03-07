@@ -19,6 +19,7 @@ const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
 
 const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
+const semanticWorkspaceStorageKey = 'interviews.semantic.lab.workspace.v1';
 
 function token() {
   try { return JSON.parse(localStorage.getItem(sessionStorageKey) || 'null')?.access_token || ''; } catch { return ''; }
@@ -74,6 +75,16 @@ const getClientScoreTone = (score, type = 'problem') => {
 
 const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
 const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
+const defaultFragmentEvolutionCodeOptions = [
+  { slug: 'problema_intenso', label: 'Problema intenso' },
+  { slug: 'problema_frecuente', label: 'Problema frecuente' },
+  { slug: 'frustracion', label: 'Frustración' },
+  { slug: 'miedo_perdida', label: 'Miedo a perder' },
+  { slug: 'busqueda_activa', label: 'Búsqueda activa de solución' },
+  { slug: 'barrera_precio', label: 'Barrera de precio' },
+  { slug: 'urgencia_accion', label: 'Urgencia de acción' },
+];
+
 
 const InterviewCenterPage = () => {
   const { projectId, campaignId, nodeId } = useParams();
@@ -90,7 +101,7 @@ const InterviewCenterPage = () => {
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
-  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', fragments: [] });
+  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', manualTitle: '', manualInterviewId: '', fragments: [] });
   const [activeFragmentId, setActiveFragmentId] = useState(null);
   const [highlightFragmentId, setHighlightFragmentId] = useState(null);
   const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
@@ -98,6 +109,12 @@ const InterviewCenterPage = () => {
   const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const [fragmentRailPositions, setFragmentRailPositions] = useState({});
+  const [documentRailHeight, setDocumentRailHeight] = useState(320);
+  const [fragmentDetailModalOpen, setFragmentDetailModalOpen] = useState(false);
+  const [fragmentDetailDraft, setFragmentDetailDraft] = useState({ id: null, title: '', description: '', linkedCode: '', interviewId: '', evolvedToCode: false });
+  const [fragmentDetailsById, setFragmentDetailsById] = useState({});
+  const [fragmentEvolutionCodeOptions, setFragmentEvolutionCodeOptions] = useState(defaultFragmentEvolutionCodeOptions);
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -119,9 +136,17 @@ const InterviewCenterPage = () => {
   const autosaveSeqRef = useRef(0);
   const lastSavedRef = useRef('');
   const clientNotesTimerRef = useRef(null);
+  const documentReaderRef = useRef(null);
   const fragmentsRailRef = useRef(null);
   const railFragmentRefs = useRef({});
   const documentFragmentRefs = useRef({});
+
+  const hasPositionChanges = useCallback((current, next) => {
+    const currentKeys = Object.keys(current);
+    const nextKeys = Object.keys(next);
+    if (currentKeys.length !== nextKeys.length) return true;
+    return nextKeys.some((key) => Math.abs((current[key] || 0) - (next[key] || 0)) > 1);
+  }, []);
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
 
@@ -279,6 +304,72 @@ const InterviewCenterPage = () => {
     });
   }, [docReader.document?.text, docReader.fragments]);
 
+  useEffect(() => {
+    if (!mappedDocumentFragments.length) {
+      setFragmentRailPositions({});
+      return undefined;
+    }
+
+    let frameId = null;
+
+    const measurePositions = () => {
+      frameId = null;
+      const railNode = fragmentsRailRef.current;
+      if (!railNode) return;
+
+      const documentNode = documentReaderRef.current;
+      if (!documentNode) return;
+
+      const documentRect = documentNode.getBoundingClientRect();
+      const documentHeight = Math.max(documentNode.offsetHeight, 320);
+      const railHeight = Math.max(documentHeight - 44, 0);
+      setDocumentRailHeight(documentHeight);
+      const nextPositions = {};
+
+      mappedDocumentFragments.forEach((fragment, index) => {
+        const fragmentId = String(fragment.id);
+        const fragmentNode = documentFragmentRefs.current[fragmentId];
+
+        if (fragmentNode) {
+          const fragmentRect = fragmentNode.getBoundingClientRect();
+          const relativeTop = fragmentRect.top - documentRect.top + documentNode.scrollTop;
+          nextPositions[fragmentId] = Math.min(Math.max(relativeTop, 0), railHeight);
+        } else {
+          nextPositions[fragmentId] = Math.min(index * 34, railHeight);
+        }
+      });
+
+      setFragmentRailPositions((current) => (hasPositionChanges(current, nextPositions) ? nextPositions : current));
+    };
+
+    const scheduleMeasure = () => {
+      if (frameId != null) return;
+      frameId = window.requestAnimationFrame(measurePositions);
+    };
+
+    scheduleMeasure();
+    window.addEventListener('resize', scheduleMeasure);
+    window.addEventListener('scroll', scheduleMeasure, true);
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(scheduleMeasure);
+      if (documentReaderRef.current) resizeObserver.observe(documentReaderRef.current);
+      if (fragmentsRailRef.current) resizeObserver.observe(fragmentsRailRef.current);
+      mappedDocumentFragments.forEach((fragment) => {
+        const fragmentNode = documentFragmentRefs.current[String(fragment.id)];
+        if (fragmentNode) resizeObserver.observe(fragmentNode);
+      });
+    }
+
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', scheduleMeasure);
+      window.removeEventListener('scroll', scheduleMeasure, true);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
+  }, [hasPositionChanges, mappedDocumentFragments, readerViewMode]);
+
   const documentFragmentsSegments = useMemo(() => {
     const source = String(docReader.document?.text || '');
     if (!source) return [];
@@ -310,27 +401,21 @@ const InterviewCenterPage = () => {
   }, [docReader.document?.text, mappedDocumentFragments]);
 
   const fragmentRailCards = useMemo(() => {
-    const sourceLength = Math.max(String(docReader.document?.text || '').length, 1);
     return mappedDocumentFragments.map((fragment, index) => {
       const fragmentId = String(fragment.id);
       const preview = String(fragment.selected_text || '').trim();
       const shortPreview = preview.length > 92 ? `${preview.slice(0, 92)}…` : preview;
-
-      let topPercent = 0;
-      if (fragment.hasRange && Number.isFinite(fragment.mappedStart)) {
-        topPercent = Math.min(94, Math.max(0, (fragment.mappedStart / sourceLength) * 100));
-      } else {
-        topPercent = Math.min(94, index * 12);
-      }
+      const fallbackTop = index * 34;
+      const topPx = Number.isFinite(fragmentRailPositions[fragmentId]) ? fragmentRailPositions[fragmentId] : fallbackTop;
 
       return {
         id: fragmentId,
-        topPercent,
+        topPx,
         shortPreview: shortPreview || 'Texto enlazado',
         fragment,
       };
     });
-  }, [docReader.document?.text, mappedDocumentFragments]);
+  }, [fragmentRailPositions, mappedDocumentFragments]);
 
   const clientRows = useMemo(() => center.clients.map((client) => {
     const interviews = center.sessions.filter((session) => String(session.client_id) === String(client.id));
@@ -522,7 +607,7 @@ const InterviewCenterPage = () => {
     setManualFragmentModalOpen(false);
     setActiveFragmentId(null);
     setHighlightFragmentId(null);
-    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null }));
+    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null, manualTitle: '', manualText: '', manualInterviewId: '' }));
     try {
       const document = await interviewsModuleApi.readCloudDocument(item.id);
       setDocReader((prev) => ({ ...prev, loading: false, document, error: '' }));
@@ -574,14 +659,33 @@ const InterviewCenterPage = () => {
 
   const createManualFragment = useCallback(async () => {
     if (!docReader.document?.node_id || !docReader.manualText.trim()) return;
+    const manualText = String(docReader.manualText || '').trim();
+    const manualTitle = String(docReader.manualTitle || '').trim();
+    const interviewSessionId = docReader.manualInterviewId || docReader.document.interview_id || null;
+
     try {
-      await interviewsModuleApi.createDocumentFragment({
+      const created = await interviewsModuleApi.createDocumentFragment({
         document_node_id: docReader.document.node_id,
-        interview_session_id: docReader.document.interview_id || null,
-        selected_text: docReader.manualText.trim(),
+        interview_session_id: interviewSessionId || null,
+        selected_text: manualText,
         source_type: 'manual',
       });
-      setDocReader((prev) => ({ ...prev, manualText: '' }));
+
+      if (created?.id && (manualTitle || interviewSessionId)) {
+        setFragmentDetailsById((prev) => ({
+          ...prev,
+          [String(created.id)]: {
+            ...(prev[String(created.id)] || {}),
+            title: manualTitle,
+            description: manualText,
+            interviewId: interviewSessionId ? String(interviewSessionId) : '',
+            linkedCode: prev[String(created.id)]?.linkedCode || '',
+            evolvedToCode: Boolean(prev[String(created.id)]?.evolvedToCode),
+          },
+        }));
+      }
+
+      setDocReader((prev) => ({ ...prev, manualTitle: '', manualText: '', manualInterviewId: '' }));
       setManualFragmentModalOpen(false);
       await loadDocumentFragments(docReader.document.node_id);
       await loadSemanticCloudFragments();
@@ -589,7 +693,7 @@ const InterviewCenterPage = () => {
     } catch (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
-  }, [docReader.document, docReader.manualText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
+  }, [docReader.document, docReader.manualInterviewId, docReader.manualText, docReader.manualTitle, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
   useEffect(() => {
     if (tab !== 'cloud') return;
@@ -650,6 +754,150 @@ const InterviewCenterPage = () => {
       railNode?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   }, []);
+
+  const buildCodeLabelFromFragment = useCallback((title, description) => {
+    const cleanTitle = String(title || '').trim();
+    if (cleanTitle) return cleanTitle;
+
+    const cleanDescription = String(description || '').trim().replace(/\s+/g, ' ');
+    if (!cleanDescription) return 'Código derivado de fragmento';
+
+    const words = cleanDescription.split(' ').filter(Boolean).slice(0, 6);
+    const smartLabel = words.join(' ').trim();
+    return smartLabel.length > 56 ? `${smartLabel.slice(0, 56).trimEnd()}…` : smartLabel;
+  }, []);
+
+  const buildUniqueCodeSlug = useCallback((label, options = []) => {
+    const base = String(label || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_') || 'codigo_fragmento';
+
+    const existing = new Set(options.map((option) => String(option.slug)));
+    if (!existing.has(base)) return base;
+
+    let idx = 2;
+    while (existing.has(`${base}_${idx}`)) idx += 1;
+    return `${base}_${idx}`;
+  }, []);
+
+  const openFragmentDetailModal = useCallback((fragmentId, origin = 'rail') => {
+    const normalizedId = String(fragmentId);
+    focusFragment(normalizedId, origin);
+
+    const sourceFragment = (docReader.fragments || []).find((fragment) => String(fragment.id) === normalizedId);
+    if (!sourceFragment) return;
+
+    const persisted = fragmentDetailsById[normalizedId] || {};
+    setFragmentDetailDraft({
+      id: normalizedId,
+      title: persisted.title || sourceFragment.title || '',
+      description: persisted.description || sourceFragment.selected_text || '',
+      linkedCode: persisted.linkedCode || '',
+      interviewId: String(persisted.interviewId || sourceFragment.interview_session_id || sourceFragment.interview_id || docReader.document?.interview_id || ''),
+      evolvedToCode: Boolean(persisted.evolvedToCode),
+    });
+    setFragmentDetailModalOpen(true);
+  }, [docReader.document?.interview_id, docReader.fragments, focusFragment, fragmentDetailsById]);
+
+  const persistFragmentDetailDraft = useCallback(() => {
+    if (!fragmentDetailDraft.id) return;
+    const normalizedId = String(fragmentDetailDraft.id);
+    setFragmentDetailsById((prev) => ({
+      ...prev,
+      [normalizedId]: {
+        title: String(fragmentDetailDraft.title || '').trim(),
+        description: String(fragmentDetailDraft.description || '').trim(),
+        linkedCode: String(fragmentDetailDraft.linkedCode || '').trim(),
+        interviewId: String(fragmentDetailDraft.interviewId || '').trim(),
+        evolvedToCode: Boolean(fragmentDetailDraft.evolvedToCode),
+      },
+    }));
+    toast({ title: 'Fragmento actualizado', description: 'Se guardó el detalle del fragmento para su evolución.' });
+  }, [fragmentDetailDraft, toast]);
+
+  const evolveFragmentToCode = useCallback(() => {
+    if (!fragmentDetailDraft.id) return;
+
+    const normalizedId = String(fragmentDetailDraft.id);
+    const previousLinkedCodes = [String(fragmentDetailDraft.linkedCode || '').trim()].filter(Boolean);
+
+    const newCodeLabel = buildCodeLabelFromFragment(fragmentDetailDraft.title, fragmentDetailDraft.description);
+    const newCodeSlug = buildUniqueCodeSlug(newCodeLabel, fragmentEvolutionCodeOptions);
+    const createdCode = { slug: newCodeSlug, label: newCodeLabel };
+
+    setFragmentEvolutionCodeOptions((prev) => {
+      if (prev.some((option) => option.slug === createdCode.slug)) return prev;
+      return [...prev, createdCode];
+    });
+
+    try {
+      const rawWorkspace = window.localStorage.getItem(semanticWorkspaceStorageKey);
+      const parsedWorkspace = rawWorkspace ? JSON.parse(rawWorkspace) : {};
+      const currentCustomCodebook = Array.isArray(parsedWorkspace.customCodebook) ? parsedWorkspace.customCodebook : [];
+      const currentAssignments = parsedWorkspace.codeAssignments && typeof parsedWorkspace.codeAssignments === 'object' ? parsedWorkspace.codeAssignments : {};
+
+      const nextCustomCodebook = currentCustomCodebook.some((code) => String(code.slug) === createdCode.slug)
+        ? currentCustomCodebook
+        : [...currentCustomCodebook, {
+          slug: createdCode.slug,
+          name: createdCode.label,
+          category: 'interpretacion',
+          description: `Código evolucionado desde fragmento ${normalizedId}.`,
+        }];
+
+      const nextWorkspace = {
+        ...parsedWorkspace,
+        customCodebook: nextCustomCodebook,
+        codeAssignments: {
+          ...currentAssignments,
+          [normalizedId]: [createdCode.slug],
+        },
+      };
+
+      window.localStorage.setItem(semanticWorkspaceStorageKey, JSON.stringify(nextWorkspace));
+    } catch {
+      // Keep UI flow resilient even if localStorage is unavailable.
+    }
+
+    const nextDraft = {
+      ...fragmentDetailDraft,
+      title: String(fragmentDetailDraft.title || '').trim(),
+      description: String(fragmentDetailDraft.description || '').trim(),
+      linkedCode: createdCode.slug,
+      evolvedToCode: true,
+    };
+
+    setFragmentDetailDraft(nextDraft);
+    setFragmentDetailsById((prev) => ({
+      ...prev,
+      [normalizedId]: {
+        title: nextDraft.title,
+        description: nextDraft.description,
+        linkedCode: createdCode.slug,
+        evolvedToCode: true,
+      },
+    }));
+
+    const unlinkNote = previousLinkedCodes.length
+      ? ` Se desvincularon ${previousLinkedCodes.length} código(s) previo(s).`
+      : '';
+
+    toast({ title: 'Fragmento evolucionado', description: `Se creó el código ${createdCode.label}, se agregó al codebook y quedó como única vinculación.${unlinkNote}` });
+  }, [buildCodeLabelFromFragment, buildUniqueCodeSlug, fragmentDetailDraft, fragmentEvolutionCodeOptions, toast]);
+
+
+  useEffect(() => {
+    if (!manualFragmentModalOpen) return;
+    setDocReader((prev) => {
+      if (prev.manualInterviewId) return prev;
+      return { ...prev, manualInterviewId: String(prev.document?.interview_id || '') };
+    });
+  }, [manualFragmentModalOpen]);
 
   const announcePendingTool = useCallback((label) => {
     toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
@@ -1075,9 +1323,10 @@ const InterviewCenterPage = () => {
                   {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
                   {docReader.document ? (
                     <>
-                      <div className="mx-auto grid w-full max-w-6xl gap-3 xl:grid-cols-[minmax(0,1fr)_188px]">
-                        <div>
+                      <div className="mx-auto w-full max-w-6xl">
+                        <div className="relative pr-[196px]">
                           <div
+                            ref={documentReaderRef}
                             className={`min-h-[320px] rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
                             onMouseUp={captureSelection}
                             onContextMenu={openSelectionMenu}
@@ -1101,11 +1350,11 @@ const InterviewCenterPage = () => {
                                     type="button"
                                     className={`mr-1 inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}
                                     title="Ir a cita enlazada"
-                                    onClick={() => focusFragment(fragmentId, 'document')}
+                                    onClick={() => openFragmentDetailModal(fragmentId, 'document')}
                                   >
                                     ¶
                                   </button>
-                                  <span className="cursor-pointer" onClick={() => focusFragment(fragmentId, 'document')}>
+                                  <span className="cursor-pointer" onClick={() => openFragmentDetailModal(fragmentId, 'document')}>
                                     {segment.value}
                                   </span>
                                 </span>
@@ -1113,18 +1362,11 @@ const InterviewCenterPage = () => {
                             }) : (docReader.document.text || 'No se pudo renderizar texto de este documento.')}
                           </div>
 
-                          <div className="mt-3 rounded-lg border bg-white p-3">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
-                            <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
-                            <div className="mt-2 flex items-center gap-2">
-                              <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
-                              <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(true)}>Agregar manual</Button>
-                              {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div ref={fragmentsRailRef} className="relative min-h-[320px]">
+                          <div
+                            ref={fragmentsRailRef}
+                            className="pointer-events-none absolute right-0 top-0 min-h-[320px] w-[188px]"
+                            style={{ height: `${documentRailHeight}px` }}
+                          >
                             {fragmentRailCards.map((card) => {
                               const fragmentId = card.id;
                               const fragment = card.fragment;
@@ -1138,19 +1380,31 @@ const InterviewCenterPage = () => {
                                     if (node) railFragmentRefs.current[fragmentId] = node;
                                     else delete railFragmentRefs.current[fragmentId];
                                   }}
-                                  onClick={() => focusFragment(fragmentId, 'rail')}
-                                  style={{ top: `${card.topPercent}%` }}
-                                  className={`absolute right-0 w-[178px] rounded-md border px-1.5 py-1 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white/95 hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                                  onClick={() => openFragmentDetailModal(fragmentId, 'rail')}
+                                  style={{ top: `${Math.max(0, card.topPx - 3)}px` }}
+                                  className={`group pointer-events-auto absolute right-0 flex w-[176px] items-start gap-1.5 rounded-md border px-2 py-1.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.06)] transition-all duration-150 ${isActive ? 'border-indigo-300 bg-indigo-50/95' : 'border-slate-200/90 bg-white/95 hover:-translate-y-px hover:border-slate-300 hover:bg-slate-50/90'} ${isHighlighted ? 'ring-1 ring-indigo-200' : ''}`}
                                 >
-                                  <div className="mb-0.5 flex items-center gap-1">
-                                    <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded text-[9px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
-                                    <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">Cita</span>
-                                  </div>
-                                  <p className="line-clamp-2 text-[10px] leading-3.5 text-slate-700">{card.shortPreview}</p>
+                                  <span className={`mt-[1px] inline-flex h-3 w-3 shrink-0 rounded-full ${isActive ? 'bg-indigo-500' : 'bg-cyan-500 group-hover:bg-cyan-600'}`} />
+                                  <span className="absolute -left-4 top-1/2 h-px w-3 -translate-y-1/2 rounded bg-slate-300/80" aria-hidden="true" />
+                                  <span className="min-w-0">
+                                    <span className={`block text-[9px] font-semibold uppercase tracking-[0.08em] ${isActive ? 'text-indigo-700' : 'text-slate-500 group-hover:text-slate-600'}`}>Cita</span>
+                                    <span className={`mt-0.5 line-clamp-2 block text-[10px] leading-3.5 ${isActive ? 'text-indigo-900' : 'text-slate-700'}`}>{card.shortPreview}</span>
+                                  </span>
                                 </button>
                               );
                             })}
                             {!docReader.fragments?.length ? <p className="px-1 text-xs text-slate-500">Sin citas enlazadas.</p> : null}
+                          </div>
+
+                          <div className="mt-3 rounded-lg border bg-white p-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
+                            <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
+                            <div className="mt-2 flex items-center gap-2">
+                              <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
+                              <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(true)}>Agregar manual</Button>
+                              {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
+                            </div>
+                          </div>
                         </div>
                       </div>
 
@@ -1199,12 +1453,107 @@ const InterviewCenterPage = () => {
       </InterviewModuleShell>
 
       <Modal
+        title="Detalle del fragmento"
+        open={fragmentDetailModalOpen}
+        onClose={() => setFragmentDetailModalOpen(false)}
+      >
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Título</p>
+            <input
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              placeholder="Asigna un título al fragmento"
+              value={fragmentDetailDraft.title}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, title: event.target.value }))}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Descripción (texto extraído)</p>
+            <textarea
+              className="h-28 w-full rounded-md border bg-slate-50 px-3 py-2 text-sm text-slate-700"
+              value={fragmentDetailDraft.description}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, description: event.target.value }))}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Código vinculado</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={fragmentDetailDraft.linkedCode}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, linkedCode: event.target.value }))}
+            >
+              <option value="">Seleccionar código…</option>
+              {fragmentEvolutionCodeOptions.map((option) => (
+                <option key={option.slug} value={option.slug}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Entrevista vinculada</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={fragmentDetailDraft.interviewId}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, interviewId: event.target.value }))}
+            >
+              <option value="">Sin entrevista vinculada</option>
+              {center.sessions.map((session) => (
+                <option key={session.id} value={session.id}>{session.client_name || `Cliente ${session.client_id || '—'}`} · {session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <p><span className="font-semibold text-slate-700">Origen:</span> {String((docReader.fragments || []).find((fragment) => String(fragment.id) === String(fragmentDetailDraft.id))?.source_type || 'selection')}</p>
+            <p><span className="font-semibold text-slate-700">Documento:</span> {docReader.document?.node_id || '—'}</p>
+          </div>
+
+          {fragmentDetailDraft.evolvedToCode ? (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              Fragmento evolucionado a código.
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2">
+            <Button className="bg-white border" onClick={() => setFragmentDetailModalOpen(false)}>Cerrar</Button>
+            <Button className="bg-white border" onClick={persistFragmentDetailDraft}>Guardar detalle</Button>
+            <Button className="bg-indigo-600 text-white" onClick={evolveFragmentToCode}>Evolucionar a código</Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         title="Agregar fragmento manual"
         open={manualFragmentModalOpen}
         onClose={() => setManualFragmentModalOpen(false)}
       >
         <div className="space-y-3">
-          <p className="text-sm text-slate-600">Escribe una observación semántica o resumen manual para este documento.</p>
+          <p className="text-sm text-slate-600">Completa el fragmento manual y vincúlalo a una entrevista para mantener contexto.</p>
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Título del fragmento</p>
+            <input
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              placeholder="Título opcional"
+              value={docReader.manualTitle}
+              onChange={(event) => setDocReader((prev) => ({ ...prev, manualTitle: event.target.value }))}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Entrevista vinculada</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={docReader.manualInterviewId}
+              onChange={(event) => setDocReader((prev) => ({ ...prev, manualInterviewId: event.target.value }))}
+            >
+              <option value="">Sin entrevista vinculada</option>
+              {center.sessions.map((session) => (
+                <option key={session.id} value={session.id}>{session.client_name || `Cliente ${session.client_id || '—'}`} · {session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+              ))}
+            </select>
+          </div>
+
           <textarea
             className="w-full min-h-[160px] rounded-md border p-2 text-sm"
             placeholder="Escribe una observación semántica o resumen manual..."
