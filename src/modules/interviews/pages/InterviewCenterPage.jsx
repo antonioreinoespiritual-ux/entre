@@ -902,21 +902,19 @@ const InterviewCenterPage = () => {
                       <p className="text-xs text-slate-500">Lectura enriquecida para transcripción (.doc/.docx/txt) con extracción de fragmentos.</p>
                     </div>
                     <div className="flex items-center gap-2">
-                      {nodeId ? (
-                        <Button
-                          className="bg-white border"
-                          onClick={() => {
-                            setDocSelectionMenu((prev) => ({ ...prev, open: false }));
-                            navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`);
-                          }}
-                        >
-                          Volver al cloud
-                        </Button>
-                      ) : null}
                       {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
                     </div>
                   </div>
                   <Toolbar
+                    onBackToCloud={() => {
+                      setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+                      navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`);
+                    }}
+                    onDownloadDocument={() => {
+                      const node = docReader.document?.node_id;
+                      if (!node) return;
+                      window.open(`${apiBaseUrl}/api/cloud/download?nodeId=${encodeURIComponent(node)}`, '_blank', 'noopener,noreferrer');
+                    }}
                     onCreateFragment={createSelectionFragment}
                     onCreateManualFragment={() => setManualFragmentModalOpen(true)}
                     onViewFragments={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
