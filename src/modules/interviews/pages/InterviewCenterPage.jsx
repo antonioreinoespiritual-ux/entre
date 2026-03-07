@@ -95,6 +95,7 @@ const InterviewCenterPage = () => {
   const [docSelectionMenu, setDocSelectionMenu] = useState({ open: false, x: 0, y: 0 });
   const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
   const [readerViewMode, setReaderViewMode] = useState('document');
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -507,6 +508,17 @@ const InterviewCenterPage = () => {
   }, [nodeId, openDocumentReader]);
 
   useEffect(() => {
+    if (tab !== 'cloud' || !nodeId) {
+      setToolbarCollapsed(false);
+      return;
+    }
+    const onScroll = () => setToolbarCollapsed(window.scrollY > 90);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [nodeId, tab]);
+
+  useEffect(() => {
     if (tab !== 'semantic') return;
     loadSemanticCloudFragments();
   }, [loadSemanticCloudFragments, tab]);
@@ -906,6 +918,7 @@ const InterviewCenterPage = () => {
                     </div>
                   </div>
                   <Toolbar
+                    collapsed={toolbarCollapsed}
                     onBackToCloud={() => {
                       setDocSelectionMenu((prev) => ({ ...prev, open: false }));
                       navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`);
