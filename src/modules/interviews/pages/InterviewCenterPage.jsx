@@ -132,67 +132,6 @@ const InterviewCenterPage = () => {
     return nextKeys.some((key) => Math.abs((current[key] || 0) - (next[key] || 0)) > 1);
   }, []);
 
-  useEffect(() => {
-    if (!mappedDocumentFragments.length) {
-      setFragmentRailPositions({});
-      return undefined;
-    }
-
-    let frameId = null;
-
-    const measurePositions = () => {
-      frameId = null;
-      const railNode = fragmentsRailRef.current;
-      if (!railNode) return;
-
-      const railRect = railNode.getBoundingClientRect();
-      const railHeight = Math.max(railNode.offsetHeight - 44, 0);
-      const nextPositions = {};
-
-      mappedDocumentFragments.forEach((fragment, index) => {
-        const fragmentId = String(fragment.id);
-        const fragmentNode = documentFragmentRefs.current[fragmentId];
-
-        if (fragmentNode) {
-          const fragmentRect = fragmentNode.getBoundingClientRect();
-          const relativeTop = fragmentRect.top - railRect.top + railNode.scrollTop;
-          nextPositions[fragmentId] = Math.min(Math.max(relativeTop, 0), railHeight);
-        } else {
-          nextPositions[fragmentId] = Math.min(index * 34, railHeight);
-        }
-      });
-
-      setFragmentRailPositions((current) => (hasPositionChanges(current, nextPositions) ? nextPositions : current));
-    };
-
-    const scheduleMeasure = () => {
-      if (frameId != null) return;
-      frameId = window.requestAnimationFrame(measurePositions);
-    };
-
-    scheduleMeasure();
-    window.addEventListener('resize', scheduleMeasure);
-    window.addEventListener('scroll', scheduleMeasure, true);
-
-    let resizeObserver = null;
-    if (typeof ResizeObserver !== 'undefined') {
-      resizeObserver = new ResizeObserver(scheduleMeasure);
-      if (documentReaderRef.current) resizeObserver.observe(documentReaderRef.current);
-      if (fragmentsRailRef.current) resizeObserver.observe(fragmentsRailRef.current);
-      mappedDocumentFragments.forEach((fragment) => {
-        const fragmentNode = documentFragmentRefs.current[String(fragment.id)];
-        if (fragmentNode) resizeObserver.observe(fragmentNode);
-      });
-    }
-
-    return () => {
-      if (frameId != null) window.cancelAnimationFrame(frameId);
-      window.removeEventListener('resize', scheduleMeasure);
-      window.removeEventListener('scroll', scheduleMeasure, true);
-      if (resizeObserver) resizeObserver.disconnect();
-    };
-  }, [hasPositionChanges, mappedDocumentFragments, readerViewMode]);
-
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
 
   useEffect(() => {
@@ -348,6 +287,67 @@ const InterviewCenterPage = () => {
       };
     });
   }, [docReader.document?.text, docReader.fragments]);
+
+  useEffect(() => {
+    if (!mappedDocumentFragments.length) {
+      setFragmentRailPositions({});
+      return undefined;
+    }
+
+    let frameId = null;
+
+    const measurePositions = () => {
+      frameId = null;
+      const railNode = fragmentsRailRef.current;
+      if (!railNode) return;
+
+      const railRect = railNode.getBoundingClientRect();
+      const railHeight = Math.max(railNode.offsetHeight - 44, 0);
+      const nextPositions = {};
+
+      mappedDocumentFragments.forEach((fragment, index) => {
+        const fragmentId = String(fragment.id);
+        const fragmentNode = documentFragmentRefs.current[fragmentId];
+
+        if (fragmentNode) {
+          const fragmentRect = fragmentNode.getBoundingClientRect();
+          const relativeTop = fragmentRect.top - railRect.top + railNode.scrollTop;
+          nextPositions[fragmentId] = Math.min(Math.max(relativeTop, 0), railHeight);
+        } else {
+          nextPositions[fragmentId] = Math.min(index * 34, railHeight);
+        }
+      });
+
+      setFragmentRailPositions((current) => (hasPositionChanges(current, nextPositions) ? nextPositions : current));
+    };
+
+    const scheduleMeasure = () => {
+      if (frameId != null) return;
+      frameId = window.requestAnimationFrame(measurePositions);
+    };
+
+    scheduleMeasure();
+    window.addEventListener('resize', scheduleMeasure);
+    window.addEventListener('scroll', scheduleMeasure, true);
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(scheduleMeasure);
+      if (documentReaderRef.current) resizeObserver.observe(documentReaderRef.current);
+      if (fragmentsRailRef.current) resizeObserver.observe(fragmentsRailRef.current);
+      mappedDocumentFragments.forEach((fragment) => {
+        const fragmentNode = documentFragmentRefs.current[String(fragment.id)];
+        if (fragmentNode) resizeObserver.observe(fragmentNode);
+      });
+    }
+
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', scheduleMeasure);
+      window.removeEventListener('scroll', scheduleMeasure, true);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
+  }, [hasPositionChanges, mappedDocumentFragments, readerViewMode]);
 
   const documentFragmentsSegments = useMemo(() => {
     const source = String(docReader.document?.text || '');
