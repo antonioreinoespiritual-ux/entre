@@ -26,7 +26,7 @@ const formatDate = (value) => {
 
 const emptyNewCode = { name: '', slug: '', category: 'interpretacion', description: '' };
 
-export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], persistedFragments = [], onOpenSession }) => {
+export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], persistedFragments = [], onOpenSession, onCreateFragment }) => {
   const [filters, setFilters] = useState(defaultFilters);
   const [activeTab, setActiveTab] = useState('interviews');
   const [openInterviewId, setOpenInterviewId] = useState(null);
@@ -300,7 +300,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                     <div key={`${row.questionId}_${row.idx}_${row.sentence.slice(0, 12)}`} className="rounded-lg border border-slate-200 bg-white p-3">
                       <p className="text-sm text-slate-700">{row.sentence}</p>
                       <div className="mt-2 flex justify-end">
-                        <span className="text-xs text-slate-500">Crear fragmentos desde Cloud (fuente única)</span>
+                        <Button className="bg-white border" onClick={() => onCreateFragment?.({ interview_id: selectedInterview.id, text: row.sentence, source: 'selection' })}>Convertir en fragmento</Button>
                       </div>
                     </div>
                   ))}

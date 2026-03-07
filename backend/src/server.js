@@ -292,7 +292,7 @@ const schemaSql = [
     project_id TEXT NOT NULL,
     campaign_id TEXT,
     interview_session_id TEXT,
-    document_node_id TEXT NOT NULL,
+    document_node_id TEXT,
     source_type TEXT NOT NULL CHECK(source_type IN ('selection','manual')),
     selected_text TEXT NOT NULL,
     start_offset INTEGER,
@@ -1596,6 +1596,46 @@ async function ensureHypothesisVideosVideoForeignKeyTarget() {
 }
 
 
+async function rebuildInterviewSemanticFragmentsWithNullableDocumentNode() {
+  const hasTable = await tableExists('interview_semantic_fragments');
+  if (!hasTable) return;
+
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    const legacyTable = `interview_semantic_fragments_legacy_${Date.now()}`;
+    await pool.query(`ALTER TABLE interview_semantic_fragments RENAME TO ${normalizeIdentifier(legacyTable)}`);
+    await pool.query(`CREATE TABLE interview_semantic_fragments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      campaign_id TEXT,
+      interview_session_id TEXT,
+      document_node_id TEXT,
+      source_type TEXT NOT NULL CHECK(source_type IN ('selection','manual')),
+      selected_text TEXT NOT NULL,
+      start_offset INTEGER,
+      end_offset INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+      FOREIGN KEY (interview_session_id) REFERENCES interview_sessions(id) ON DELETE SET NULL,
+      FOREIGN KEY (document_node_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE
+    )`);
+    await pool.query(
+      `INSERT INTO interview_semantic_fragments
+      (id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at)
+      SELECT id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at
+      FROM ${normalizeIdentifier(legacyTable)}`,
+    );
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTable)}`);
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
+
 async function ensureVideoHierarchyMigration() {
   if (!(await hasColumn('videos', 'hypothesis_id'))) {
     await pool.query('ALTER TABLE videos ADD COLUMN hypothesis_id TEXT');
@@ -1733,6 +1773,11 @@ async function ensureVideoHierarchyMigration() {
   }
   if (!(await hasColumn('interview_sessions', 'form_snapshot_json'))) {
     await pool.query('ALTER TABLE interview_sessions ADD COLUMN form_snapshot_json TEXT');
+  }
+
+  if (await tableExists('interview_semantic_fragments')) {
+    const docNotNull = await hasNotNullColumn('interview_semantic_fragments', 'document_node_id');
+    if (docNotNull) await rebuildInterviewSemanticFragmentsWithNullableDocumentNode();
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
@@ -3588,32 +3633,49 @@ const server = http.createServer(async (req, res) => {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const body = await readBody(req);
-      const documentNodeId = String(body?.document_node_id || '').trim();
+      const documentNodeId = String(body?.document_node_id || '').trim() || null;
+      const interviewSessionId = String(body?.interview_session_id || '').trim() || null;
       const sourceType = String(body?.source_type || '').trim().toLowerCase();
       const selectedText = String(body?.selected_text || '').trim();
-      if (!documentNodeId || !['selection', 'manual'].includes(sourceType) || !selectedText) {
-        return sendJson(req, res, 400, { error: 'document_node_id, source_type(selection|manual) y selected_text son obligatorios' });
+      if ((!documentNodeId && !interviewSessionId) || !['selection', 'manual'].includes(sourceType) || !selectedText) {
+        return sendJson(req, res, 400, { error: 'document_node_id o interview_session_id, source_type(selection|manual) y selected_text son obligatorios' });
       }
 
-      const node = await getCloudNodeById(documentNodeId, user.id);
-      if (!node || node.type !== 'file') return sendJson(req, res, 404, { error: 'Document not found' });
+      let node = null;
+      let context = {};
 
-      const [contextRows] = await pool.query(
-        `SELECT s.id AS interview_id, s.project_id, s.campaign_id
-         FROM cloud_nodes d
-         LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
-         LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
-         LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
-         WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
-        [documentNodeId, user.id],
-      );
-      const context = contextRows[0] || {};
+      if (documentNodeId) {
+        node = await getCloudNodeById(documentNodeId, user.id);
+        if (!node || node.type !== 'file') return sendJson(req, res, 404, { error: 'Document not found' });
+
+        const [contextRows] = await pool.query(
+          `SELECT s.id AS interview_id, s.project_id, s.campaign_id
+           FROM cloud_nodes d
+           LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
+           LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
+           LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
+           WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
+          [documentNodeId, user.id],
+        );
+        context = contextRows[0] || {};
+      }
+
+      if (interviewSessionId) {
+        const [sessionRows] = await pool.query(
+          'SELECT id AS interview_id, project_id, campaign_id FROM interview_sessions WHERE id = ? AND user_id = ? LIMIT 1',
+          [interviewSessionId, user.id],
+        );
+        const session = sessionRows[0];
+        if (!session) return sendJson(req, res, 404, { error: 'Interview session not found' });
+        context = { ...context, ...session };
+      }
+
       const fragment = {
         id: uuid(),
         user_id: user.id,
-        project_id: context.project_id || node.project_id,
+        project_id: context.project_id || node?.project_id,
         campaign_id: context.campaign_id || null,
-        interview_session_id: body?.interview_session_id || context.interview_id || null,
+        interview_session_id: interviewSessionId || context.interview_id || null,
         document_node_id: documentNodeId,
         source_type: sourceType,
         selected_text: selectedText,

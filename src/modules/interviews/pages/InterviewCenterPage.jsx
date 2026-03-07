@@ -477,6 +477,22 @@ const InterviewCenterPage = () => {
     loadSemanticCloudFragments();
   }, [loadSemanticCloudFragments, tab]);
 
+  const createSemanticInterviewFragment = useCallback(async ({ interview_id, text, source = 'selection' }) => {
+    const trimmed = String(text || '').trim();
+    if (!interview_id || !trimmed) return;
+    try {
+      await interviewsModuleApi.createDocumentFragment({
+        interview_session_id: interview_id,
+        selected_text: trimmed,
+        source_type: source === 'manual' ? 'manual' : 'selection',
+      });
+      await loadSemanticCloudFragments();
+      toast({ title: 'Fragmento registrado', description: 'Se guardó en la entidad única de fragmentos.' });
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }, [loadSemanticCloudFragments, toast]);
+
   return (
     <>
       <Helmet><title>Centro de Entrevistas</title></Helmet>
@@ -899,6 +915,7 @@ const InterviewCenterPage = () => {
             clients={center.clients}
             persistedFragments={semanticCloudFragments}
             onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
+            onCreateFragment={createSemanticInterviewFragment}
           />
         )}
       </InterviewModuleShell>
