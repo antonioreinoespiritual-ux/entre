@@ -74,6 +74,16 @@ const getClientScoreTone = (score, type = 'problem') => {
 
 const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
 const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
+const fragmentEvolutionCodeOptions = [
+  { slug: 'problema_intenso', label: 'Problema intenso' },
+  { slug: 'problema_frecuente', label: 'Problema frecuente' },
+  { slug: 'frustracion', label: 'Frustración' },
+  { slug: 'miedo_perdida', label: 'Miedo a perder' },
+  { slug: 'busqueda_activa', label: 'Búsqueda activa de solución' },
+  { slug: 'barrera_precio', label: 'Barrera de precio' },
+  { slug: 'urgencia_accion', label: 'Urgencia de acción' },
+];
+
 
 const InterviewCenterPage = () => {
   const { projectId, campaignId, nodeId } = useParams();
@@ -100,6 +110,9 @@ const InterviewCenterPage = () => {
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [fragmentRailPositions, setFragmentRailPositions] = useState({});
   const [documentRailHeight, setDocumentRailHeight] = useState(320);
+  const [fragmentDetailModalOpen, setFragmentDetailModalOpen] = useState(false);
+  const [fragmentDetailDraft, setFragmentDetailDraft] = useState({ id: null, title: '', description: '', linkedCode: '', evolvedToCode: false });
+  const [fragmentDetailsById, setFragmentDetailsById] = useState({});
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -721,6 +734,63 @@ const InterviewCenterPage = () => {
     }
   }, []);
 
+  const openFragmentDetailModal = useCallback((fragmentId, origin = 'rail') => {
+    const normalizedId = String(fragmentId);
+    focusFragment(normalizedId, origin);
+
+    const sourceFragment = (docReader.fragments || []).find((fragment) => String(fragment.id) === normalizedId);
+    if (!sourceFragment) return;
+
+    const persisted = fragmentDetailsById[normalizedId] || {};
+    setFragmentDetailDraft({
+      id: normalizedId,
+      title: persisted.title || sourceFragment.title || '',
+      description: persisted.description || sourceFragment.selected_text || '',
+      linkedCode: persisted.linkedCode || '',
+      evolvedToCode: Boolean(persisted.evolvedToCode),
+    });
+    setFragmentDetailModalOpen(true);
+  }, [docReader.fragments, focusFragment, fragmentDetailsById]);
+
+  const persistFragmentDetailDraft = useCallback(() => {
+    if (!fragmentDetailDraft.id) return;
+    const normalizedId = String(fragmentDetailDraft.id);
+    setFragmentDetailsById((prev) => ({
+      ...prev,
+      [normalizedId]: {
+        title: String(fragmentDetailDraft.title || '').trim(),
+        description: String(fragmentDetailDraft.description || '').trim(),
+        linkedCode: String(fragmentDetailDraft.linkedCode || '').trim(),
+        evolvedToCode: Boolean(fragmentDetailDraft.evolvedToCode),
+      },
+    }));
+    toast({ title: 'Fragmento actualizado', description: 'Se guardó el detalle del fragmento para su evolución.' });
+  }, [fragmentDetailDraft, toast]);
+
+  const evolveFragmentToCode = useCallback(() => {
+    if (!fragmentDetailDraft.id) return;
+    if (!fragmentDetailDraft.linkedCode) {
+      toast({ title: 'Selecciona un código', description: 'Vincula un código antes de evolucionar el fragmento.', variant: 'destructive' });
+      return;
+    }
+
+    const normalizedId = String(fragmentDetailDraft.id);
+    const nextDraft = { ...fragmentDetailDraft, evolvedToCode: true };
+    setFragmentDetailDraft(nextDraft);
+    setFragmentDetailsById((prev) => ({
+      ...prev,
+      [normalizedId]: {
+        title: String(nextDraft.title || '').trim(),
+        description: String(nextDraft.description || '').trim(),
+        linkedCode: String(nextDraft.linkedCode || '').trim(),
+        evolvedToCode: true,
+      },
+    }));
+
+    const codeLabel = fragmentEvolutionCodeOptions.find((option) => option.slug === nextDraft.linkedCode)?.label || nextDraft.linkedCode;
+    toast({ title: 'Fragmento evolucionado', description: `El fragmento quedó evolucionado al código ${codeLabel}.` });
+  }, [fragmentDetailDraft, toast]);
+
   const announcePendingTool = useCallback((label) => {
     toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
   }, [toast]);
@@ -1172,11 +1242,11 @@ const InterviewCenterPage = () => {
                                     type="button"
                                     className={`mr-1 inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}
                                     title="Ir a cita enlazada"
-                                    onClick={() => focusFragment(fragmentId, 'document')}
+                                    onClick={() => openFragmentDetailModal(fragmentId, 'document')}
                                   >
                                     ¶
                                   </button>
-                                  <span className="cursor-pointer" onClick={() => focusFragment(fragmentId, 'document')}>
+                                  <span className="cursor-pointer" onClick={() => openFragmentDetailModal(fragmentId, 'document')}>
                                     {segment.value}
                                   </span>
                                 </span>
@@ -1202,7 +1272,7 @@ const InterviewCenterPage = () => {
                                     if (node) railFragmentRefs.current[fragmentId] = node;
                                     else delete railFragmentRefs.current[fragmentId];
                                   }}
-                                  onClick={() => focusFragment(fragmentId, 'rail')}
+                                  onClick={() => openFragmentDetailModal(fragmentId, 'rail')}
                                   style={{ top: `${Math.max(0, card.topPx - 3)}px` }}
                                   className={`group pointer-events-auto absolute right-0 flex w-[176px] items-start gap-1.5 rounded-md border px-2 py-1.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.06)] transition-all duration-150 ${isActive ? 'border-indigo-300 bg-indigo-50/95' : 'border-slate-200/90 bg-white/95 hover:-translate-y-px hover:border-slate-300 hover:bg-slate-50/90'} ${isHighlighted ? 'ring-1 ring-indigo-200' : ''}`}
                                 >
@@ -1273,6 +1343,59 @@ const InterviewCenterPage = () => {
           />
         )}
       </InterviewModuleShell>
+
+      <Modal
+        title="Detalle del fragmento"
+        open={fragmentDetailModalOpen}
+        onClose={() => setFragmentDetailModalOpen(false)}
+      >
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Título</p>
+            <input
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              placeholder="Asigna un título al fragmento"
+              value={fragmentDetailDraft.title}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, title: event.target.value }))}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Descripción (texto extraído)</p>
+            <textarea
+              className="h-28 w-full rounded-md border bg-slate-50 px-3 py-2 text-sm text-slate-700"
+              value={fragmentDetailDraft.description}
+              readOnly
+            />
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Código vinculado</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={fragmentDetailDraft.linkedCode}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, linkedCode: event.target.value }))}
+            >
+              <option value="">Seleccionar código…</option>
+              {fragmentEvolutionCodeOptions.map((option) => (
+                <option key={option.slug} value={option.slug}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {fragmentDetailDraft.evolvedToCode ? (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              Fragmento evolucionado a código.
+            </div>
+          ) : null}
+
+          <div className="flex items-center justify-end gap-2">
+            <Button className="bg-white border" onClick={() => setFragmentDetailModalOpen(false)}>Cerrar</Button>
+            <Button className="bg-white border" onClick={persistFragmentDetailDraft}>Guardar detalle</Button>
+            <Button className="bg-indigo-600 text-white" onClick={evolveFragmentToCode}>Evolucionar a código</Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         title="Agregar fragmento manual"
