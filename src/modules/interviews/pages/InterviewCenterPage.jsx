@@ -99,6 +99,7 @@ const InterviewCenterPage = () => {
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [fragmentRailPositions, setFragmentRailPositions] = useState({});
+  const [documentRailHeight, setDocumentRailHeight] = useState(320);
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -301,8 +302,13 @@ const InterviewCenterPage = () => {
       const railNode = fragmentsRailRef.current;
       if (!railNode) return;
 
-      const railRect = railNode.getBoundingClientRect();
-      const railHeight = Math.max(railNode.offsetHeight - 44, 0);
+      const documentNode = documentReaderRef.current;
+      if (!documentNode) return;
+
+      const documentRect = documentNode.getBoundingClientRect();
+      const documentHeight = Math.max(documentNode.offsetHeight, 320);
+      const railHeight = Math.max(documentHeight - 44, 0);
+      setDocumentRailHeight(documentHeight);
       const nextPositions = {};
 
       mappedDocumentFragments.forEach((fragment, index) => {
@@ -311,7 +317,7 @@ const InterviewCenterPage = () => {
 
         if (fragmentNode) {
           const fragmentRect = fragmentNode.getBoundingClientRect();
-          const relativeTop = fragmentRect.top - railRect.top + railNode.scrollTop;
+          const relativeTop = fragmentRect.top - documentRect.top + documentNode.scrollTop;
           nextPositions[fragmentId] = Math.min(Math.max(relativeTop, 0), railHeight);
         } else {
           nextPositions[fragmentId] = Math.min(index * 34, railHeight);
@@ -1189,7 +1195,7 @@ const InterviewCenterPage = () => {
                           </div>
                         </div>
 
-                        <div ref={fragmentsRailRef} className="relative min-h-[320px]">
+                        <div ref={fragmentsRailRef} className="relative min-h-[320px] self-start" style={{ height: `${documentRailHeight}px` }}>
                             {fragmentRailCards.map((card) => {
                               const fragmentId = card.id;
                               const fragment = card.fragment;
