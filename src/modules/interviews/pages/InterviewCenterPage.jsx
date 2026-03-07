@@ -75,7 +75,7 @@ const blankClient = { name: '', contact: '', notes: '', audience_id: '', status:
 const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
 
 const InterviewCenterPage = () => {
-  const { projectId, campaignId } = useParams();
+  const { projectId, campaignId, nodeId } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
   const center = useInterviewCenterData({ projectId, campaignId, toast });
@@ -415,6 +415,8 @@ const InterviewCenterPage = () => {
   }, [campaignId, projectId]);
 
   const openDocumentReader = useCallback(async (item) => {
+    setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+    setManualFragmentModalOpen(false);
     setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null }));
     try {
       const document = await interviewsModuleApi.readCloudDocument(item.id);
@@ -494,6 +496,12 @@ const InterviewCenterPage = () => {
     if (!cloudState.parentId) return;
     loadInterviewCloudFolder(cloudState.parentId);
   }, [cloudState.parentId, loadInterviewCloudFolder, tab]);
+
+  useEffect(() => {
+    if (!nodeId) return;
+    setTab('cloud');
+    openDocumentReader({ id: nodeId });
+  }, [nodeId, openDocumentReader]);
 
   useEffect(() => {
     if (tab !== 'semantic') return;
@@ -811,7 +819,7 @@ const InterviewCenterPage = () => {
 
         {!center.loading && !center.error && tab === 'cloud' && (
           <section className="space-y-4">
-            <div className="rounded-2xl border bg-white p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className={`rounded-2xl border bg-white p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between ${nodeId ? "hidden" : ""}`}>
               <div>
                 <h3 className="text-lg font-semibold text-slate-900">Cloud de investigación cualitativa</h3>
                 <p className="text-sm text-slate-600">Espacio documental independiente para audiencias, entrevistas, hipótesis y evidencia primaria.</p>
@@ -822,7 +830,7 @@ const InterviewCenterPage = () => {
               </label>
             </div>
 
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className={`grid gap-3 md:grid-cols-3 ${nodeId ? "hidden" : ""}`}>
               <div className="rounded-xl border bg-white p-3">
                 <p className="text-xs text-slate-500">Audiencias</p>
                 <p className="text-xl font-semibold">{cloudState.overview?.audiences?.length || 0}</p>
@@ -837,7 +845,7 @@ const InterviewCenterPage = () => {
               </div>
             </div>
 
-            <div className="rounded-2xl border bg-white p-4 space-y-3">
+            <div className={`rounded-2xl border bg-white p-4 space-y-3 ${nodeId ? "hidden" : ""}`}>
               <div className="flex flex-wrap gap-2 text-sm text-slate-600">
                 {(cloudState.breadcrumbs || []).map((crumb, idx) => (
                   <button key={crumb.id} className="hover:underline" onClick={() => loadInterviewCloudFolder(crumb.id)}>
@@ -854,7 +862,7 @@ const InterviewCenterPage = () => {
                       className="flex items-center gap-2 text-left"
                       onClick={() => {
                         if (item.kind === 'file') {
-                          openDocumentReader(item);
+                          navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/cloud/${item.id}`);
                           return;
                         }
                         loadInterviewCloudFolder(item.targetId || item.id);
@@ -870,15 +878,36 @@ const InterviewCenterPage = () => {
               </div>
             </div>
 
-            {docReader.document || docReader.loading || docReader.error ? (
+            {!nodeId ? (
+              <div className="space-y-4">
+                <div className="rounded-xl border bg-white p-3">
+                  <p className="text-sm text-slate-600">Selecciona un documento para abrirlo en una página dedicada del lector.</p>
+                </div>
+              </div>
+            ) : null}
+
+            {nodeId ? (
               <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
                 <div className="rounded-2xl border bg-[#f8fafc] p-4">
-                  <div className="mb-3 flex items-center justify-between">
+                  <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
                       <h4 className="font-semibold text-slate-900">Lector de documento</h4>
                       <p className="text-xs text-slate-500">Lectura enriquecida para transcripción (.doc/.docx/txt) con extracción de fragmentos.</p>
                     </div>
-                    {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
+                    <div className="flex items-center gap-2">
+                      {nodeId ? (
+                        <Button
+                          className="bg-white border"
+                          onClick={() => {
+                            setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+                            navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`);
+                          }}
+                        >
+                          Volver al cloud
+                        </Button>
+                      ) : null}
+                      {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
+                    </div>
                   </div>
                   {docReader.loading ? <p className="text-sm text-slate-500">Abriendo documento...</p> : null}
                   {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
