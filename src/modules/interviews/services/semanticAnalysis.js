@@ -101,44 +101,6 @@ const buildInterviewSources = ({ sessions = [], audiencesById = {}, formsById = 
   };
 });
 
-const buildAutoFragments = (interviews = []) => {
-  const fragments = [];
-  interviews.forEach((interview) => {
-    let position = 1;
-
-    interview.responseTexts.forEach((response) => {
-      splitSentences(response.text).forEach((sentence, idx) => {
-        if (sentence.length < 18) return;
-        fragments.push({
-          id: `auto_${interview.id}_${response.questionId}_${idx}`,
-          interview_id: interview.id,
-          text: sentence,
-          position,
-          originRef: `respuesta:${response.questionId}#${idx + 1}`,
-          sourceType: 'auto',
-        });
-        position += 1;
-      });
-    });
-
-    if (!interview.responseTexts.length) {
-      splitSentences(interview.transcript).forEach((sentence, idx) => {
-        if (sentence.length < 18) return;
-        fragments.push({
-          id: `auto_${interview.id}_transcript_${idx}`,
-          interview_id: interview.id,
-          text: sentence,
-          position,
-          originRef: `transcripcion#${idx + 1}`,
-          sourceType: 'auto',
-        });
-        position += 1;
-      });
-    }
-  });
-  return fragments;
-};
-
 const inferCodesForFragment = (fragment) => {
   const text = normalize(fragment.text);
   const tokens = tokenize(fragment.text);
@@ -191,21 +153,20 @@ export const buildSemanticAnalysis = ({
   audiencesById = {},
   formsById = {},
   clientsById = {},
-  manualFragments = [],
+  fragments = [],
   customCodebook = [],
   codeAssignments = {},
   clusterNameOverrides = {},
 }) => {
   const interviews = buildInterviewSources({ sessions, audiencesById, formsById, clientsById });
-  const autoFragments = buildAutoFragments(interviews);
-  const normalizedManualFragments = manualFragments
+  const normalizedFragments = (fragments || [])
     .map((fragment, index) => ({
-      id: String(fragment.id || `manual_fragment_${index}`),
-      interview_id: fragment.interview_id || null,
+      id: String(fragment.id || `fragment_${index}`),
+      interview_id: fragment.interview_id || fragment.interview_session_id || null,
       document_id: fragment.document_id || fragment.document_node_id || null,
       text: String(fragment.text || fragment.selected_text || '').trim(),
       position: Number(fragment.position || (index + 1)),
-      originRef: fragment.originRef || fragment.origin_ref || (fragment.document_node_id ? `cloud:${fragment.document_node_id}` : `manual#${index + 1}`),
+      originRef: fragment.originRef || fragment.origin_ref || (fragment.document_node_id ? `cloud:${fragment.document_node_id}` : `fragment#${index + 1}`),
       sourceType: fragment.sourceType || fragment.source_type || 'manual',
       created_at: fragment.created_at || null,
       start_offset: fragment.start_offset ?? null,
@@ -217,7 +178,6 @@ export const buildSemanticAnalysis = ({
       },
     }))
     .filter((fragment) => fragment.text);
-  const fragments = [...autoFragments, ...normalizedManualFragments];
 
   const codebook = uniq([...CODEBOOK, ...customCodebook].map((item) => item.slug)).map((slug) => {
     const fromCustom = customCodebook.find((item) => item.slug === slug);
@@ -225,7 +185,7 @@ export const buildSemanticAnalysis = ({
     return fromCustom || fromDefault;
   }).filter(Boolean);
 
-  const fragmentsWithCodes = fragments.map((fragment) => {
+  const fragmentsWithCodes = normalizedFragments.map((fragment) => {
     const inferred = inferCodesForFragment(fragment);
     const manual = codeAssignments[fragment.id] || [];
     const codeSlugs = uniq([...inferred, ...manual]).filter((slug) => codebook.some((code) => code.slug === slug));

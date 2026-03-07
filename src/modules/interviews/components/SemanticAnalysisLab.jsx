@@ -36,7 +36,6 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [fragmentFilters, setFragmentFilters] = useState({ q: '', audience: '', interview: '', document: '', source: '', sort: 'created_desc' });
   const [fragmentPage, setFragmentPage] = useState(1);
   const [workspace, setWorkspace] = useState({
-    manualFragments: [],
     customCodebook: [],
     codeAssignments: {},
     clusterNameOverrides: {},
@@ -88,30 +87,21 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     [sessions, filters],
   );
 
-  const persistedManualFragments = useMemo(() => (persistedFragments || []).map((fragment, index) => ({
+  const normalizedFragments = useMemo(() => (persistedFragments || []).map((fragment, index) => ({
     id: String(fragment.id),
     interview_id: fragment.interview_session_id || fragment.interview_id || null,
-    document_id: fragment.document_node_id || null,
+    document_id: fragment.document_node_id || fragment.document_id || null,
     text: String(fragment.selected_text || fragment.text || '').trim(),
-    position: Number(fragment.start_offset ?? index + 1) || (index + 1),
-    originRef: fragment.document_node_id ? `cloud:${fragment.document_node_id}` : `cloud#${index + 1}`,
-    sourceType: fragment.source_type || 'manual',
+    position: Number(fragment.position ?? fragment.start_offset ?? index + 1) || (index + 1),
+    originRef: fragment.originRef || (fragment.document_node_id ? `cloud:${fragment.document_node_id}` : `cloud#${index + 1}`),
+    sourceType: fragment.source_type || fragment.sourceType || 'manual',
     created_at: fragment.created_at || null,
     start_offset: fragment.start_offset ?? null,
     end_offset: fragment.end_offset ?? null,
+    document_node_id: fragment.document_node_id || null,
+    campaign_id: fragment.campaign_id || null,
+    project_id: fragment.project_id || null,
   })).filter((fragment) => fragment.text), [persistedFragments]);
-
-  const mergedManualFragments = useMemo(() => {
-    const seen = new Set();
-    const merged = [];
-    [...persistedManualFragments, ...(workspace.manualFragments || [])].forEach((fragment) => {
-      const id = String(fragment.id || '');
-      if (!id || seen.has(id)) return;
-      seen.add(id);
-      merged.push(fragment);
-    });
-    return merged;
-  }, [persistedManualFragments, workspace.manualFragments]);
 
   const audiencesById = useMemo(() => Object.fromEntries(audiences.map((audience) => [String(audience.id), audience])), [audiences]);
   const formsById = useMemo(() => Object.fromEntries(forms.map((form) => [String(form.id), form])), [forms]);
@@ -123,12 +113,12 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       audiencesById,
       formsById,
       clientsById,
-      manualFragments: mergedManualFragments,
+      fragments: normalizedFragments,
       customCodebook: workspace.customCodebook,
       codeAssignments: workspace.codeAssignments,
       clusterNameOverrides: workspace.clusterNameOverrides,
     }),
-    [filteredSessions, audiencesById, formsById, clientsById, workspace],
+    [filteredSessions, audiencesById, formsById, clientsById, normalizedFragments, workspace],
   );
 
   const interviewById = useMemo(() => Object.fromEntries(analysis.interviews.map((interview) => [String(interview.id), interview])), [analysis.interviews]);
@@ -173,28 +163,6 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   useEffect(() => {
     setFragmentPage(1);
   }, [fragmentFilters.q, fragmentFilters.audience, fragmentFilters.interview, fragmentFilters.document, fragmentFilters.source, fragmentFilters.sort]);
-
-  const addManualFragment = (interview, text, originRef) => {
-    const trimmed = String(text || '').trim();
-    if (!trimmed) return;
-    const interviewFragments = analysis.fragments.filter((fragment) => String(fragment.interview_id) === String(interview.id));
-    const nextPosition = (interviewFragments.at(-1)?.position || 0) + 1;
-    const newFragment = {
-      id: `manual_${interview.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      interview_id: interview.id,
-      text: trimmed,
-      position: nextPosition,
-      originRef: originRef || `manual#${nextPosition}`,
-      sourceType: 'manual',
-    };
-
-    setWorkspace((prev) => ({
-      ...prev,
-      manualFragments: [...prev.manualFragments, newFragment],
-    }));
-    setSelectedFragmentId(newFragment.id);
-    setActiveTab('fragments');
-  };
 
   const toggleFragmentCode = (fragmentId, codeSlug) => {
     setWorkspace((prev) => {
@@ -332,7 +300,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                     <div key={`${row.questionId}_${row.idx}_${row.sentence.slice(0, 12)}`} className="rounded-lg border border-slate-200 bg-white p-3">
                       <p className="text-sm text-slate-700">{row.sentence}</p>
                       <div className="mt-2 flex justify-end">
-                        <Button className="bg-white border" onClick={() => addManualFragment(selectedInterview, row.sentence, `respuesta:${row.questionId}#${row.idx + 1}`)}>Convertir en fragmento</Button>
+                        <span className="text-xs text-slate-500">Crear fragmentos desde Cloud (fuente única)</span>
                       </div>
                     </div>
                   ))}
@@ -353,8 +321,8 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               <input className="border rounded p-2 text-sm md:col-span-2" placeholder="Buscar fragmento..." value={fragmentFilters.q} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, q: e.target.value }))} />
               <select className="border rounded p-2 text-sm" value={fragmentFilters.audience} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, audience: e.target.value }))}><option value="">Audiencia</option>{audiences.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
               <select className="border rounded p-2 text-sm" value={fragmentFilters.interview} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, interview: e.target.value }))}><option value="">Entrevista</option>{analysis.interviews.map((i) => <option key={i.id} value={i.id}>{i.clientName}</option>)}</select>
-              <select className="border rounded p-2 text-sm" value={fragmentFilters.document} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, document: e.target.value }))}><option value="">Documento</option>{[...new Set((persistedFragments || []).map((f) => String(f.document_node_id || '')).filter(Boolean))].map((docId) => <option key={docId} value={docId}>{docId}</option>)}</select>
-              <select className="border rounded p-2 text-sm" value={fragmentFilters.source} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, source: e.target.value }))}><option value="">Origen</option><option value="selection">selection</option><option value="manual">manual</option><option value="auto">auto</option></select>
+              <select className="border rounded p-2 text-sm" value={fragmentFilters.document} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, document: e.target.value }))}><option value="">Documento</option>{[...new Set((normalizedFragments || []).map((f) => String(f.document_id || f.document_node_id || '')).filter(Boolean))].map((docId) => <option key={docId} value={docId}>{docId}</option>)}</select>
+              <select className="border rounded p-2 text-sm" value={fragmentFilters.source} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, source: e.target.value }))}><option value="">Origen</option><option value="selection">selection</option><option value="manual">manual</option></select>
               <select className="border rounded p-2 text-sm" value={fragmentFilters.sort} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, sort: e.target.value }))}><option value="created_desc">Fecha desc</option><option value="created_asc">Fecha asc</option><option value="document_asc">Documento</option></select>
             </div>
             <p className="mt-2 text-xs text-slate-500">Total: {pagedFragments.total} fragmentos · página {pagedFragments.currentPage}/{pagedFragments.totalPages}</p>
