@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { BookOpen, Braces, Hash, Link2, Sparkles, Tag } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getLeanProblemScore, getLeanSolutionScore } from '@/modules/interviews/components/LeanEvaluationPanel';
 import { buildSemanticAnalysis, defaultSemanticClusters, defaultSemanticCodebook } from '@/modules/interviews/services/semanticAnalysis';
@@ -25,6 +26,14 @@ const formatDate = (value) => {
 };
 
 const emptyNewCode = { name: '', slug: '', category: 'interpretacion', description: '' };
+
+const codeCategoryTone = {
+  tipo_problema: 'border-rose-200 bg-rose-50 text-rose-700',
+  interpretacion: 'border-indigo-200 bg-indigo-50 text-indigo-700',
+  emocion: 'border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700',
+  comportamiento: 'border-cyan-200 bg-cyan-50 text-cyan-700',
+  intento_solucion: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+};
 
 export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], persistedFragments = [], onOpenSession, onCreateFragment }) => {
   const [filters, setFilters] = useState(defaultFilters);
@@ -313,117 +322,165 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       )}
 
       {activeTab === 'fragments' && (
-        <div className="grid lg:grid-cols-[1.2fr_1fr] gap-4">
-          <div className={card}>
-            <h4 className="font-semibold text-slate-900">Fragmentos semánticos</h4>
-            <p className="text-xs text-slate-500 mt-1">Unidad mínima de significado con trazabilidad de entrevista/documento.</p>
-            <div className="mt-3 grid gap-2 md:grid-cols-3">
-              <input className="border rounded p-2 text-sm md:col-span-2" placeholder="Buscar fragmento..." value={fragmentFilters.q} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, q: e.target.value }))} />
-              <select className="border rounded p-2 text-sm" value={fragmentFilters.audience} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, audience: e.target.value }))}><option value="">Audiencia</option>{audiences.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
-              <select className="border rounded p-2 text-sm" value={fragmentFilters.interview} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, interview: e.target.value }))}><option value="">Entrevista</option>{analysis.interviews.map((i) => <option key={i.id} value={i.id}>{i.clientName}</option>)}</select>
-              <select className="border rounded p-2 text-sm" value={fragmentFilters.document} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, document: e.target.value }))}><option value="">Documento</option>{[...new Set((normalizedFragments || []).map((f) => String(f.document_id || f.document_node_id || '')).filter(Boolean))].map((docId) => <option key={docId} value={docId}>{docId}</option>)}</select>
-              <select className="border rounded p-2 text-sm" value={fragmentFilters.source} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, source: e.target.value }))}><option value="">Origen</option><option value="selection">selection</option><option value="manual">manual</option></select>
-              <select className="border rounded p-2 text-sm" value={fragmentFilters.sort} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, sort: e.target.value }))}><option value="created_desc">Fecha desc</option><option value="created_asc">Fecha asc</option><option value="document_asc">Documento</option></select>
+        <div className="grid lg:grid-cols-[1.25fr_1fr] gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Sparkles className="h-4 w-4 text-indigo-600" /> Fragmentos semánticos</h4>
+                  <p className="text-xs text-slate-500 mt-1">Unidades de evidencia documentada con metadata escaneable y estado de codificación.</p>
+                </div>
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-600">{pagedFragments.total} fragmentos</span>
+              </div>
             </div>
-            <p className="mt-2 text-xs text-slate-500">Total: {pagedFragments.total} fragmentos · página {pagedFragments.currentPage}/{pagedFragments.totalPages}</p>
-            <div className="mt-3 space-y-2 max-h-[520px] overflow-y-auto pr-1">
-              {pagedFragments.rows.map((fragment) => {
-                const interview = interviewById[String(fragment.interview_id)];
-                return (
-                  <div
-                    key={fragment.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedFragmentId(fragment.id)}
-                    onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedFragmentId(fragment.id); } }}
-                    className={`w-full text-left rounded-lg border p-3 transition ${selectedFragmentId === fragment.id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
-                  >
-                    <p className="text-sm text-slate-800">{fragment.text}</p>
-                    <p className="mt-1 text-xs text-slate-500">{interview?.clientName || 'Sin entrevista'} · pos {fragment.position} · origen {fragment.sourceType} · doc {fragment.document_id || fragment.metadata?.document_node_id || '—'} · {fragment.created_at ? formatDate(fragment.created_at) : 'sin fecha'}</p>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {fragment.codeSlugs.map((slug) => (
-                        <span key={slug} className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">{slug}</span>
-                      ))}
+
+            <div className="p-4">
+              <div className="grid gap-2 md:grid-cols-3">
+                <input className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" placeholder="Buscar fragmento..." value={fragmentFilters.q} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, q: e.target.value }))} />
+                <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={fragmentFilters.audience} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, audience: e.target.value }))}><option value="">Audiencia</option>{audiences.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+                <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={fragmentFilters.interview} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, interview: e.target.value }))}><option value="">Entrevista</option>{analysis.interviews.map((i) => <option key={i.id} value={i.id}>{i.clientName}</option>)}</select>
+                <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={fragmentFilters.document} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, document: e.target.value }))}><option value="">Documento</option>{[...new Set((normalizedFragments || []).map((f) => String(f.document_id || f.document_node_id || '')).filter(Boolean))].map((docId) => <option key={docId} value={docId}>{docId}</option>)}</select>
+                <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={fragmentFilters.source} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, source: e.target.value }))}><option value="">Origen</option><option value="selection">selection</option><option value="manual">manual</option></select>
+                <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={fragmentFilters.sort} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, sort: e.target.value }))}><option value="created_desc">Fecha desc</option><option value="created_asc">Fecha asc</option><option value="document_asc">Documento</option></select>
+              </div>
+              <p className="mt-3 text-xs text-slate-500">Página {pagedFragments.currentPage}/{pagedFragments.totalPages}</p>
+
+              <div className="mt-3 space-y-2 max-h-[520px] overflow-y-auto pr-1">
+                {pagedFragments.rows.map((fragment) => {
+                  const interview = interviewById[String(fragment.interview_id)];
+                  const isSelected = selectedFragmentId === fragment.id;
+                  const isCoded = fragment.codeSlugs.length > 0;
+                  return (
+                    <div
+                      key={fragment.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedFragmentId(fragment.id)}
+                      onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedFragmentId(fragment.id); } }}
+                      className={`group rounded-xl border p-3 transition ${isSelected ? 'border-indigo-300 bg-indigo-50/70 shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'}`}
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                          <Hash className="h-3.5 w-3.5" />
+                          <span>Frag. {fragment.id}</span>
+                        </div>
+                        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${isCoded ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{isCoded ? 'Codificado' : 'Sin código'}</span>
+                      </div>
+
+                      <p className="text-sm leading-5 text-slate-800">{fragment.text}</p>
+                      <p className="mt-1 text-[11px] text-slate-500">{interview?.clientName || 'Sin entrevista'} · pos {fragment.position} · origen {fragment.sourceType}</p>
+                      <p className="text-[11px] text-slate-500">doc {fragment.document_id || fragment.metadata?.document_node_id || '—'} · {fragment.created_at ? formatDate(fragment.created_at) : 'sin fecha'}</p>
+
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {fragment.codeSlugs.map((slug) => (
+                          <span key={slug} className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-medium text-indigo-700"><Tag className="h-3 w-3" />{slug}</span>
+                        ))}
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        {fragment.interview_id ? <Button className="h-7 bg-white border text-xs" onClick={(event) => { event.stopPropagation(); onOpenSession?.(fragment.interview_id); }}>Abrir entrevista</Button> : <span />}
+                        {fragment.document_id || fragment.metadata?.document_node_id ? <span className="text-[10px] text-slate-500">{fragment.document_id || fragment.metadata?.document_node_id}</span> : null}
+                      </div>
                     </div>
-                    <div className="mt-2 flex gap-2">
-                      {fragment.interview_id ? <Button className="bg-white border" onClick={(event) => { event.stopPropagation(); onOpenSession?.(fragment.interview_id); }}>Abrir entrevista</Button> : null}
-                      {fragment.document_id || fragment.metadata?.document_node_id ? <span className="text-[11px] text-slate-500">Documento: {fragment.document_id || fragment.metadata?.document_node_id}</span> : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="mt-3 flex items-center justify-between">
-              <Button className="bg-white border" onClick={() => setFragmentPage((p) => Math.max(1, p - 1))} disabled={pagedFragments.currentPage <= 1}>Anterior</Button>
-              <Button className="bg-white border" onClick={() => setFragmentPage((p) => Math.min(pagedFragments.totalPages, p + 1))} disabled={pagedFragments.currentPage >= pagedFragments.totalPages}>Siguiente</Button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between">
+                <Button className="bg-white border" onClick={() => setFragmentPage((p) => Math.max(1, p - 1))} disabled={pagedFragments.currentPage <= 1}>Anterior</Button>
+                <Button className="bg-white border" onClick={() => setFragmentPage((p) => Math.min(pagedFragments.totalPages, p + 1))} disabled={pagedFragments.currentPage >= pagedFragments.totalPages}>Siguiente</Button>
+              </div>
             </div>
           </div>
 
-          <div className={card}>
-            <h4 className="font-semibold text-slate-900">Codificación del fragmento</h4>
-            {!selectedFragment && <p className="text-sm text-slate-500 mt-2">Selecciona un fragmento para asignarle códigos.</p>}
-            {selectedFragment && (
-              <div className="space-y-3 mt-2">
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                  <p className="text-sm text-slate-700">{selectedFragment.text}</p>
-                  <p className="text-xs text-slate-500 mt-1">Fragmento: {selectedFragment.id}</p>
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Link2 className="h-4 w-4 text-indigo-600" /> Codificación del fragmento</h4>
+              <p className="text-xs text-slate-500 mt-1">Asigna y gestiona códigos con trazabilidad directa al fragmento seleccionado.</p>
+            </div>
+
+            <div className="p-4">
+              {!selectedFragment && <p className="text-sm text-slate-500">Selecciona un fragmento para asignarle códigos.</p>}
+              {selectedFragment && (
+                <div className="space-y-3">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-sm text-slate-700">{selectedFragment.text}</p>
+                    <p className="text-[11px] text-slate-500 mt-1">Fragmento: {selectedFragment.id}</p>
+                  </div>
+                  <div className="max-h-[380px] overflow-y-auto space-y-2 pr-1">
+                    {analysis.codes.map((code) => {
+                      const checked = selectedFragment.codeSlugs.includes(code.slug);
+                      return (
+                        <label key={code.slug} className={`flex items-start gap-2 rounded-xl border p-2.5 transition ${checked ? 'border-indigo-200 bg-indigo-50/60' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => toggleFragmentCode(selectedFragment.id, code.slug)}
+                            className="mt-0.5"
+                          />
+                          <span className="min-w-0">
+                            <span className="text-sm font-medium text-slate-800">{code.name}</span>
+                            <span className="mt-0.5 block text-xs text-slate-500">{code.category} · {code.description || 'Sin descripción'}</span>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
-                <div className="max-h-[360px] overflow-y-auto space-y-2 pr-1">
-                  {analysis.codes.map((code) => {
-                    const checked = selectedFragment.codeSlugs.includes(code.slug);
-                    return (
-                      <label key={code.slug} className="flex items-start gap-2 rounded border border-slate-200 p-2 bg-white">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={() => toggleFragmentCode(selectedFragment.id, code.slug)}
-                          className="mt-0.5"
-                        />
-                        <span>
-                          <span className="text-sm font-medium text-slate-800">{code.name}</span>
-                          <span className="block text-xs text-slate-500">{code.category} · {code.description || 'Sin descripción'}</span>
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {activeTab === 'codes' && (
-        <div className="grid lg:grid-cols-[1fr_1.2fr] gap-4">
-          <div className={card}>
-            <h4 className="font-semibold text-slate-900">Codebook</h4>
-            <p className="text-xs text-slate-500 mt-1">Diccionario de códigos para consistencia semántica.</p>
-            <div className="mt-3 space-y-2 max-h-[460px] overflow-y-auto pr-1">
+        <div className="grid lg:grid-cols-[1.1fr_1fr] gap-4">
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><BookOpen className="h-4 w-4 text-indigo-600" /> Codebook</h4>
+              <p className="text-xs text-slate-500 mt-1">Diccionario de conceptos semánticos con trazabilidad de uso.</p>
+            </div>
+
+            <div className="space-y-2 max-h-[520px] overflow-y-auto p-4 pr-3">
               {analysis.codes.map((code) => (
-                <div key={code.slug} className="rounded-lg border border-slate-200 bg-white p-3">
-                  <p className="text-sm font-medium text-slate-900">{code.name}</p>
-                  <p className="text-xs text-slate-500">{code.slug} · {code.category}</p>
-                  <p className="text-xs text-slate-600 mt-1">{code.description || 'Sin descripción'}</p>
-                  <p className="text-xs text-slate-500 mt-1">{code.fragmentCount} fragmentos · {code.interviewCount} entrevistas</p>
+                <div key={code.slug} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{code.name}</p>
+                      <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500"><Braces className="h-3.5 w-3.5" />{code.slug}</p>
+                    </div>
+                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${codeCategoryTone[code.category] || 'border-slate-200 bg-slate-50 text-slate-600'}`}>{code.category}</span>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-600">{code.description || 'Sin descripción'}</p>
+                  <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+                    <span className="rounded bg-slate-100 px-2 py-0.5">{code.fragmentCount} fragmentos</span>
+                    <span className="rounded bg-slate-100 px-2 py-0.5">{code.interviewCount} entrevistas</span>
+                  </div>
                 </div>
               ))}
             </div>
           </div>
 
-          <div className={card}>
-            <h4 className="font-semibold text-slate-900">Crear código</h4>
-            <p className="text-xs text-slate-500 mt-1">Permite extender el análisis sin romper trazabilidad.</p>
-            <div className="mt-3 grid gap-2">
-              <input className="border rounded p-2" value={newCode.name} onChange={(e) => setNewCode((prev) => ({ ...prev, name: e.target.value }))} placeholder="Nombre visible" />
-              <input className="border rounded p-2" value={newCode.slug} onChange={(e) => setNewCode((prev) => ({ ...prev, slug: e.target.value }))} placeholder="slug_estable (opcional)" />
-              <select className="border rounded p-2" value={newCode.category} onChange={(e) => setNewCode((prev) => ({ ...prev, category: e.target.value }))}>
-                {['tipo_problema', 'interpretacion', 'emocion', 'comportamiento', 'intento_solucion'].map((category) => <option key={category} value={category}>{category}</option>)}
-              </select>
-              <textarea className="border rounded p-2" rows={3} value={newCode.description} onChange={(e) => setNewCode((prev) => ({ ...prev, description: e.target.value }))} placeholder="Descripción opcional" />
-              <Button onClick={createCode}>Agregar al codebook</Button>
+          <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-4 py-3">
+              <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Tag className="h-4 w-4 text-indigo-600" /> Crear código</h4>
+              <p className="text-xs text-slate-500 mt-1">Extiende el modelo semántico con una entidad consistente y trazable.</p>
             </div>
-            <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <p className="text-xs text-slate-600">Códigos base cargados: {defaultSemanticCodebook.length}. Clusters base disponibles: {defaultSemanticClusters.length}.</p>
+
+            <div className="p-4">
+              <div className="grid gap-2">
+                <input className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={newCode.name} onChange={(e) => setNewCode((prev) => ({ ...prev, name: e.target.value }))} placeholder="Nombre visible" />
+                <input className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={newCode.slug} onChange={(e) => setNewCode((prev) => ({ ...prev, slug: e.target.value }))} placeholder="slug_estable (opcional)" />
+                <select className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" value={newCode.category} onChange={(e) => setNewCode((prev) => ({ ...prev, category: e.target.value }))}>
+                  {['tipo_problema', 'interpretacion', 'emocion', 'comportamiento', 'intento_solucion'].map((category) => <option key={category} value={category}>{category}</option>)}
+                </select>
+                <textarea className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-indigo-300 focus:bg-white" rows={4} value={newCode.description} onChange={(e) => setNewCode((prev) => ({ ...prev, description: e.target.value }))} placeholder="Descripción opcional" />
+                <Button className="bg-slate-900 text-white" onClick={createCode}>Agregar al codebook</Button>
+              </div>
+              <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                <p>Códigos base cargados: <span className="font-semibold text-slate-800">{defaultSemanticCodebook.length}</span>.</p>
+                <p className="mt-1">Clusters base disponibles: <span className="font-semibold text-slate-800">{defaultSemanticClusters.length}</span>.</p>
+              </div>
             </div>
           </div>
         </div>
