@@ -309,6 +309,29 @@ const InterviewCenterPage = () => {
     return segments;
   }, [docReader.document?.text, mappedDocumentFragments]);
 
+  const fragmentRailCards = useMemo(() => {
+    const sourceLength = Math.max(String(docReader.document?.text || '').length, 1);
+    return mappedDocumentFragments.map((fragment, index) => {
+      const fragmentId = String(fragment.id);
+      const preview = String(fragment.selected_text || '').trim();
+      const shortPreview = preview.length > 92 ? `${preview.slice(0, 92)}…` : preview;
+
+      let topPercent = 0;
+      if (fragment.hasRange && Number.isFinite(fragment.mappedStart)) {
+        topPercent = Math.min(94, Math.max(0, (fragment.mappedStart / sourceLength) * 100));
+      } else {
+        topPercent = Math.min(94, index * 12);
+      }
+
+      return {
+        id: fragmentId,
+        topPercent,
+        shortPreview: shortPreview || 'Texto enlazado',
+        fragment,
+      };
+    });
+  }, [docReader.document?.text, mappedDocumentFragments]);
+
   const clientRows = useMemo(() => center.clients.map((client) => {
     const interviews = center.sessions.filter((session) => String(session.client_id) === String(client.id));
     const lastInterview = interviews.length ? interviews.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] : null;
@@ -1011,7 +1034,7 @@ const InterviewCenterPage = () => {
             ) : null}
 
             {nodeId ? (
-              <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+              <div className="space-y-4">
                 <div className="rounded-2xl border bg-[#f8fafc] p-4">
                   <div className="mb-3 flex items-center justify-between gap-3">
                     <div>
@@ -1052,60 +1075,88 @@ const InterviewCenterPage = () => {
                   {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
                   {docReader.document ? (
                     <>
-                      <div
-                        className={`mx-auto min-h-[320px] ${readerViewMode === "focus" ? "max-w-4xl" : "max-w-3xl"} rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
-                        onMouseUp={captureSelection}
-                        onContextMenu={openSelectionMenu}
-                      >
-                        {documentFragmentsSegments.length ? documentFragmentsSegments.map((segment, index) => {
-                          if (segment.type === 'text') return <React.Fragment key={`seg-text-${index}`}>{segment.value}</React.Fragment>;
+                      <div className="mx-auto grid w-full max-w-6xl gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+                        <div>
+                          <div
+                            className={`min-h-[320px] rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
+                            onMouseUp={captureSelection}
+                            onContextMenu={openSelectionMenu}
+                          >
+                            {documentFragmentsSegments.length ? documentFragmentsSegments.map((segment, index) => {
+                              if (segment.type === 'text') return <React.Fragment key={`seg-text-${index}`}>{segment.value}</React.Fragment>;
 
-                          const fragmentId = String(segment.id);
-                          const isActive = activeFragmentId === fragmentId;
-                          const isHighlighted = highlightFragmentId === fragmentId;
-                          const fragmentPreview = String(segment.fragment?.selected_text || segment.value || '').trim();
-                          const shortPreview = fragmentPreview.length > 64 ? `${fragmentPreview.slice(0, 64)}…` : fragmentPreview;
-                          return (
-                            <span
-                              key={`seg-fragment-${fragmentId}-${index}`}
-                              ref={(node) => {
-                                if (node) documentFragmentRefs.current[fragmentId] = node;
-                                else delete documentFragmentRefs.current[fragmentId];
-                              }}
-                              className={`group relative mx-0.5 inline-block rounded-md border px-1 py-0.5 align-baseline transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-cyan-200 bg-cyan-50/70'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
-                            >
-                              <button
-                                type="button"
-                                className={`mr-1 inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}
-                                title="Ir al fragmento en panel"
-                                onClick={() => focusFragment(fragmentId, 'document')}
-                              >
-                                ¶
-                              </button>
-                              <span className="cursor-pointer" onClick={() => focusFragment(fragmentId, 'document')}>
-                                {segment.value}
-                              </span>
-                              <button
-                                type="button"
-                                title="Abrir fragmento enlazado"
-                                onClick={() => focusFragment(fragmentId, 'document')}
-                                className={`absolute left-full top-1/2 z-10 ml-2 hidden w-44 -translate-y-1/2 rounded-md border bg-white/95 px-2 py-1 text-left shadow-sm transition group-hover:flex md:flex md:flex-col ${isActive ? 'border-indigo-300' : 'border-slate-200 hover:border-cyan-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
-                              >
-                                <span className={`mb-0.5 inline-flex w-fit rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${isActive ? 'bg-indigo-100 text-indigo-700' : 'bg-cyan-100 text-cyan-700'}`}>Fragmento</span>
-                                <span className="text-[11px] leading-4 text-slate-700">{shortPreview || 'Texto enlazado'}</span>
-                              </button>
-                            </span>
-                          );
-                        }) : (docReader.document.text || 'No se pudo renderizar texto de este documento.')}
-                      </div>
-                      <div className="mt-3 rounded-lg border bg-white p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
-                        <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
-                        <div className="mt-2 flex items-center gap-2">
-                          <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
-                          {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
+                              const fragmentId = String(segment.id);
+                              const isActive = activeFragmentId === fragmentId;
+                              const isHighlighted = highlightFragmentId === fragmentId;
+                              return (
+                                <span
+                                  key={`seg-fragment-${fragmentId}-${index}`}
+                                  ref={(node) => {
+                                    if (node) documentFragmentRefs.current[fragmentId] = node;
+                                    else delete documentFragmentRefs.current[fragmentId];
+                                  }}
+                                  className={`group mx-0.5 inline rounded-md border px-1 py-0.5 align-baseline transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-cyan-200 bg-cyan-50/70'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                                >
+                                  <button
+                                    type="button"
+                                    className={`mr-1 inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}
+                                    title="Ir al fragmento en panel"
+                                    onClick={() => focusFragment(fragmentId, 'document')}
+                                  >
+                                    ¶
+                                  </button>
+                                  <span className="cursor-pointer" onClick={() => focusFragment(fragmentId, 'document')}>
+                                    {segment.value}
+                                  </span>
+                                </span>
+                              );
+                            }) : (docReader.document.text || 'No se pudo renderizar texto de este documento.')}
+                          </div>
+
+                          <div className="mt-3 rounded-lg border bg-white p-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
+                            <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
+                            <div className="mt-2 flex items-center gap-2">
+                              <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
+                              <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(true)}>Agregar manual</Button>
+                              {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
+                            </div>
+                          </div>
                         </div>
+
+                        <aside ref={fragmentsPanelRef} className="rounded-xl border border-slate-200 bg-white p-2">
+                          <p className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fragmentos enlazados</p>
+                          <div className="relative min-h-[320px]">
+                            {fragmentRailCards.map((card) => {
+                              const fragmentId = card.id;
+                              const fragment = card.fragment;
+                              const isActive = activeFragmentId === fragmentId;
+                              const isHighlighted = highlightFragmentId === fragmentId;
+                              return (
+                                <button
+                                  key={fragment.id}
+                                  type="button"
+                                  ref={(node) => {
+                                    if (node) panelFragmentRefs.current[fragmentId] = node;
+                                    else delete panelFragmentRefs.current[fragmentId];
+                                  }}
+                                  onClick={() => focusFragment(fragmentId, 'panel')}
+                                  style={{ top: `${card.topPercent}%` }}
+                                  className={`absolute left-0 right-0 rounded-lg border px-2 py-1.5 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                                >
+                                  <div className="mb-0.5 flex items-center gap-1.5">
+                                    <span className={`inline-flex h-4 min-w-4 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
+                                    <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Fragmento</span>
+                                  </div>
+                                  <p className="text-[11px] leading-4 text-slate-700">{card.shortPreview}</p>
+                                </button>
+                              );
+                            })}
+                            {!docReader.fragments?.length ? <p className="px-1 text-sm text-slate-500">Aún no hay fragmentos para este documento.</p> : null}
+                          </div>
+                        </aside>
                       </div>
+
                       {docSelectionMenu.open && docReader.selectionText ? (
                         <div
                           className="fixed z-50 w-56 rounded-xl border bg-white p-1 shadow-lg"
@@ -1131,43 +1182,6 @@ const InterviewCenterPage = () => {
                       ) : null}
                     </>
                   ) : null}
-                </div>
-
-                <div ref={fragmentsPanelRef} className="rounded-2xl border bg-white p-4 space-y-3">
-                  <h4 className="font-semibold text-slate-900">Fragmentos del documento</h4>
-                  <div className="rounded-lg border p-3 space-y-2">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Agregar fragmento manual</p>
-                    <p className="text-sm text-slate-600">Haz click derecho sobre una selección para elegir cómo crear el fragmento.</p>
-                    <Button className="bg-slate-900 text-white" onClick={() => setManualFragmentModalOpen(true)}>Abrir modal de fragmento manual</Button>
-                  </div>
-
-                  <div className="space-y-2 max-h-[420px] overflow-auto pr-1">
-                    {mappedDocumentFragments.map((fragment) => {
-                      const fragmentId = String(fragment.id);
-                      const isActive = activeFragmentId === fragmentId;
-                      const isHighlighted = highlightFragmentId === fragmentId;
-                      return (
-                        <button
-                          key={fragment.id}
-                          type="button"
-                          ref={(node) => {
-                            if (node) panelFragmentRefs.current[fragmentId] = node;
-                            else delete panelFragmentRefs.current[fragmentId];
-                          }}
-                          onClick={() => focusFragment(fragmentId, 'panel')}
-                          className={`w-full rounded-lg border p-3 text-left transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
-                        >
-                          <div className="mb-1 flex items-center gap-2">
-                            <span className={`inline-flex h-5 min-w-5 items-center justify-center rounded text-[10px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
-                            <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fragmento enlazado</span>
-                          </div>
-                          <p className="text-sm text-slate-800">{fragment.selected_text}</p>
-                          <p className="mt-1 text-[11px] text-slate-500">{fragment.source_type} · {new Date(fragment.created_at).toLocaleString()} {fragment.start_offset != null ? `· ${fragment.start_offset}-${fragment.end_offset}` : ''}</p>
-                        </button>
-                      );
-                    })}
-                    {!docReader.fragments?.length ? <p className="text-sm text-slate-500">Aún no hay fragmentos para este documento.</p> : null}
-                  </div>
                 </div>
               </div>
             ) : null}
