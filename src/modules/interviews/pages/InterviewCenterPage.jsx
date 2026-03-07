@@ -91,6 +91,8 @@ const InterviewCenterPage = () => {
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
   const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', fragments: [] });
   const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
+  const [docSelectionMenu, setDocSelectionMenu] = useState({ open: false, x: 0, y: 0 });
+  const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -114,6 +116,17 @@ const InterviewCenterPage = () => {
   const clientNotesTimerRef = useRef(null);
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
+
+  useEffect(() => {
+    if (!docSelectionMenu.open) return undefined;
+    const closeMenu = () => setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('scroll', closeMenu, true);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('scroll', closeMenu, true);
+    };
+  }, [docSelectionMenu.open]);
 
   useEffect(() => {
     if (!formEditorOpen) return undefined;
@@ -422,6 +435,14 @@ const InterviewCenterPage = () => {
     setDocReader((prev) => ({ ...prev, selectionText: text, selectionRange: range }));
   }, [docReader.document?.text]);
 
+  const openSelectionMenu = useCallback((event) => {
+    const selection = window.getSelection();
+    if (!selection || !selection.toString().trim()) return;
+    captureSelection();
+    event.preventDefault();
+    setDocSelectionMenu({ open: true, x: event.clientX, y: event.clientY });
+  }, [captureSelection]);
+
   const createSelectionFragment = useCallback(async () => {
     if (!docReader.document?.node_id || !docReader.selectionText) return;
     const payload = {
@@ -435,6 +456,7 @@ const InterviewCenterPage = () => {
     try {
       await interviewsModuleApi.createDocumentFragment(payload);
       setDocReader((prev) => ({ ...prev, selectionText: '', selectionRange: null }));
+      setDocSelectionMenu((prev) => ({ ...prev, open: false }));
       await loadDocumentFragments(docReader.document.node_id);
       await loadSemanticCloudFragments();
       toast({ title: 'Fragmento creado', description: 'Se guardó desde selección con trazabilidad.' });
@@ -453,6 +475,7 @@ const InterviewCenterPage = () => {
         source_type: 'manual',
       });
       setDocReader((prev) => ({ ...prev, manualText: '' }));
+      setManualFragmentModalOpen(false);
       await loadDocumentFragments(docReader.document.node_id);
       await loadSemanticCloudFragments();
       toast({ title: 'Fragmento manual creado' });
@@ -864,6 +887,7 @@ const InterviewCenterPage = () => {
                       <div
                         className="mx-auto min-h-[320px] max-w-3xl rounded-xl border bg-white px-12 py-10 text-[15px] leading-7 text-slate-800 shadow-sm whitespace-pre-wrap"
                         onMouseUp={captureSelection}
+                        onContextMenu={openSelectionMenu}
                       >
                         {docReader.document.text || 'No se pudo renderizar texto de este documento.'}
                       </div>
@@ -875,6 +899,29 @@ const InterviewCenterPage = () => {
                           {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
                         </div>
                       </div>
+                      {docSelectionMenu.open && docReader.selectionText ? (
+                        <div
+                          className="fixed z-50 w-56 rounded-xl border bg-white p-1 shadow-lg"
+                          style={{ left: docSelectionMenu.x, top: docSelectionMenu.y }}
+                        >
+                          <button
+                            className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
+                            onClick={() => {
+                              setDocReader((prev) => ({ ...prev, manualText: prev.selectionText || prev.manualText }));
+                              setManualFragmentModalOpen(true);
+                              setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+                            }}
+                          >
+                            Guardar fragmento manual
+                          </button>
+                          <button
+                            className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
+                            onClick={createSelectionFragment}
+                          >
+                            Agregar fragmento textutal
+                          </button>
+                        </div>
+                      ) : null}
                     </>
                   ) : null}
                 </div>
@@ -883,13 +930,8 @@ const InterviewCenterPage = () => {
                   <h4 className="font-semibold text-slate-900">Fragmentos del documento</h4>
                   <div className="rounded-lg border p-3 space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Agregar fragmento manual</p>
-                    <textarea
-                      className="w-full min-h-[120px] rounded-md border p-2 text-sm"
-                      placeholder="Escribe una observación semántica o resumen manual..."
-                      value={docReader.manualText}
-                      onChange={(event) => setDocReader((prev) => ({ ...prev, manualText: event.target.value }))}
-                    />
-                    <Button className="bg-slate-900 text-white" onClick={createManualFragment} disabled={!docReader.manualText.trim()}>Guardar fragmento manual</Button>
+                    <p className="text-sm text-slate-600">Haz click derecho sobre una selección para elegir cómo crear el fragmento.</p>
+                    <Button className="bg-slate-900 text-white" onClick={() => setManualFragmentModalOpen(true)}>Abrir modal de fragmento manual</Button>
                   </div>
 
                   <div className="space-y-2 max-h-[420px] overflow-auto pr-1">
@@ -919,6 +961,26 @@ const InterviewCenterPage = () => {
           />
         )}
       </InterviewModuleShell>
+
+      <Modal
+        title="Agregar fragmento manual"
+        open={manualFragmentModalOpen}
+        onClose={() => setManualFragmentModalOpen(false)}
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">Escribe una observación semántica o resumen manual para este documento.</p>
+          <textarea
+            className="w-full min-h-[160px] rounded-md border p-2 text-sm"
+            placeholder="Escribe una observación semántica o resumen manual..."
+            value={docReader.manualText}
+            onChange={(event) => setDocReader((prev) => ({ ...prev, manualText: event.target.value }))}
+          />
+          <div className="flex justify-end gap-2">
+            <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(false)}>Cancelar</Button>
+            <Button className="bg-slate-900 text-white" onClick={createManualFragment} disabled={!docReader.manualText.trim()}>Guardar fragmento manual</Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal title={clientDraft?.id ? 'Editar cliente' : 'Crear cliente'} open={clientModalOpen} onClose={() => { setClientModalOpen(false); setClientDraft(blankClient); }}>
         <div className="space-y-4">
