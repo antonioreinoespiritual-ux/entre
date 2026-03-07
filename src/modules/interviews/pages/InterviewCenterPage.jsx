@@ -74,7 +74,7 @@ const getClientScoreTone = (score, type = 'problem') => {
 
 const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
 const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
-const fragmentEvolutionCodeOptions = [
+const defaultFragmentEvolutionCodeOptions = [
   { slug: 'problema_intenso', label: 'Problema intenso' },
   { slug: 'problema_frecuente', label: 'Problema frecuente' },
   { slug: 'frustracion', label: 'Frustración' },
@@ -113,6 +113,7 @@ const InterviewCenterPage = () => {
   const [fragmentDetailModalOpen, setFragmentDetailModalOpen] = useState(false);
   const [fragmentDetailDraft, setFragmentDetailDraft] = useState({ id: null, title: '', description: '', linkedCode: '', evolvedToCode: false });
   const [fragmentDetailsById, setFragmentDetailsById] = useState({});
+  const [fragmentEvolutionCodeOptions, setFragmentEvolutionCodeOptions] = useState(defaultFragmentEvolutionCodeOptions);
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -734,6 +735,36 @@ const InterviewCenterPage = () => {
     }
   }, []);
 
+  const buildCodeLabelFromFragment = useCallback((title, description) => {
+    const cleanTitle = String(title || '').trim();
+    if (cleanTitle) return cleanTitle;
+
+    const cleanDescription = String(description || '').trim().replace(/\s+/g, ' ');
+    if (!cleanDescription) return 'Código derivado de fragmento';
+
+    const words = cleanDescription.split(' ').filter(Boolean).slice(0, 6);
+    const smartLabel = words.join(' ').trim();
+    return smartLabel.length > 56 ? `${smartLabel.slice(0, 56).trimEnd()}…` : smartLabel;
+  }, []);
+
+  const buildUniqueCodeSlug = useCallback((label, options = []) => {
+    const base = String(label || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_') || 'codigo_fragmento';
+
+    const existing = new Set(options.map((option) => String(option.slug)));
+    if (!existing.has(base)) return base;
+
+    let idx = 2;
+    while (existing.has(`${base}_${idx}`)) idx += 1;
+    return `${base}_${idx}`;
+  }, []);
+
   const openFragmentDetailModal = useCallback((fragmentId, origin = 'rail') => {
     const normalizedId = String(fragmentId);
     focusFragment(normalizedId, origin);
@@ -769,27 +800,44 @@ const InterviewCenterPage = () => {
 
   const evolveFragmentToCode = useCallback(() => {
     if (!fragmentDetailDraft.id) return;
-    if (!fragmentDetailDraft.linkedCode) {
-      toast({ title: 'Selecciona un código', description: 'Vincula un código antes de evolucionar el fragmento.', variant: 'destructive' });
-      return;
-    }
 
     const normalizedId = String(fragmentDetailDraft.id);
-    const nextDraft = { ...fragmentDetailDraft, evolvedToCode: true };
+    const previousLinkedCodes = [String(fragmentDetailDraft.linkedCode || '').trim()].filter(Boolean);
+
+    const newCodeLabel = buildCodeLabelFromFragment(fragmentDetailDraft.title, fragmentDetailDraft.description);
+    const newCodeSlug = buildUniqueCodeSlug(newCodeLabel, fragmentEvolutionCodeOptions);
+    const createdCode = { slug: newCodeSlug, label: newCodeLabel };
+
+    setFragmentEvolutionCodeOptions((prev) => {
+      if (prev.some((option) => option.slug === createdCode.slug)) return prev;
+      return [...prev, createdCode];
+    });
+
+    const nextDraft = {
+      ...fragmentDetailDraft,
+      title: String(fragmentDetailDraft.title || '').trim(),
+      description: String(fragmentDetailDraft.description || '').trim(),
+      linkedCode: createdCode.slug,
+      evolvedToCode: true,
+    };
+
     setFragmentDetailDraft(nextDraft);
     setFragmentDetailsById((prev) => ({
       ...prev,
       [normalizedId]: {
-        title: String(nextDraft.title || '').trim(),
-        description: String(nextDraft.description || '').trim(),
-        linkedCode: String(nextDraft.linkedCode || '').trim(),
+        title: nextDraft.title,
+        description: nextDraft.description,
+        linkedCode: createdCode.slug,
         evolvedToCode: true,
       },
     }));
 
-    const codeLabel = fragmentEvolutionCodeOptions.find((option) => option.slug === nextDraft.linkedCode)?.label || nextDraft.linkedCode;
-    toast({ title: 'Fragmento evolucionado', description: `El fragmento quedó evolucionado al código ${codeLabel}.` });
-  }, [fragmentDetailDraft, toast]);
+    const unlinkNote = previousLinkedCodes.length
+      ? ` Se desvincularon ${previousLinkedCodes.length} código(s) previo(s).`
+      : '';
+
+    toast({ title: 'Fragmento evolucionado', description: `Se creó el código ${createdCode.label}, se agregó al codebook y quedó como única vinculación.${unlinkNote}` });
+  }, [buildCodeLabelFromFragment, buildUniqueCodeSlug, fragmentDetailDraft, fragmentEvolutionCodeOptions, toast]);
 
   const announcePendingTool = useCallback((label) => {
     toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
