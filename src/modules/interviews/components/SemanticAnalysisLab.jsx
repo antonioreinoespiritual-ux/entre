@@ -33,6 +33,8 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [openCluster, setOpenCluster] = useState(null);
   const [selectedFragmentId, setSelectedFragmentId] = useState(null);
   const [newCode, setNewCode] = useState(emptyNewCode);
+  const [fragmentFilters, setFragmentFilters] = useState({ q: '', audience: '', interview: '', document: '', source: '', sort: 'created_desc' });
+  const [fragmentPage, setFragmentPage] = useState(1);
   const [workspace, setWorkspace] = useState({
     manualFragments: [],
     customCodebook: [],
@@ -89,10 +91,14 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const persistedManualFragments = useMemo(() => (persistedFragments || []).map((fragment, index) => ({
     id: String(fragment.id),
     interview_id: fragment.interview_session_id || fragment.interview_id || null,
+    document_id: fragment.document_node_id || null,
     text: String(fragment.selected_text || fragment.text || '').trim(),
     position: Number(fragment.start_offset ?? index + 1) || (index + 1),
     originRef: fragment.document_node_id ? `cloud:${fragment.document_node_id}` : `cloud#${index + 1}`,
     sourceType: fragment.source_type || 'manual',
+    created_at: fragment.created_at || null,
+    start_offset: fragment.start_offset ?? null,
+    end_offset: fragment.end_offset ?? null,
   })).filter((fragment) => fragment.text), [persistedFragments]);
 
   const mergedManualFragments = useMemo(() => {
@@ -128,6 +134,45 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const interviewById = useMemo(() => Object.fromEntries(analysis.interviews.map((interview) => [String(interview.id), interview])), [analysis.interviews]);
   const selectedInterview = openInterviewId ? interviewById[String(openInterviewId)] : null;
   const selectedFragment = selectedFragmentId ? analysis.fragments.find((fragment) => fragment.id === selectedFragmentId) : null;
+
+  const visibleFragments = useMemo(() => {
+    const q = fragmentFilters.q.trim().toLowerCase();
+    const rows = analysis.fragments.filter((fragment) => {
+      const interview = interviewById[String(fragment.interview_id)];
+      if (fragmentFilters.source && String(fragment.sourceType || '') !== String(fragmentFilters.source)) return false;
+      if (fragmentFilters.interview && String(fragment.interview_id || '') !== String(fragmentFilters.interview)) return false;
+      if (fragmentFilters.audience && String(interview?.audienceId || '') !== String(fragmentFilters.audience)) return false;
+      if (fragmentFilters.document && String(fragment.document_id || fragment.metadata?.document_node_id || '') !== String(fragmentFilters.document)) return false;
+      if (q && !`${fragment.text || ''} ${fragment.originRef || ''}`.toLowerCase().includes(q)) return false;
+      return true;
+    });
+
+    return [...rows].sort((a, b) => {
+      if (fragmentFilters.sort === 'created_asc') return new Date(a.created_at || 0) - new Date(b.created_at || 0);
+      if (fragmentFilters.sort === 'document_asc') return String(a.document_id || a.metadata?.document_node_id || '').localeCompare(String(b.document_id || b.metadata?.document_node_id || ''));
+      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+    });
+  }, [analysis.fragments, fragmentFilters, interviewById]);
+
+  const pagedFragments = useMemo(() => {
+    const pageSize = 50;
+    const totalPages = Math.max(1, Math.ceil(visibleFragments.length / pageSize));
+    const safePage = Math.min(fragmentPage, totalPages);
+    const start = (safePage - 1) * pageSize;
+    return {
+      rows: visibleFragments.slice(start, start + pageSize),
+      pageSize,
+      totalPages,
+      currentPage: safePage,
+      total: visibleFragments.length,
+    };
+  }, [fragmentPage, visibleFragments]);
+
+
+
+  useEffect(() => {
+    setFragmentPage(1);
+  }, [fragmentFilters.q, fragmentFilters.audience, fragmentFilters.interview, fragmentFilters.document, fragmentFilters.source, fragmentFilters.sort]);
 
   const addManualFragment = (interview, text, originRef) => {
     const trimmed = String(text || '').trim();
@@ -303,27 +348,46 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         <div className="grid lg:grid-cols-[1.2fr_1fr] gap-4">
           <div className={card}>
             <h4 className="font-semibold text-slate-900">Fragmentos semánticos</h4>
-            <p className="text-xs text-slate-500 mt-1">Unidad mínima de significado (id, entrevista, posición y origen).</p>
+            <p className="text-xs text-slate-500 mt-1">Unidad mínima de significado con trazabilidad de entrevista/documento.</p>
+            <div className="mt-3 grid gap-2 md:grid-cols-3">
+              <input className="border rounded p-2 text-sm md:col-span-2" placeholder="Buscar fragmento..." value={fragmentFilters.q} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, q: e.target.value }))} />
+              <select className="border rounded p-2 text-sm" value={fragmentFilters.audience} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, audience: e.target.value }))}><option value="">Audiencia</option>{audiences.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
+              <select className="border rounded p-2 text-sm" value={fragmentFilters.interview} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, interview: e.target.value }))}><option value="">Entrevista</option>{analysis.interviews.map((i) => <option key={i.id} value={i.id}>{i.clientName}</option>)}</select>
+              <select className="border rounded p-2 text-sm" value={fragmentFilters.document} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, document: e.target.value }))}><option value="">Documento</option>{[...new Set((persistedFragments || []).map((f) => String(f.document_node_id || '')).filter(Boolean))].map((docId) => <option key={docId} value={docId}>{docId}</option>)}</select>
+              <select className="border rounded p-2 text-sm" value={fragmentFilters.source} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, source: e.target.value }))}><option value="">Origen</option><option value="selection">selection</option><option value="manual">manual</option><option value="auto">auto</option></select>
+              <select className="border rounded p-2 text-sm" value={fragmentFilters.sort} onChange={(e) => setFragmentFilters((prev) => ({ ...prev, sort: e.target.value }))}><option value="created_desc">Fecha desc</option><option value="created_asc">Fecha asc</option><option value="document_asc">Documento</option></select>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Total: {pagedFragments.total} fragmentos · página {pagedFragments.currentPage}/{pagedFragments.totalPages}</p>
             <div className="mt-3 space-y-2 max-h-[520px] overflow-y-auto pr-1">
-              {analysis.fragments.map((fragment) => {
+              {pagedFragments.rows.map((fragment) => {
                 const interview = interviewById[String(fragment.interview_id)];
                 return (
-                  <button
-                    type="button"
+                  <div
                     key={fragment.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => setSelectedFragmentId(fragment.id)}
+                    onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedFragmentId(fragment.id); } }}
                     className={`w-full text-left rounded-lg border p-3 transition ${selectedFragmentId === fragment.id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
                   >
                     <p className="text-sm text-slate-800">{fragment.text}</p>
-                    <p className="mt-1 text-xs text-slate-500">{interview?.clientName || 'Sin cliente'} · pos {fragment.position} · origen {fragment.originRef} · {fragment.sourceType}</p>
+                    <p className="mt-1 text-xs text-slate-500">{interview?.clientName || 'Sin cliente'} · pos {fragment.position} · origen {fragment.sourceType} · doc {fragment.document_id || fragment.metadata?.document_node_id || '—'} · {fragment.created_at ? formatDate(fragment.created_at) : 'sin fecha'}</p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       {fragment.codeSlugs.map((slug) => (
                         <span key={slug} className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">{slug}</span>
                       ))}
                     </div>
-                  </button>
+                    <div className="mt-2 flex gap-2">
+                      {fragment.interview_id ? <Button className="bg-white border" onClick={(event) => { event.stopPropagation(); onOpenSession?.(fragment.interview_id); }}>Abrir entrevista</Button> : null}
+                      {fragment.document_id || fragment.metadata?.document_node_id ? <span className="text-[11px] text-slate-500">Documento: {fragment.document_id || fragment.metadata?.document_node_id}</span> : null}
+                    </div>
+                  </div>
                 );
               })}
+            </div>
+            <div className="mt-3 flex items-center justify-between">
+              <Button className="bg-white border" onClick={() => setFragmentPage((p) => Math.max(1, p - 1))} disabled={pagedFragments.currentPage <= 1}>Anterior</Button>
+              <Button className="bg-white border" onClick={() => setFragmentPage((p) => Math.min(pagedFragments.totalPages, p + 1))} disabled={pagedFragments.currentPage >= pagedFragments.totalPages}>Siguiente</Button>
             </div>
           </div>
 

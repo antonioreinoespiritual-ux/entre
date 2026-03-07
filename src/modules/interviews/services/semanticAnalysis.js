@@ -198,7 +198,25 @@ export const buildSemanticAnalysis = ({
 }) => {
   const interviews = buildInterviewSources({ sessions, audiencesById, formsById, clientsById });
   const autoFragments = buildAutoFragments(interviews);
-  const normalizedManualFragments = manualFragments.map((fragment) => ({ ...fragment, sourceType: 'manual' }));
+  const normalizedManualFragments = manualFragments
+    .map((fragment, index) => ({
+      id: String(fragment.id || `manual_fragment_${index}`),
+      interview_id: fragment.interview_id || null,
+      document_id: fragment.document_id || fragment.document_node_id || null,
+      text: String(fragment.text || fragment.selected_text || '').trim(),
+      position: Number(fragment.position || (index + 1)),
+      originRef: fragment.originRef || fragment.origin_ref || (fragment.document_node_id ? `cloud:${fragment.document_node_id}` : `manual#${index + 1}`),
+      sourceType: fragment.sourceType || fragment.source_type || 'manual',
+      created_at: fragment.created_at || null,
+      start_offset: fragment.start_offset ?? null,
+      end_offset: fragment.end_offset ?? null,
+      metadata: {
+        document_node_id: fragment.document_node_id || fragment.document_id || null,
+        campaign_id: fragment.campaign_id || null,
+        project_id: fragment.project_id || null,
+      },
+    }))
+    .filter((fragment) => fragment.text);
   const fragments = [...autoFragments, ...normalizedManualFragments];
 
   const codebook = uniq([...CODEBOOK, ...customCodebook].map((item) => item.slug)).map((slug) => {
