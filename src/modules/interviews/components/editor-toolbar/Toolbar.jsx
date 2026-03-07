@@ -74,63 +74,63 @@ export const Toolbar = ({
         style={{ overflow: 'hidden' }}
       >
         <Tabs.Content value="archivo" className={tabContentClassName} forceMount hidden={!isExpanded}>
-          <div className="flex flex-nowrap items-center overflow-x-auto">
+          <div className="flex flex-nowrap items-start overflow-x-auto pb-0.5">
             <ToolbarGroup>
-              <ToolbarButton icon={FolderOpen} tooltip="Volver al cloud" onClick={onBackToCloud} />
-              <ToolbarButton icon={Download} tooltip="Descargar documento" onClick={onDownloadDocument} />
+              <ToolbarButton icon={FolderOpen} tooltip="Volver al cloud" label="Volver" onClick={onBackToCloud} />
+              <ToolbarButton icon={Download} tooltip="Descargar documento" label="Descargar" onClick={onDownloadDocument} />
             </ToolbarGroup>
           </div>
         </Tabs.Content>
 
         <Tabs.Content value="fragmentos" className={tabContentClassName} forceMount hidden={!isExpanded}>
-          <div className="flex flex-nowrap items-center overflow-x-auto">
+          <div className="flex flex-nowrap items-start overflow-x-auto pb-0.5">
             <ToolbarGroup>
-              <ToolbarButton icon={Scissors} tooltip="Crear fragmento" onClick={onCreateFragment} disabled={!canCreateFragment} />
-              <ToolbarButton icon={Plus} tooltip="Añadir fragmento manual" onClick={onCreateManualFragment} />
-              <ToolbarButton icon={FileText} tooltip="Ver fragmentos" onClick={onViewFragments} />
+              <ToolbarButton icon={Scissors} tooltip="Crear fragmento" label="Crear fragmento" onClick={onCreateFragment} disabled={!canCreateFragment} />
+              <ToolbarButton icon={Plus} tooltip="Añadir fragmento manual" label="Añadir manual" onClick={onCreateManualFragment} />
+              <ToolbarButton icon={FileText} tooltip="Ver fragmentos" label="Ver fragmentos" onClick={onViewFragments} />
             </ToolbarGroup>
           </div>
         </Tabs.Content>
 
         <Tabs.Content value="codigos" className={tabContentClassName} forceMount hidden={!isExpanded}>
-          <div className="flex flex-nowrap items-center overflow-x-auto">
+          <div className="flex flex-nowrap items-start overflow-x-auto pb-0.5">
             <ToolbarGroup>
-              <ToolbarButton icon={Tags} tooltip="Ver códigos" onClick={onViewCodes} />
-              <ToolbarButton icon={Link2} tooltip="Vincular código" onClick={onLinkCode} />
+              <ToolbarButton icon={Tags} tooltip="Ver códigos" label="Ver códigos" onClick={onViewCodes} />
+              <ToolbarButton icon={Link2} tooltip="Vincular código" label="Vincular" onClick={onLinkCode} />
             </ToolbarGroup>
           </div>
         </Tabs.Content>
 
         <Tabs.Content value="clusters" className={tabContentClassName} forceMount hidden={!isExpanded}>
-          <div className="flex flex-nowrap items-center overflow-x-auto">
+          <div className="flex flex-nowrap items-start overflow-x-auto pb-0.5">
             <ToolbarGroup>
-              <ToolbarButton icon={Blocks} tooltip="Ver clusters" onClick={onViewClusters} />
+              <ToolbarButton icon={Blocks} tooltip="Ver clusters" label="Ver clusters" onClick={onViewClusters} />
             </ToolbarGroup>
           </div>
         </Tabs.Content>
 
         <Tabs.Content value="notas" className={tabContentClassName} forceMount hidden={!isExpanded}>
-          <div className="flex flex-nowrap items-center overflow-x-auto">
+          <div className="flex flex-nowrap items-start overflow-x-auto pb-0.5">
             <ToolbarGroup>
-              <ToolbarButton icon={StickyNote} tooltip="Crear memo" onClick={onCreateMemo} />
+              <ToolbarButton icon={StickyNote} tooltip="Crear memo" label="Crear memo" onClick={onCreateMemo} />
             </ToolbarGroup>
           </div>
         </Tabs.Content>
 
         <Tabs.Content value="vista" className={tabContentClassName} forceMount hidden={!isExpanded}>
-          <div className="flex flex-nowrap items-center overflow-x-auto">
+          <div className="flex flex-nowrap items-start overflow-x-auto pb-0.5">
             <ToolbarGroup>
-              <ToolbarButton icon={BookOpenText} tooltip={`Cambiar vista (${viewLabel})`} onClick={onToggleView} />
+              <ToolbarButton icon={BookOpenText} tooltip={`Cambiar vista (${viewLabel})`} label="Cambiar vista" onClick={onToggleView} />
             </ToolbarGroup>
           </div>
         </Tabs.Content>
 
         <Tabs.Content value="analisis" className={tabContentClassName} forceMount hidden={!isExpanded}>
-          <div className="flex flex-nowrap items-center overflow-x-auto">
+          <div className="flex flex-nowrap items-start overflow-x-auto pb-0.5">
             <ToolbarGroup>
-              <ToolbarButton icon={Brain} tooltip="Técnicas de análisis" onClick={onActivateAnalysis} />
+              <ToolbarButton icon={Brain} tooltip="Técnicas de análisis" label="Técnicas" onClick={onActivateAnalysis} />
               <ToolbarDivider />
-              <ToolbarButton icon={BarChart3} tooltip="Activar técnicas" onClick={onActivateAnalysis} />
+              <ToolbarButton icon={BarChart3} tooltip="Activar técnicas" label="Activar" onClick={onActivateAnalysis} />
             </ToolbarGroup>
           </div>
         </Tabs.Content>
