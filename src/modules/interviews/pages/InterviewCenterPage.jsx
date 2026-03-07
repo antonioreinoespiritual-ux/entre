@@ -1063,6 +1063,8 @@ const InterviewCenterPage = () => {
                           const fragmentId = String(segment.id);
                           const isActive = activeFragmentId === fragmentId;
                           const isHighlighted = highlightFragmentId === fragmentId;
+                          const fragmentPreview = String(segment.fragment?.selected_text || segment.value || '').trim();
+                          const shortPreview = fragmentPreview.length > 64 ? `${fragmentPreview.slice(0, 64)}…` : fragmentPreview;
                           return (
                             <span
                               key={`seg-fragment-${fragmentId}-${index}`}
@@ -1070,7 +1072,7 @@ const InterviewCenterPage = () => {
                                 if (node) documentFragmentRefs.current[fragmentId] = node;
                                 else delete documentFragmentRefs.current[fragmentId];
                               }}
-                              className={`group mx-0.5 inline rounded-md border px-1 py-0.5 align-baseline transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-cyan-200 bg-cyan-50/70'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                              className={`group relative mx-0.5 inline-block rounded-md border px-1 py-0.5 align-baseline transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-cyan-200 bg-cyan-50/70'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
                             >
                               <button
                                 type="button"
@@ -1083,6 +1085,15 @@ const InterviewCenterPage = () => {
                               <span className="cursor-pointer" onClick={() => focusFragment(fragmentId, 'document')}>
                                 {segment.value}
                               </span>
+                              <button
+                                type="button"
+                                title="Abrir fragmento enlazado"
+                                onClick={() => focusFragment(fragmentId, 'document')}
+                                className={`absolute left-full top-1/2 z-10 ml-2 hidden w-44 -translate-y-1/2 rounded-md border bg-white/95 px-2 py-1 text-left shadow-sm transition group-hover:flex md:flex md:flex-col ${isActive ? 'border-indigo-300' : 'border-slate-200 hover:border-cyan-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                              >
+                                <span className={`mb-0.5 inline-flex w-fit rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${isActive ? 'bg-indigo-100 text-indigo-700' : 'bg-cyan-100 text-cyan-700'}`}>Fragmento</span>
+                                <span className="text-[11px] leading-4 text-slate-700">{shortPreview || 'Texto enlazado'}</span>
+                              </button>
                             </span>
                           );
                         }) : (docReader.document.text || 'No se pudo renderizar texto de este documento.')}
