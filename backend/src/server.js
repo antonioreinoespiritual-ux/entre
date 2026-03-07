@@ -3563,18 +3563,25 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if (projectId && campaignId) {
-        const [rows] = await pool.query(
-          `SELECT * FROM interview_semantic_fragments
-           WHERE user_id = ? AND project_id = ? AND campaign_id = ?
-           ORDER BY created_at DESC`,
-          [user.id, projectId, campaignId],
-        );
+      if (projectId) {
+        const [rows] = campaignId
+          ? await pool.query(
+            `SELECT * FROM interview_semantic_fragments
+             WHERE user_id = ? AND project_id = ? AND (campaign_id = ? OR campaign_id IS NULL)
+             ORDER BY created_at DESC`,
+            [user.id, projectId, campaignId],
+          )
+          : await pool.query(
+            `SELECT * FROM interview_semantic_fragments
+             WHERE user_id = ? AND project_id = ?
+             ORDER BY created_at DESC`,
+            [user.id, projectId],
+          );
         sendJson(req, res, 200, { data: rows });
         return;
       }
 
-      return sendJson(req, res, 400, { error: 'documentNodeId o (projectId y campaignId) son obligatorios' });
+      return sendJson(req, res, 400, { error: 'documentNodeId o projectId son obligatorios' });
     }
 
     if (url.pathname === '/api/interviews/fragments' && req.method === 'POST') {

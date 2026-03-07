@@ -339,7 +339,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                     className={`w-full text-left rounded-lg border p-3 transition ${selectedFragmentId === fragment.id ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}
                   >
                     <p className="text-sm text-slate-800">{fragment.text}</p>
-                    <p className="mt-1 text-xs text-slate-500">{interview?.clientName || 'Sin cliente'} · pos {fragment.position} · origen {fragment.sourceType} · doc {fragment.document_id || fragment.metadata?.document_node_id || '—'} · {fragment.created_at ? formatDate(fragment.created_at) : 'sin fecha'}</p>
+                    <p className="mt-1 text-xs text-slate-500">{interview?.clientName || 'Sin entrevista'} · pos {fragment.position} · origen {fragment.sourceType} · doc {fragment.document_id || fragment.metadata?.document_node_id || '—'} · {fragment.created_at ? formatDate(fragment.created_at) : 'sin fecha'}</p>
                     <div className="mt-1 flex flex-wrap gap-1">
                       {fragment.codeSlugs.map((slug) => (
                         <span key={slug} className="rounded bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">{slug}</span>
