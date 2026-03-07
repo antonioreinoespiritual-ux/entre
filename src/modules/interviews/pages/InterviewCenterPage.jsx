@@ -1203,14 +1203,15 @@ const InterviewCenterPage = () => {
                                     else delete railFragmentRefs.current[fragmentId];
                                   }}
                                   onClick={() => focusFragment(fragmentId, 'rail')}
-                                  style={{ top: `${card.topPx}px` }}
-                                  className={`pointer-events-auto absolute right-0 w-[178px] rounded-md border px-1.5 py-1 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white/95 hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                                  style={{ top: `${Math.max(0, card.topPx - 3)}px` }}
+                                  className={`group pointer-events-auto absolute right-0 flex w-[176px] items-start gap-1.5 rounded-md border px-2 py-1.5 text-left shadow-[0_1px_2px_rgba(15,23,42,0.06)] transition-all duration-150 ${isActive ? 'border-indigo-300 bg-indigo-50/95' : 'border-slate-200/90 bg-white/95 hover:-translate-y-px hover:border-slate-300 hover:bg-slate-50/90'} ${isHighlighted ? 'ring-1 ring-indigo-200' : ''}`}
                                 >
-                                  <div className="mb-0.5 flex items-center gap-1">
-                                    <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded text-[9px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
-                                    <span className="text-[9px] font-semibold uppercase tracking-wide text-slate-500">Cita</span>
-                                  </div>
-                                  <p className="line-clamp-2 text-[10px] leading-3.5 text-slate-700">{card.shortPreview}</p>
+                                  <span className={`mt-[1px] inline-flex h-3 w-3 shrink-0 rounded-full ${isActive ? 'bg-indigo-500' : 'bg-cyan-500 group-hover:bg-cyan-600'}`} />
+                                  <span className="absolute -left-4 top-1/2 h-px w-3 -translate-y-1/2 rounded bg-slate-300/80" aria-hidden="true" />
+                                  <span className="min-w-0">
+                                    <span className={`block text-[9px] font-semibold uppercase tracking-[0.08em] ${isActive ? 'text-indigo-700' : 'text-slate-500 group-hover:text-slate-600'}`}>Cita</span>
+                                    <span className={`mt-0.5 line-clamp-2 block text-[10px] leading-3.5 ${isActive ? 'text-indigo-900' : 'text-slate-700'}`}>{card.shortPreview}</span>
+                                  </span>
                                 </button>
                               );
                             })}
