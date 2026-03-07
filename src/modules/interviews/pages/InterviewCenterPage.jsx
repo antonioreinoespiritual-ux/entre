@@ -98,6 +98,7 @@ const InterviewCenterPage = () => {
   const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
+  const [fragmentRailPositions, setFragmentRailPositions] = useState({});
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -119,9 +120,78 @@ const InterviewCenterPage = () => {
   const autosaveSeqRef = useRef(0);
   const lastSavedRef = useRef('');
   const clientNotesTimerRef = useRef(null);
+  const documentReaderRef = useRef(null);
   const fragmentsRailRef = useRef(null);
   const railFragmentRefs = useRef({});
   const documentFragmentRefs = useRef({});
+
+  const hasPositionChanges = useCallback((current, next) => {
+    const currentKeys = Object.keys(current);
+    const nextKeys = Object.keys(next);
+    if (currentKeys.length !== nextKeys.length) return true;
+    return nextKeys.some((key) => Math.abs((current[key] || 0) - (next[key] || 0)) > 1);
+  }, []);
+
+  useEffect(() => {
+    if (!mappedDocumentFragments.length) {
+      setFragmentRailPositions({});
+      return undefined;
+    }
+
+    let frameId = null;
+
+    const measurePositions = () => {
+      frameId = null;
+      const railNode = fragmentsRailRef.current;
+      if (!railNode) return;
+
+      const railRect = railNode.getBoundingClientRect();
+      const railHeight = Math.max(railNode.offsetHeight - 44, 0);
+      const nextPositions = {};
+
+      mappedDocumentFragments.forEach((fragment, index) => {
+        const fragmentId = String(fragment.id);
+        const fragmentNode = documentFragmentRefs.current[fragmentId];
+
+        if (fragmentNode) {
+          const fragmentRect = fragmentNode.getBoundingClientRect();
+          const relativeTop = fragmentRect.top - railRect.top + railNode.scrollTop;
+          nextPositions[fragmentId] = Math.min(Math.max(relativeTop, 0), railHeight);
+        } else {
+          nextPositions[fragmentId] = Math.min(index * 34, railHeight);
+        }
+      });
+
+      setFragmentRailPositions((current) => (hasPositionChanges(current, nextPositions) ? nextPositions : current));
+    };
+
+    const scheduleMeasure = () => {
+      if (frameId != null) return;
+      frameId = window.requestAnimationFrame(measurePositions);
+    };
+
+    scheduleMeasure();
+    window.addEventListener('resize', scheduleMeasure);
+    window.addEventListener('scroll', scheduleMeasure, true);
+
+    let resizeObserver = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(scheduleMeasure);
+      if (documentReaderRef.current) resizeObserver.observe(documentReaderRef.current);
+      if (fragmentsRailRef.current) resizeObserver.observe(fragmentsRailRef.current);
+      mappedDocumentFragments.forEach((fragment) => {
+        const fragmentNode = documentFragmentRefs.current[String(fragment.id)];
+        if (fragmentNode) resizeObserver.observe(fragmentNode);
+      });
+    }
+
+    return () => {
+      if (frameId != null) window.cancelAnimationFrame(frameId);
+      window.removeEventListener('resize', scheduleMeasure);
+      window.removeEventListener('scroll', scheduleMeasure, true);
+      if (resizeObserver) resizeObserver.disconnect();
+    };
+  }, [hasPositionChanges, mappedDocumentFragments, readerViewMode]);
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
 
@@ -310,27 +380,21 @@ const InterviewCenterPage = () => {
   }, [docReader.document?.text, mappedDocumentFragments]);
 
   const fragmentRailCards = useMemo(() => {
-    const sourceLength = Math.max(String(docReader.document?.text || '').length, 1);
     return mappedDocumentFragments.map((fragment, index) => {
       const fragmentId = String(fragment.id);
       const preview = String(fragment.selected_text || '').trim();
       const shortPreview = preview.length > 92 ? `${preview.slice(0, 92)}…` : preview;
-
-      let topPercent = 0;
-      if (fragment.hasRange && Number.isFinite(fragment.mappedStart)) {
-        topPercent = Math.min(94, Math.max(0, (fragment.mappedStart / sourceLength) * 100));
-      } else {
-        topPercent = Math.min(94, index * 12);
-      }
+      const fallbackTop = index * 34;
+      const topPx = Number.isFinite(fragmentRailPositions[fragmentId]) ? fragmentRailPositions[fragmentId] : fallbackTop;
 
       return {
         id: fragmentId,
-        topPercent,
+        topPx,
         shortPreview: shortPreview || 'Texto enlazado',
         fragment,
       };
     });
-  }, [docReader.document?.text, mappedDocumentFragments]);
+  }, [fragmentRailPositions, mappedDocumentFragments]);
 
   const clientRows = useMemo(() => center.clients.map((client) => {
     const interviews = center.sessions.filter((session) => String(session.client_id) === String(client.id));
@@ -1078,6 +1142,7 @@ const InterviewCenterPage = () => {
                       <div className="mx-auto grid w-full max-w-6xl gap-3 xl:grid-cols-[minmax(0,1fr)_188px]">
                         <div>
                           <div
+                            ref={documentReaderRef}
                             className={`min-h-[320px] rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
                             onMouseUp={captureSelection}
                             onContextMenu={openSelectionMenu}
@@ -1139,7 +1204,7 @@ const InterviewCenterPage = () => {
                                     else delete railFragmentRefs.current[fragmentId];
                                   }}
                                   onClick={() => focusFragment(fragmentId, 'rail')}
-                                  style={{ top: `${card.topPercent}%` }}
+                                  style={{ top: `${card.topPx}px` }}
                                   className={`absolute right-0 w-[178px] rounded-md border px-1.5 py-1 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white/95 hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
                                 >
                                   <div className="mb-0.5 flex items-center gap-1">
