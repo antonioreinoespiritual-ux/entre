@@ -1145,8 +1145,8 @@ const InterviewCenterPage = () => {
                   {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
                   {docReader.document ? (
                     <>
-                      <div className="mx-auto grid w-full max-w-6xl gap-3 xl:grid-cols-[minmax(0,1fr)_188px]">
-                        <div>
+                      <div className="mx-auto w-full max-w-6xl">
+                        <div className="relative pr-[196px]">
                           <div
                             ref={documentReaderRef}
                             className={`min-h-[320px] rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
@@ -1184,18 +1184,11 @@ const InterviewCenterPage = () => {
                             }) : (docReader.document.text || 'No se pudo renderizar texto de este documento.')}
                           </div>
 
-                          <div className="mt-3 rounded-lg border bg-white p-3">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
-                            <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
-                            <div className="mt-2 flex items-center gap-2">
-                              <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
-                              <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(true)}>Agregar manual</Button>
-                              {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div ref={fragmentsRailRef} className="relative min-h-[320px] self-start" style={{ height: `${documentRailHeight}px` }}>
+                          <div
+                            ref={fragmentsRailRef}
+                            className="pointer-events-none absolute right-0 top-0 min-h-[320px] w-[188px]"
+                            style={{ height: `${documentRailHeight}px` }}
+                          >
                             {fragmentRailCards.map((card) => {
                               const fragmentId = card.id;
                               const fragment = card.fragment;
@@ -1211,7 +1204,7 @@ const InterviewCenterPage = () => {
                                   }}
                                   onClick={() => focusFragment(fragmentId, 'rail')}
                                   style={{ top: `${card.topPx}px` }}
-                                  className={`absolute right-0 w-[178px] rounded-md border px-1.5 py-1 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white/95 hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
+                                  className={`pointer-events-auto absolute right-0 w-[178px] rounded-md border px-1.5 py-1 text-left shadow-sm transition ${isActive ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white/95 hover:border-slate-300'} ${isHighlighted ? 'ring-2 ring-indigo-200' : ''}`}
                                 >
                                   <div className="mb-0.5 flex items-center gap-1">
                                     <span className={`inline-flex h-3.5 min-w-3.5 items-center justify-center rounded text-[9px] font-semibold ${isActive ? 'bg-indigo-600 text-white' : 'bg-cyan-600 text-white'}`}>¶</span>
@@ -1222,6 +1215,17 @@ const InterviewCenterPage = () => {
                               );
                             })}
                             {!docReader.fragments?.length ? <p className="px-1 text-xs text-slate-500">Sin citas enlazadas.</p> : null}
+                          </div>
+
+                          <div className="mt-3 rounded-lg border bg-white p-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
+                            <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
+                            <div className="mt-2 flex items-center gap-2">
+                              <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
+                              <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(true)}>Agregar manual</Button>
+                              {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
+                            </div>
+                          </div>
                         </div>
                       </div>
 
