@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { Download, FileText, FolderOpen, Headphones } from 'lucide-react';
+import { BarChart3, Blocks, BookText, Download, FileText, FolderOpen, Headphones, ListTodo, ScanSearch, StickyNote, Tags, Wand2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
@@ -915,34 +915,49 @@ const InterviewCenterPage = () => {
                       {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
                     </div>
                   </div>
-                  <div className="mb-3 rounded-xl border bg-white p-2">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
-                      <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(true)}>Agregar fragmento manual</Button>
-                      <Button
-                        className="bg-white border"
-                        onClick={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                      >
-                        Ver fragmentos del documento
-                      </Button>
-                      <Button className="bg-white border" onClick={() => announcePendingTool('Ver códigos')}>Ver códigos</Button>
-                      <Button className="bg-white border" onClick={() => announcePendingTool('Ver clusters')}>Ver clusters</Button>
-                      <Button
-                        className="bg-white border"
-                        onClick={() => {
-                          setDocReader((prev) => ({ ...prev, manualText: prev.manualText || `Memo ${new Date().toLocaleString()}: ` }));
-                          setManualFragmentModalOpen(true);
-                        }}
-                      >
-                        Crear nota / memo
-                      </Button>
-                      <Button
-                        className="bg-white border"
-                        onClick={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
-                      >
-                        Cambiar vista ({readerViewMode === 'focus' ? 'focus' : 'documento'})
-                      </Button>
-                      <Button className="bg-white border" onClick={() => announcePendingTool('Activar técnicas de análisis')}>Activar técnicas de análisis</Button>
+                  <div className="mb-2 rounded-lg border bg-white px-2 py-1.5">
+                    <div className="flex flex-wrap items-center gap-1">
+                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
+                        <Button title="Crear fragmento" className="h-8 w-8 p-0 bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}><ScanSearch className="h-4 w-4" /></Button>
+                        <Button title="Añadir fragmento manual" className="h-8 w-8 p-0 bg-white border" onClick={() => setManualFragmentModalOpen(true)}><BookText className="h-4 w-4" /></Button>
+                        <Button
+                          title="Ver fragmentos del documento"
+                          className="h-8 w-8 p-0 bg-white border"
+                          onClick={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                        >
+                          <ListTodo className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
+                        <Button title="Ver códigos" className="h-8 w-8 p-0 bg-white border" onClick={() => announcePendingTool('Ver códigos')}><Tags className="h-4 w-4" /></Button>
+                      </div>
+                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
+                        <Button title="Ver clusters" className="h-8 w-8 p-0 bg-white border" onClick={() => announcePendingTool('Ver clusters')}><Blocks className="h-4 w-4" /></Button>
+                      </div>
+                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
+                        <Button
+                          title="Crear nota / memo"
+                          className="h-8 w-8 p-0 bg-white border"
+                          onClick={() => {
+                            setDocReader((prev) => ({ ...prev, manualText: prev.manualText || `Memo ${new Date().toLocaleString()}: ` }));
+                            setManualFragmentModalOpen(true);
+                          }}
+                        >
+                          <StickyNote className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
+                        <Button
+                          title={`Cambiar vista (${readerViewMode === 'focus' ? 'focus' : 'documento'})`}
+                          className="h-8 w-8 p-0 bg-white border"
+                          onClick={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
+                        >
+                          <BarChart3 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button title="Activar técnicas de análisis" className="h-8 w-8 p-0 bg-white border" onClick={() => announcePendingTool('Activar técnicas de análisis')}><Wand2 className="h-4 w-4" /></Button>
+                      </div>
                     </div>
                   </div>
                   {docReader.loading ? <p className="text-sm text-slate-500">Abriendo documento...</p> : null}
