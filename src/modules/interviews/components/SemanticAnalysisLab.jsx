@@ -52,7 +52,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     deletedFragmentIds: [],
   });
   const [fragmentModalOpen, setFragmentModalOpen] = useState(false);
-  const [fragmentModalDraft, setFragmentModalDraft] = useState({ id: null, title: '', description: '', linkedCode: '' });
+  const [fragmentModalDraft, setFragmentModalDraft] = useState({ id: null, title: '', description: '', linkedCode: '', clientId: '', interviewId: '' });
   const [codeModalOpen, setCodeModalOpen] = useState(false);
   const [activeCodeSlug, setActiveCodeSlug] = useState('');
   const [codeCreateModalOpen, setCodeCreateModalOpen] = useState(false);
@@ -149,6 +149,12 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     if (!manualFragmentDraft.clientId) return [];
     return sessions.filter((session) => String(session.client_id || '') === String(manualFragmentDraft.clientId));
   }, [manualFragmentDraft.clientId, sessions]);
+
+
+  const fragmentModalInterviewOptions = useMemo(() => {
+    if (!fragmentModalDraft.clientId) return [];
+    return sessions.filter((session) => String(session.client_id || '') === String(fragmentModalDraft.clientId));
+  }, [fragmentModalDraft.clientId, sessions]);
 
   const visibleFragments = useMemo(() => {
     const q = fragmentFilters.q.trim().toLowerCase();
@@ -259,11 +265,15 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     if (!fragment) return;
     setSelectedFragmentId(fragment.id);
     const meta = workspace.fragmentMetaById?.[String(fragment.id)] || {};
+    const sourceInterviewId = String(fragment.interview_id || '');
+    const sourceInterview = sessions.find((session) => String(session.id) === sourceInterviewId);
     setFragmentModalDraft({
       id: fragment.id,
       title: meta.title || '',
       description: fragment.text || '',
       linkedCode: fragment.codeSlugs?.[0] || '',
+      clientId: String(meta.clientId || sourceInterview?.client_id || ''),
+      interviewId: String(meta.interviewId || sourceInterviewId),
     });
     setFragmentModalOpen(true);
   };
@@ -277,6 +287,8 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         ...(prev.fragmentMetaById || {}),
         [fragmentId]: {
           title: String(fragmentModalDraft.title || '').trim(),
+          clientId: String(fragmentModalDraft.clientId || ''),
+          interviewId: String(fragmentModalDraft.interviewId || ''),
         },
       },
     }));
@@ -311,7 +323,11 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       },
       fragmentMetaById: {
         ...(prev.fragmentMetaById || {}),
-        [String(fragmentModalDraft.id)]: { title: String(fragmentModalDraft.title || '').trim() || built.name },
+        [String(fragmentModalDraft.id)]: {
+          title: String(fragmentModalDraft.title || '').trim() || built.name,
+          clientId: String(fragmentModalDraft.clientId || ''),
+          interviewId: String(fragmentModalDraft.interviewId || ''),
+        },
       },
     }));
     setFragmentModalDraft((prev) => ({ ...prev, linkedCode: built.slug, title: String(prev.title || '').trim() || built.name }));
@@ -542,10 +558,11 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
             <p className="mt-3 text-xs text-slate-500">Página {pagedFragments.currentPage}/{pagedFragments.totalPages}</p>
             <div className="mt-3 space-y-2 max-h-[540px] overflow-y-auto pr-1">
               {pagedFragments.rows.map((fragment) => {
-                const interview = interviewById[String(fragment.interview_id)];
+                const fragmentMeta = workspace.fragmentMetaById?.[String(fragment.id)] || {};
+                const interview = interviewById[String(fragmentMeta.interviewId || fragment.interview_id)];
                 const isSelected = selectedFragmentId === fragment.id;
                 const isCoded = fragment.codeSlugs.length > 0;
-                const customTitle = workspace.fragmentMetaById?.[String(fragment.id)]?.title;
+                const customTitle = fragmentMeta.title;
                 return (
                   <div key={fragment.id} className={`rounded-xl border p-3 transition ${isSelected ? 'border-indigo-300 bg-indigo-50/70' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
                     <div className="flex items-start justify-between gap-3">
@@ -705,6 +722,22 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Título</p>
                 <input className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={fragmentModalDraft.title} onChange={(e) => setFragmentModalDraft((prev) => ({ ...prev, title: e.target.value }))} placeholder="Título del fragmento" />
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Cliente</p>
+                  <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={fragmentModalDraft.clientId} onChange={(e) => setFragmentModalDraft((prev) => ({ ...prev, clientId: e.target.value, interviewId: '' }))}>
+                    <option value="">Seleccionar cliente…</option>
+                    {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Entrevista vinculada</p>
+                  <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={fragmentModalDraft.interviewId} onChange={(e) => setFragmentModalDraft((prev) => ({ ...prev, interviewId: e.target.value }))} disabled={!fragmentModalDraft.clientId}>
+                    <option value="">{fragmentModalDraft.clientId ? 'Seleccionar entrevista…' : 'Selecciona un cliente primero'}</option>
+                    {fragmentModalInterviewOptions.map((session) => <option key={session.id} value={session.id}>{session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>)}
+                  </select>
+                </div>
               </div>
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Descripción / texto</p>
