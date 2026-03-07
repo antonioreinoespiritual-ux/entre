@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { BarChart3, Blocks, BookText, Download, FileText, FolderOpen, Headphones, ListTodo, ScanSearch, StickyNote, Tags, Wand2 } from 'lucide-react';
+import { Download, FileText, FolderOpen, Headphones } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 import { FormBuilder, createEmptyFormDraft } from '@/modules/interviews/components/FormBuilder';
 import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner';
 import { SemanticAnalysisLab } from '@/modules/interviews/components/SemanticAnalysisLab';
+import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
 import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewCenterData';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
@@ -915,51 +916,22 @@ const InterviewCenterPage = () => {
                       {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
                     </div>
                   </div>
-                  <div className="mb-2 rounded-lg border bg-white px-2 py-1.5">
-                    <div className="flex flex-wrap items-center gap-1">
-                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
-                        <Button title="Crear fragmento" className="h-8 w-8 p-0 bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}><ScanSearch className="h-4 w-4" /></Button>
-                        <Button title="Añadir fragmento manual" className="h-8 w-8 p-0 bg-white border" onClick={() => setManualFragmentModalOpen(true)}><BookText className="h-4 w-4" /></Button>
-                        <Button
-                          title="Ver fragmentos del documento"
-                          className="h-8 w-8 p-0 bg-white border"
-                          onClick={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-                        >
-                          <ListTodo className="h-4 w-4" />
-                        </Button>
-                      </div>
-                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
-                        <Button title="Ver códigos" className="h-8 w-8 p-0 bg-white border" onClick={() => announcePendingTool('Ver códigos')}><Tags className="h-4 w-4" /></Button>
-                      </div>
-                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
-                        <Button title="Ver clusters" className="h-8 w-8 p-0 bg-white border" onClick={() => announcePendingTool('Ver clusters')}><Blocks className="h-4 w-4" /></Button>
-                      </div>
-                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
-                        <Button
-                          title="Crear nota / memo"
-                          className="h-8 w-8 p-0 bg-white border"
-                          onClick={() => {
-                            setDocReader((prev) => ({ ...prev, manualText: prev.manualText || `Memo ${new Date().toLocaleString()}: ` }));
-                            setManualFragmentModalOpen(true);
-                          }}
-                        >
-                          <StickyNote className="h-4 w-4" />
-                        </Button>
-                      </div>
-                      <div className="flex items-center gap-1 pr-1 border-r border-slate-200">
-                        <Button
-                          title={`Cambiar vista (${readerViewMode === 'focus' ? 'focus' : 'documento'})`}
-                          className="h-8 w-8 p-0 bg-white border"
-                          onClick={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
-                        >
-                          <BarChart3 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Button title="Activar técnicas de análisis" className="h-8 w-8 p-0 bg-white border" onClick={() => announcePendingTool('Activar técnicas de análisis')}><Wand2 className="h-4 w-4" /></Button>
-                      </div>
-                    </div>
-                  </div>
+                  <Toolbar
+                    onCreateFragment={createSelectionFragment}
+                    onCreateManualFragment={() => setManualFragmentModalOpen(true)}
+                    onViewFragments={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                    onViewCodes={() => announcePendingTool('Ver códigos')}
+                    onLinkCode={() => announcePendingTool('Vincular código')}
+                    onViewClusters={() => announcePendingTool('Ver clusters')}
+                    onActivateAnalysis={() => announcePendingTool('Activar técnicas de análisis')}
+                    onCreateMemo={() => {
+                      setDocReader((prev) => ({ ...prev, manualText: prev.manualText || `Memo ${new Date().toLocaleString()}: ` }));
+                      setManualFragmentModalOpen(true);
+                    }}
+                    onToggleView={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
+                    canCreateFragment={Boolean(docReader.selectionText)}
+                    viewLabel={readerViewMode === 'focus' ? 'focus' : 'documento'}
+                  />
                   {docReader.loading ? <p className="text-sm text-slate-500">Abriendo documento...</p> : null}
                   {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
                   {docReader.document ? (
