@@ -101,7 +101,7 @@ const InterviewCenterPage = () => {
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
-  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', fragments: [] });
+  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', manualTitle: '', manualInterviewId: '', fragments: [] });
   const [activeFragmentId, setActiveFragmentId] = useState(null);
   const [highlightFragmentId, setHighlightFragmentId] = useState(null);
   const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
@@ -112,7 +112,7 @@ const InterviewCenterPage = () => {
   const [fragmentRailPositions, setFragmentRailPositions] = useState({});
   const [documentRailHeight, setDocumentRailHeight] = useState(320);
   const [fragmentDetailModalOpen, setFragmentDetailModalOpen] = useState(false);
-  const [fragmentDetailDraft, setFragmentDetailDraft] = useState({ id: null, title: '', description: '', linkedCode: '', evolvedToCode: false });
+  const [fragmentDetailDraft, setFragmentDetailDraft] = useState({ id: null, title: '', description: '', linkedCode: '', interviewId: '', evolvedToCode: false });
   const [fragmentDetailsById, setFragmentDetailsById] = useState({});
   const [fragmentEvolutionCodeOptions, setFragmentEvolutionCodeOptions] = useState(defaultFragmentEvolutionCodeOptions);
 
@@ -607,7 +607,7 @@ const InterviewCenterPage = () => {
     setManualFragmentModalOpen(false);
     setActiveFragmentId(null);
     setHighlightFragmentId(null);
-    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null }));
+    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null, manualTitle: '', manualText: '', manualInterviewId: '' }));
     try {
       const document = await interviewsModuleApi.readCloudDocument(item.id);
       setDocReader((prev) => ({ ...prev, loading: false, document, error: '' }));
@@ -659,14 +659,33 @@ const InterviewCenterPage = () => {
 
   const createManualFragment = useCallback(async () => {
     if (!docReader.document?.node_id || !docReader.manualText.trim()) return;
+    const manualText = String(docReader.manualText || '').trim();
+    const manualTitle = String(docReader.manualTitle || '').trim();
+    const interviewSessionId = docReader.manualInterviewId || docReader.document.interview_id || null;
+
     try {
-      await interviewsModuleApi.createDocumentFragment({
+      const created = await interviewsModuleApi.createDocumentFragment({
         document_node_id: docReader.document.node_id,
-        interview_session_id: docReader.document.interview_id || null,
-        selected_text: docReader.manualText.trim(),
+        interview_session_id: interviewSessionId || null,
+        selected_text: manualText,
         source_type: 'manual',
       });
-      setDocReader((prev) => ({ ...prev, manualText: '' }));
+
+      if (created?.id && (manualTitle || interviewSessionId)) {
+        setFragmentDetailsById((prev) => ({
+          ...prev,
+          [String(created.id)]: {
+            ...(prev[String(created.id)] || {}),
+            title: manualTitle,
+            description: manualText,
+            interviewId: interviewSessionId ? String(interviewSessionId) : '',
+            linkedCode: prev[String(created.id)]?.linkedCode || '',
+            evolvedToCode: Boolean(prev[String(created.id)]?.evolvedToCode),
+          },
+        }));
+      }
+
+      setDocReader((prev) => ({ ...prev, manualTitle: '', manualText: '', manualInterviewId: '' }));
       setManualFragmentModalOpen(false);
       await loadDocumentFragments(docReader.document.node_id);
       await loadSemanticCloudFragments();
@@ -674,7 +693,7 @@ const InterviewCenterPage = () => {
     } catch (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
-  }, [docReader.document, docReader.manualText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
+  }, [docReader.document, docReader.manualInterviewId, docReader.manualText, docReader.manualTitle, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
   useEffect(() => {
     if (tab !== 'cloud') return;
@@ -779,10 +798,11 @@ const InterviewCenterPage = () => {
       title: persisted.title || sourceFragment.title || '',
       description: persisted.description || sourceFragment.selected_text || '',
       linkedCode: persisted.linkedCode || '',
+      interviewId: String(persisted.interviewId || sourceFragment.interview_session_id || sourceFragment.interview_id || docReader.document?.interview_id || ''),
       evolvedToCode: Boolean(persisted.evolvedToCode),
     });
     setFragmentDetailModalOpen(true);
-  }, [docReader.fragments, focusFragment, fragmentDetailsById]);
+  }, [docReader.document?.interview_id, docReader.fragments, focusFragment, fragmentDetailsById]);
 
   const persistFragmentDetailDraft = useCallback(() => {
     if (!fragmentDetailDraft.id) return;
@@ -793,6 +813,7 @@ const InterviewCenterPage = () => {
         title: String(fragmentDetailDraft.title || '').trim(),
         description: String(fragmentDetailDraft.description || '').trim(),
         linkedCode: String(fragmentDetailDraft.linkedCode || '').trim(),
+        interviewId: String(fragmentDetailDraft.interviewId || '').trim(),
         evolvedToCode: Boolean(fragmentDetailDraft.evolvedToCode),
       },
     }));
@@ -868,6 +889,15 @@ const InterviewCenterPage = () => {
 
     toast({ title: 'Fragmento evolucionado', description: `Se creó el código ${createdCode.label}, se agregó al codebook y quedó como única vinculación.${unlinkNote}` });
   }, [buildCodeLabelFromFragment, buildUniqueCodeSlug, fragmentDetailDraft, fragmentEvolutionCodeOptions, toast]);
+
+
+  useEffect(() => {
+    if (!manualFragmentModalOpen) return;
+    setDocReader((prev) => {
+      if (prev.manualInterviewId) return prev;
+      return { ...prev, manualInterviewId: String(prev.document?.interview_id || '') };
+    });
+  }, [manualFragmentModalOpen]);
 
   const announcePendingTool = useCallback((label) => {
     toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
@@ -1443,7 +1473,7 @@ const InterviewCenterPage = () => {
             <textarea
               className="h-28 w-full rounded-md border bg-slate-50 px-3 py-2 text-sm text-slate-700"
               value={fragmentDetailDraft.description}
-              readOnly
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, description: event.target.value }))}
             />
           </div>
 
@@ -1459,6 +1489,24 @@ const InterviewCenterPage = () => {
                 <option key={option.slug} value={option.slug}>{option.label}</option>
               ))}
             </select>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Entrevista vinculada</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={fragmentDetailDraft.interviewId}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, interviewId: event.target.value }))}
+            >
+              <option value="">Sin entrevista vinculada</option>
+              {center.sessions.map((session) => (
+                <option key={session.id} value={session.id}>{session.client_name || `Cliente ${session.client_id || '—'}`} · {session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            <p><span className="font-semibold text-slate-700">Origen:</span> {String((docReader.fragments || []).find((fragment) => String(fragment.id) === String(fragmentDetailDraft.id))?.source_type || 'selection')}</p>
+            <p><span className="font-semibold text-slate-700">Documento:</span> {docReader.document?.node_id || '—'}</p>
           </div>
 
           {fragmentDetailDraft.evolvedToCode ? (
@@ -1481,7 +1529,31 @@ const InterviewCenterPage = () => {
         onClose={() => setManualFragmentModalOpen(false)}
       >
         <div className="space-y-3">
-          <p className="text-sm text-slate-600">Escribe una observación semántica o resumen manual para este documento.</p>
+          <p className="text-sm text-slate-600">Completa el fragmento manual y vincúlalo a una entrevista para mantener contexto.</p>
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Título del fragmento</p>
+            <input
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              placeholder="Título opcional"
+              value={docReader.manualTitle}
+              onChange={(event) => setDocReader((prev) => ({ ...prev, manualTitle: event.target.value }))}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Entrevista vinculada</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={docReader.manualInterviewId}
+              onChange={(event) => setDocReader((prev) => ({ ...prev, manualInterviewId: event.target.value }))}
+            >
+              <option value="">Sin entrevista vinculada</option>
+              {center.sessions.map((session) => (
+                <option key={session.id} value={session.id}>{session.client_name || `Cliente ${session.client_id || '—'}`} · {session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+              ))}
+            </select>
+          </div>
+
           <textarea
             className="w-full min-h-[160px] rounded-md border p-2 text-sm"
             placeholder="Escribe una observación semántica o resumen manual..."
