@@ -93,6 +93,7 @@ const InterviewCenterPage = () => {
   const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
   const [docSelectionMenu, setDocSelectionMenu] = useState({ open: false, x: 0, y: 0 });
   const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
+  const [readerViewMode, setReaderViewMode] = useState('document');
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -114,6 +115,7 @@ const InterviewCenterPage = () => {
   const autosaveSeqRef = useRef(0);
   const lastSavedRef = useRef('');
   const clientNotesTimerRef = useRef(null);
+  const fragmentsPanelRef = useRef(null);
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
 
@@ -507,6 +509,10 @@ const InterviewCenterPage = () => {
     if (tab !== 'semantic') return;
     loadSemanticCloudFragments();
   }, [loadSemanticCloudFragments, tab]);
+
+  const announcePendingTool = useCallback((label) => {
+    toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
+  }, [toast]);
 
   const createSemanticInterviewFragment = useCallback(async ({ interview_id, text, source = 'selection' }) => {
     const trimmed = String(text || '').trim();
@@ -909,12 +915,42 @@ const InterviewCenterPage = () => {
                       {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
                     </div>
                   </div>
+                  <div className="mb-3 rounded-xl border bg-white p-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
+                      <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(true)}>Agregar fragmento manual</Button>
+                      <Button
+                        className="bg-white border"
+                        onClick={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                      >
+                        Ver fragmentos del documento
+                      </Button>
+                      <Button className="bg-white border" onClick={() => announcePendingTool('Ver códigos')}>Ver códigos</Button>
+                      <Button className="bg-white border" onClick={() => announcePendingTool('Ver clusters')}>Ver clusters</Button>
+                      <Button
+                        className="bg-white border"
+                        onClick={() => {
+                          setDocReader((prev) => ({ ...prev, manualText: prev.manualText || `Memo ${new Date().toLocaleString()}: ` }));
+                          setManualFragmentModalOpen(true);
+                        }}
+                      >
+                        Crear nota / memo
+                      </Button>
+                      <Button
+                        className="bg-white border"
+                        onClick={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
+                      >
+                        Cambiar vista ({readerViewMode === 'focus' ? 'focus' : 'documento'})
+                      </Button>
+                      <Button className="bg-white border" onClick={() => announcePendingTool('Activar técnicas de análisis')}>Activar técnicas de análisis</Button>
+                    </div>
+                  </div>
                   {docReader.loading ? <p className="text-sm text-slate-500">Abriendo documento...</p> : null}
                   {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
                   {docReader.document ? (
                     <>
                       <div
-                        className="mx-auto min-h-[320px] max-w-3xl rounded-xl border bg-white px-12 py-10 text-[15px] leading-7 text-slate-800 shadow-sm whitespace-pre-wrap"
+                        className={`mx-auto min-h-[320px] ${readerViewMode === "focus" ? "max-w-4xl" : "max-w-3xl"} rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
                         onMouseUp={captureSelection}
                         onContextMenu={openSelectionMenu}
                       >
@@ -955,7 +991,7 @@ const InterviewCenterPage = () => {
                   ) : null}
                 </div>
 
-                <div className="rounded-2xl border bg-white p-4 space-y-3">
+                <div ref={fragmentsPanelRef} className="rounded-2xl border bg-white p-4 space-y-3">
                   <h4 className="font-semibold text-slate-900">Fragmentos del documento</h4>
                   <div className="rounded-lg border p-3 space-y-2">
                     <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Agregar fragmento manual</p>
