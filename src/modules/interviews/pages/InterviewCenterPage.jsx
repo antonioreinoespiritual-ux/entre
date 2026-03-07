@@ -19,6 +19,7 @@ const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
 
 const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
+const semanticWorkspaceStorageKey = 'interviews.semantic.lab.workspace.v1';
 
 function token() {
   try { return JSON.parse(localStorage.getItem(sessionStorageKey) || 'null')?.access_token || ''; } catch { return ''; }
@@ -812,6 +813,35 @@ const InterviewCenterPage = () => {
       if (prev.some((option) => option.slug === createdCode.slug)) return prev;
       return [...prev, createdCode];
     });
+
+    try {
+      const rawWorkspace = window.localStorage.getItem(semanticWorkspaceStorageKey);
+      const parsedWorkspace = rawWorkspace ? JSON.parse(rawWorkspace) : {};
+      const currentCustomCodebook = Array.isArray(parsedWorkspace.customCodebook) ? parsedWorkspace.customCodebook : [];
+      const currentAssignments = parsedWorkspace.codeAssignments && typeof parsedWorkspace.codeAssignments === 'object' ? parsedWorkspace.codeAssignments : {};
+
+      const nextCustomCodebook = currentCustomCodebook.some((code) => String(code.slug) === createdCode.slug)
+        ? currentCustomCodebook
+        : [...currentCustomCodebook, {
+          slug: createdCode.slug,
+          name: createdCode.label,
+          category: 'interpretacion',
+          description: `Código evolucionado desde fragmento ${normalizedId}.`,
+        }];
+
+      const nextWorkspace = {
+        ...parsedWorkspace,
+        customCodebook: nextCustomCodebook,
+        codeAssignments: {
+          ...currentAssignments,
+          [normalizedId]: [createdCode.slug],
+        },
+      };
+
+      window.localStorage.setItem(semanticWorkspaceStorageKey, JSON.stringify(nextWorkspace));
+    } catch {
+      // Keep UI flow resilient even if localStorage is unavailable.
+    }
 
     const nextDraft = {
       ...fragmentDetailDraft,
