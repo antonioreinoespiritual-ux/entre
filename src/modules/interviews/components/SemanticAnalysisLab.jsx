@@ -59,6 +59,8 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [codeDeleteModalOpen, setCodeDeleteModalOpen] = useState(false);
   const [codeDraft, setCodeDraft] = useState(emptyNewCode);
   const [codeDeleteTargetSlug, setCodeDeleteTargetSlug] = useState('');
+  const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
+  const [manualFragmentDraft, setManualFragmentDraft] = useState({ clientId: '', interviewId: '', text: '', title: '', codeSlug: '' });
 
   useEffect(() => {
     try {
@@ -142,7 +144,11 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
 
   const interviewById = useMemo(() => Object.fromEntries(analysis.interviews.map((interview) => [String(interview.id), interview])), [analysis.interviews]);
   const selectedInterview = openInterviewId ? interviewById[String(openInterviewId)] : null;
-  const selectedFragment = selectedFragmentId ? analysis.fragments.find((fragment) => fragment.id === selectedFragmentId) : null;
+
+  const manualInterviewOptions = useMemo(() => {
+    if (!manualFragmentDraft.clientId) return [];
+    return sessions.filter((session) => String(session.client_id || '') === String(manualFragmentDraft.clientId));
+  }, [manualFragmentDraft.clientId, sessions]);
 
   const visibleFragments = useMemo(() => {
     const q = fragmentFilters.q.trim().toLowerCase();
@@ -516,7 +522,10 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                 <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Sparkles className="h-4 w-4 text-indigo-600" /> Fragmentos semánticos</h4>
                 <p className="text-xs text-slate-500 mt-1">Lista principal de entidades. Toda edición/codificación/eliminación se resuelve por modal.</p>
               </div>
-              <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-600">{pagedFragments.total} fragmentos</span>
+              <div className="flex items-center gap-2">
+                <Button className="bg-slate-900 text-white" onClick={() => setManualFragmentModalOpen(true)}><PlusCircle className="mr-1 h-4 w-4" />Crear fragmento manual</Button>
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-600">{pagedFragments.total} fragmentos</span>
+              </div>
             </div>
           </div>
 
@@ -630,6 +639,54 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               <textarea className="rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={4} value={codeDraft.description} onChange={(e) => setCodeDraft((prev) => ({ ...prev, description: e.target.value }))} placeholder="Descripción opcional" />
               <div className="flex justify-end">
                 <Button className="bg-slate-900 text-white" onClick={() => { const created = createCode(codeDraft); if (created) setCodeCreateModalOpen(false); }}>Crear código</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+
+      {manualFragmentModalOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-xl rounded-2xl border bg-white p-4 shadow-xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h4 className="text-base font-semibold text-slate-900">Crear fragmento manual</h4>
+              <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(false)}>Cerrar</Button>
+            </div>
+            <div className="grid gap-2">
+              <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={manualFragmentDraft.clientId} onChange={(e) => setManualFragmentDraft((prev) => ({ ...prev, clientId: e.target.value, interviewId: '' }))}>
+                <option value="">Seleccionar cliente…</option>
+                {clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+              </select>
+              <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={manualFragmentDraft.interviewId} onChange={(e) => setManualFragmentDraft((prev) => ({ ...prev, interviewId: e.target.value }))} disabled={!manualFragmentDraft.clientId}>
+                <option value="">{manualFragmentDraft.clientId ? 'Seleccionar entrevista…' : 'Selecciona un cliente primero'}</option>
+                {manualInterviewOptions.map((session) => <option key={session.id} value={session.id}>{session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>)}
+              </select>
+              <input className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={manualFragmentDraft.title} onChange={(e) => setManualFragmentDraft((prev) => ({ ...prev, title: e.target.value }))} placeholder="Título (opcional)" />
+              <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={manualFragmentDraft.codeSlug} onChange={(e) => setManualFragmentDraft((prev) => ({ ...prev, codeSlug: e.target.value }))}>
+                <option value="">Sin código</option>
+                {analysis.codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+              </select>
+              <textarea className="rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={5} value={manualFragmentDraft.text} onChange={(e) => setManualFragmentDraft((prev) => ({ ...prev, text: e.target.value }))} placeholder="Texto del fragmento" />
+              <div className="flex justify-end">
+                <Button
+                  className="bg-slate-900 text-white"
+                  onClick={() => {
+                    onCreateFragment?.({
+                      interview_id: manualFragmentDraft.interviewId,
+                      text: manualFragmentDraft.text,
+                      source: 'manual',
+                      title: manualFragmentDraft.title,
+                      linkedCode: manualFragmentDraft.codeSlug,
+                      client_id: manualFragmentDraft.clientId,
+                    });
+                    setManualFragmentDraft({ clientId: '', interviewId: '', text: '', title: '', codeSlug: '' });
+                    setManualFragmentModalOpen(false);
+                  }}
+                  disabled={!manualFragmentDraft.clientId || !manualFragmentDraft.interviewId || !manualFragmentDraft.text.trim()}
+                >
+                  Guardar fragmento manual
+                </Button>
               </div>
             </div>
           </div>

@@ -101,7 +101,7 @@ const InterviewCenterPage = () => {
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
-  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', manualTitle: '', manualInterviewId: '', fragments: [] });
+  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', manualTitle: '', manualClientId: '', manualInterviewId: '', manualCode: '', fragments: [] });
   const [activeFragmentId, setActiveFragmentId] = useState(null);
   const [highlightFragmentId, setHighlightFragmentId] = useState(null);
   const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
@@ -112,7 +112,7 @@ const InterviewCenterPage = () => {
   const [fragmentRailPositions, setFragmentRailPositions] = useState({});
   const [documentRailHeight, setDocumentRailHeight] = useState(320);
   const [fragmentDetailModalOpen, setFragmentDetailModalOpen] = useState(false);
-  const [fragmentDetailDraft, setFragmentDetailDraft] = useState({ id: null, title: '', description: '', linkedCode: '', interviewId: '', evolvedToCode: false });
+  const [fragmentDetailDraft, setFragmentDetailDraft] = useState({ id: null, title: '', description: '', clientId: '', linkedCode: '', interviewId: '', evolvedToCode: false });
   const [fragmentDetailsById, setFragmentDetailsById] = useState({});
   const [fragmentEvolutionCodeOptions, setFragmentEvolutionCodeOptions] = useState(defaultFragmentEvolutionCodeOptions);
 
@@ -259,6 +259,22 @@ const InterviewCenterPage = () => {
     if (sessionFilter.to && time > (new Date(sessionFilter.to).getTime() + 86400000)) return false;
     return true;
   }), [center.sessions, sessionFilter]);
+
+
+  const sessionsByClientId = useMemo(() => Object.fromEntries(center.clients.map((client) => [
+    String(client.id),
+    center.sessions.filter((session) => String(session.client_id || '') === String(client.id)),
+  ])), [center.clients, center.sessions]);
+
+  const fragmentDetailInterviewOptions = useMemo(() => {
+    if (!fragmentDetailDraft.clientId) return [];
+    return sessionsByClientId[String(fragmentDetailDraft.clientId)] || [];
+  }, [fragmentDetailDraft.clientId, sessionsByClientId]);
+
+  const manualInterviewOptions = useMemo(() => {
+    if (!docReader.manualClientId) return [];
+    return sessionsByClientId[String(docReader.manualClientId)] || [];
+  }, [docReader.manualClientId, sessionsByClientId]);
 
   const mappedDocumentFragments = useMemo(() => {
     const source = String(docReader.document?.text || '');
@@ -607,7 +623,7 @@ const InterviewCenterPage = () => {
     setManualFragmentModalOpen(false);
     setActiveFragmentId(null);
     setHighlightFragmentId(null);
-    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null, manualTitle: '', manualText: '', manualInterviewId: '' }));
+    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null, manualTitle: '', manualText: '', manualClientId: '', manualInterviewId: '', manualCode: '' }));
     try {
       const document = await interviewsModuleApi.readCloudDocument(item.id);
       setDocReader((prev) => ({ ...prev, loading: false, document, error: '' }));
@@ -658,10 +674,10 @@ const InterviewCenterPage = () => {
   }, [docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
   const createManualFragment = useCallback(async () => {
-    if (!docReader.document?.node_id || !docReader.manualText.trim()) return;
+    if (!docReader.document?.node_id || !docReader.manualText.trim() || !docReader.manualClientId || !docReader.manualInterviewId) return;
     const manualText = String(docReader.manualText || '').trim();
     const manualTitle = String(docReader.manualTitle || '').trim();
-    const interviewSessionId = docReader.manualInterviewId || docReader.document.interview_id || null;
+    const interviewSessionId = docReader.manualInterviewId || null;
 
     try {
       const created = await interviewsModuleApi.createDocumentFragment({
@@ -671,21 +687,22 @@ const InterviewCenterPage = () => {
         source_type: 'manual',
       });
 
-      if (created?.id && (manualTitle || interviewSessionId)) {
+      if (created?.id && (manualTitle || interviewSessionId || docReader.manualClientId || docReader.manualCode)) {
         setFragmentDetailsById((prev) => ({
           ...prev,
           [String(created.id)]: {
             ...(prev[String(created.id)] || {}),
             title: manualTitle,
             description: manualText,
+            clientId: docReader.manualClientId ? String(docReader.manualClientId) : '',
             interviewId: interviewSessionId ? String(interviewSessionId) : '',
-            linkedCode: prev[String(created.id)]?.linkedCode || '',
+            linkedCode: String(docReader.manualCode || '').trim(),
             evolvedToCode: Boolean(prev[String(created.id)]?.evolvedToCode),
           },
         }));
       }
 
-      setDocReader((prev) => ({ ...prev, manualTitle: '', manualText: '', manualInterviewId: '' }));
+      setDocReader((prev) => ({ ...prev, manualTitle: '', manualText: '', manualClientId: '', manualInterviewId: '', manualCode: '' }));
       setManualFragmentModalOpen(false);
       await loadDocumentFragments(docReader.document.node_id);
       await loadSemanticCloudFragments();
@@ -693,7 +710,7 @@ const InterviewCenterPage = () => {
     } catch (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
-  }, [docReader.document, docReader.manualInterviewId, docReader.manualText, docReader.manualTitle, loadDocumentFragments, loadSemanticCloudFragments, toast]);
+  }, [docReader.document, docReader.manualClientId, docReader.manualCode, docReader.manualInterviewId, docReader.manualText, docReader.manualTitle, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
   useEffect(() => {
     if (tab !== 'cloud') return;
@@ -793,16 +810,19 @@ const InterviewCenterPage = () => {
     if (!sourceFragment) return;
 
     const persisted = fragmentDetailsById[normalizedId] || {};
+    const fallbackInterviewId = String(sourceFragment.interview_session_id || sourceFragment.interview_id || docReader.document?.interview_id || '');
+    const fallbackInterview = center.sessions.find((session) => String(session.id) === fallbackInterviewId);
     setFragmentDetailDraft({
       id: normalizedId,
       title: persisted.title || sourceFragment.title || '',
       description: persisted.description || sourceFragment.selected_text || '',
+      clientId: String(persisted.clientId || fallbackInterview?.client_id || ''),
       linkedCode: persisted.linkedCode || '',
-      interviewId: String(persisted.interviewId || sourceFragment.interview_session_id || sourceFragment.interview_id || docReader.document?.interview_id || ''),
+      interviewId: String(persisted.interviewId || fallbackInterviewId),
       evolvedToCode: Boolean(persisted.evolvedToCode),
     });
     setFragmentDetailModalOpen(true);
-  }, [docReader.document?.interview_id, docReader.fragments, focusFragment, fragmentDetailsById]);
+  }, [center.sessions, docReader.document?.interview_id, docReader.fragments, focusFragment, fragmentDetailsById]);
 
   const persistFragmentDetailDraft = useCallback(() => {
     if (!fragmentDetailDraft.id) return;
@@ -812,6 +832,7 @@ const InterviewCenterPage = () => {
       [normalizedId]: {
         title: String(fragmentDetailDraft.title || '').trim(),
         description: String(fragmentDetailDraft.description || '').trim(),
+        clientId: String(fragmentDetailDraft.clientId || '').trim(),
         linkedCode: String(fragmentDetailDraft.linkedCode || '').trim(),
         interviewId: String(fragmentDetailDraft.interviewId || '').trim(),
         evolvedToCode: Boolean(fragmentDetailDraft.evolvedToCode),
@@ -894,24 +915,40 @@ const InterviewCenterPage = () => {
   useEffect(() => {
     if (!manualFragmentModalOpen) return;
     setDocReader((prev) => {
-      if (prev.manualInterviewId) return prev;
-      return { ...prev, manualInterviewId: String(prev.document?.interview_id || '') };
+      if (prev.manualClientId && prev.manualInterviewId) return prev;
+      const fallbackInterviewId = String(prev.document?.interview_id || '');
+      const fallbackInterview = center.sessions.find((session) => String(session.id) === fallbackInterviewId);
+      return { ...prev, manualClientId: String(fallbackInterview?.client_id || ''), manualInterviewId: fallbackInterviewId };
     });
-  }, [manualFragmentModalOpen]);
+  }, [center.sessions, manualFragmentModalOpen]);
 
   const announcePendingTool = useCallback((label) => {
     toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
   }, [toast]);
 
-  const createSemanticInterviewFragment = useCallback(async ({ interview_id, text, source = 'selection' }) => {
+  const createSemanticInterviewFragment = useCallback(async ({ interview_id, text, source = 'selection', title = '', linkedCode = '', client_id = '' }) => {
     const trimmed = String(text || '').trim();
     if (!interview_id || !trimmed) return;
     try {
-      await interviewsModuleApi.createDocumentFragment({
+      const created = await interviewsModuleApi.createDocumentFragment({
         interview_session_id: interview_id,
         selected_text: trimmed,
         source_type: source === 'manual' ? 'manual' : 'selection',
       });
+      if (created?.id && (title || linkedCode || client_id || interview_id)) {
+        setFragmentDetailsById((prev) => ({
+          ...prev,
+          [String(created.id)]: {
+            ...(prev[String(created.id)] || {}),
+            title: String(title || '').trim(),
+            description: trimmed,
+            clientId: String(client_id || ''),
+            interviewId: String(interview_id || ''),
+            linkedCode: String(linkedCode || '').trim(),
+            evolvedToCode: Boolean(prev[String(created.id)]?.evolvedToCode),
+          },
+        }));
+      }
       await loadSemanticCloudFragments();
       toast({ title: 'Fragmento registrado', description: 'Se guardó en la entidad única de fragmentos.' });
     } catch (error) {
@@ -1491,15 +1528,28 @@ const InterviewCenterPage = () => {
             </select>
           </div>
           <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Cliente</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={fragmentDetailDraft.clientId}
+              onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, clientId: event.target.value, interviewId: '' }))}
+            >
+              <option value="">Seleccionar cliente…</option>
+              {center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+            </select>
+          </div>
+
+          <div className="space-y-1">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Entrevista vinculada</p>
             <select
               className="w-full rounded-md border px-3 py-2 text-sm"
               value={fragmentDetailDraft.interviewId}
               onChange={(event) => setFragmentDetailDraft((prev) => ({ ...prev, interviewId: event.target.value }))}
+              disabled={!fragmentDetailDraft.clientId}
             >
-              <option value="">Sin entrevista vinculada</option>
-              {center.sessions.map((session) => (
-                <option key={session.id} value={session.id}>{session.client_name || `Cliente ${session.client_id || '—'}`} · {session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+              <option value="">{fragmentDetailDraft.clientId ? 'Seleccionar entrevista…' : 'Selecciona un cliente primero'}</option>
+              {fragmentDetailInterviewOptions.map((session) => (
+                <option key={session.id} value={session.id}>{session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
               ))}
             </select>
           </div>
@@ -1517,8 +1567,8 @@ const InterviewCenterPage = () => {
 
           <div className="flex items-center justify-end gap-2">
             <Button className="bg-white border" onClick={() => setFragmentDetailModalOpen(false)}>Cerrar</Button>
-            <Button className="bg-white border" onClick={persistFragmentDetailDraft}>Guardar detalle</Button>
-            <Button className="bg-indigo-600 text-white" onClick={evolveFragmentToCode}>Evolucionar a código</Button>
+            <Button className="bg-white border" onClick={persistFragmentDetailDraft} disabled={!fragmentDetailDraft.clientId || !fragmentDetailDraft.interviewId}>Guardar detalle</Button>
+            <Button className="bg-indigo-600 text-white" onClick={evolveFragmentToCode} disabled={!fragmentDetailDraft.clientId || !fragmentDetailDraft.interviewId}>Evolucionar a código</Button>
           </div>
         </div>
       </Modal>
@@ -1541,15 +1591,42 @@ const InterviewCenterPage = () => {
           </div>
 
           <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Cliente</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={docReader.manualClientId}
+              onChange={(event) => setDocReader((prev) => ({ ...prev, manualClientId: event.target.value, manualInterviewId: '' }))}
+            >
+              <option value="">Seleccionar cliente…</option>
+              {center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+            </select>
+          </div>
+
+          <div className="space-y-1">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Entrevista vinculada</p>
             <select
               className="w-full rounded-md border px-3 py-2 text-sm"
               value={docReader.manualInterviewId}
               onChange={(event) => setDocReader((prev) => ({ ...prev, manualInterviewId: event.target.value }))}
+              disabled={!docReader.manualClientId}
             >
-              <option value="">Sin entrevista vinculada</option>
-              {center.sessions.map((session) => (
-                <option key={session.id} value={session.id}>{session.client_name || `Cliente ${session.client_id || '—'}`} · {session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+              <option value="">{docReader.manualClientId ? 'Seleccionar entrevista…' : 'Selecciona un cliente primero'}</option>
+              {manualInterviewOptions.map((session) => (
+                <option key={session.id} value={session.id}>{session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Código vinculado</p>
+            <select
+              className="w-full rounded-md border px-3 py-2 text-sm"
+              value={docReader.manualCode}
+              onChange={(event) => setDocReader((prev) => ({ ...prev, manualCode: event.target.value }))}
+            >
+              <option value="">Sin código</option>
+              {fragmentEvolutionCodeOptions.map((option) => (
+                <option key={option.slug} value={option.slug}>{option.label}</option>
               ))}
             </select>
           </div>
@@ -1562,7 +1639,7 @@ const InterviewCenterPage = () => {
           />
           <div className="flex justify-end gap-2">
             <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(false)}>Cancelar</Button>
-            <Button className="bg-slate-900 text-white" onClick={createManualFragment} disabled={!docReader.manualText.trim()}>Guardar fragmento manual</Button>
+            <Button className="bg-slate-900 text-white" onClick={createManualFragment} disabled={!docReader.manualText.trim() || !docReader.manualClientId || !docReader.manualInterviewId}>Guardar fragmento manual</Button>
           </div>
         </div>
       </Modal>
