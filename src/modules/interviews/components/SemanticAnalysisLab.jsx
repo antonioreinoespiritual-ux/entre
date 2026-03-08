@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, Braces, ChevronDown, ChevronRight, Code2, Hash, Link2, MoreHorizontal, Pencil, PlusCircle, Sparkles, Tag, Trash2 } from 'lucide-react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { flip, offset, shift, useFloating } from '@floating-ui/react-dom';
 import { Button } from '@/components/ui/button';
 import { getLeanProblemScore, getLeanSolutionScore } from '@/modules/interviews/components/LeanEvaluationPanel';
 import { buildSemanticAnalysis, defaultSemanticClusters, defaultSemanticCodebook } from '@/modules/interviews/services/semanticAnalysis';
@@ -83,9 +84,17 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [selectedCodeMapEdgeId, setSelectedCodeMapEdgeId] = useState('');
   const [codeMapPan, setCodeMapPan] = useState({ x: 0, y: 0 });
   const [isCodeMapPanning, setIsCodeMapPanning] = useState(false);
+  const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
+  const [codeMapLayoutMode, setCodeMapLayoutMode] = useState('hierarchical');
   const codebookMenuRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
+
+  const {
+    refs: codeMapContextRefs,
+    floatingStyles: codeMapContextStyles,
+    update: updateCodeMapContextMenu,
+  } = useFloating({ placement: 'right-start', middleware: [offset(8), flip(), shift({ padding: 8 })] });
 
   useEffect(() => {
     try {
@@ -546,6 +555,23 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     setCodeDeleteModalOpen(true);
   };
 
+  const openDeleteCodeModalForSlug = useCallback((slug) => {
+    const targetSlug = String(slug || '');
+    if (!targetSlug) return;
+    setActiveCodeSlug(targetSlug);
+    const destination = analysis.codes.find((code) => code.slug !== targetSlug)?.slug || '';
+    setCodeDeleteTargetSlug(destination);
+    setCodeDeleteModalOpen(true);
+  }, [analysis.codes]);
+
+  const openCodeFragmentsFromMap = useCallback((slug) => {
+    const match = location.pathname.match(/^(.*\/interviews)(?:\/.*)?$/);
+    const basePath = match?.[1] || '/interviews';
+    setSelectedCodeMapNodeSlug(String(slug || ''));
+    setActiveTab('fragments');
+    navigate(basePath);
+  }, [location.pathname, navigate]);
+
   const confirmDeleteActiveCode = () => {
     if (!activeCodeSlug || !activeCodeIsCustom) return;
     if (activeCodeFragments.length > 0 && !codeDeleteTargetSlug) return;
@@ -690,6 +716,85 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [codeMapEdges, selectedCodeMapEdgeId, setCodeParent]);
 
+  const applyCodeMapAutoLayout = useCallback((mode) => {
+    const nextMode = String(mode || 'hierarchical');
+    const nextLayout = {};
+
+    if (nextMode === 'radial') {
+      const radius = Math.max(260, analysis.codes.length * 6);
+      analysis.codes.forEach((code, index) => {
+        const angle = (index / Math.max(analysis.codes.length, 1)) * Math.PI * 2;
+        nextLayout[code.slug] = {
+          x: 600 + Math.cos(angle) * radius,
+          y: 420 + Math.sin(angle) * radius,
+        };
+      });
+    } else if (nextMode === 'organic') {
+      analysis.codes.forEach((code, index) => {
+        const pseudo = Array.from(code.slug).reduce((acc, char) => acc + char.charCodeAt(0), 0) + index;
+        nextLayout[code.slug] = {
+          x: 160 + ((pseudo * 37) % 1280),
+          y: 120 + ((pseudo * 71) % 920),
+        };
+      });
+    } else {
+      const roots = analysis.codes.filter((code) => !code.parentSlug || !codeBySlug[code.parentSlug]);
+      const queue = roots.map((code) => ({ slug: code.slug, depth: 0 }));
+      const byDepth = {};
+      const seen = new Set();
+      while (queue.length) {
+        const current = queue.shift();
+        if (!current || seen.has(current.slug)) continue;
+        seen.add(current.slug);
+        byDepth[current.depth] = [...(byDepth[current.depth] || []), current.slug];
+        (codeChildrenByParent[current.slug] || []).forEach((child) => {
+          queue.push({ slug: child.slug, depth: current.depth + 1 });
+        });
+      }
+      analysis.codes.forEach((code) => {
+        if (!seen.has(code.slug)) {
+          byDepth[0] = [...(byDepth[0] || []), code.slug];
+        }
+      });
+      Object.entries(byDepth).forEach(([depth, slugs]) => {
+        slugs.forEach((slug, index) => {
+          nextLayout[slug] = {
+            x: 120 + (Number(depth) * 220),
+            y: 100 + (index * 92),
+          };
+        });
+      });
+    }
+
+    setCodeMapLayoutBySlug(nextLayout);
+    setCodeMapLayoutMode(nextMode);
+  }, [analysis.codes, codeBySlug, codeChildrenByParent]);
+
+  useEffect(() => {
+    if (!codeMapContextMenu.open) return;
+    const virtualElement = {
+      getBoundingClientRect: () => ({
+        x: codeMapContextMenu.x,
+        y: codeMapContextMenu.y,
+        top: codeMapContextMenu.y,
+        left: codeMapContextMenu.x,
+        right: codeMapContextMenu.x,
+        bottom: codeMapContextMenu.y,
+        width: 0,
+        height: 0,
+      }),
+    };
+    codeMapContextRefs.setReference(virtualElement);
+    updateCodeMapContextMenu?.();
+  }, [codeMapContextMenu, codeMapContextRefs, updateCodeMapContextMenu]);
+
+  useEffect(() => {
+    const onWindowClick = () => setCodeMapContextMenu((prev) => ({ ...prev, open: false }));
+    if (!codeMapContextMenu.open) return undefined;
+    window.addEventListener('click', onWindowClick);
+    return () => window.removeEventListener('click', onWindowClick);
+  }, [codeMapContextMenu.open]);
+
   return (
     <div className="space-y-4">
       <div className={card}>
@@ -742,9 +847,14 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Link2 className="h-4 w-4 text-indigo-600" />Mapa de códigos</h4>
-                <p className="mt-1 text-xs text-slate-500">Arrastra nodos para reorganizar, usa “Conectar” para crear padre → hijo y selecciona una línea para eliminarla con Supr/Backspace.</p>
+                <p className="mt-1 text-xs text-slate-500">Nodos compactos estilo Atlas.ti. Clic derecho sobre nodo para abrir acciones. Arrastra conexiones y elimina líneas con Supr/Backspace.</p>
               </div>
               <div className="flex items-center gap-2">
+                <select className="rounded border border-slate-200 bg-white px-2 py-1 text-xs" value={codeMapLayoutMode} onChange={(event) => applyCodeMapAutoLayout(event.target.value)}>
+                  <option value="hierarchical">Auto layout: Hierarchical</option>
+                  <option value="radial">Auto layout: Radial</option>
+                  <option value="organic">Auto layout: Organic</option>
+                </select>
                 <label className="text-xs text-slate-600">Zoom</label>
                 <input type="range" min={0.6} max={1.8} step={0.1} value={codeMapZoom} onChange={(e) => setCodeMapZoom(Number(e.target.value) || 1)} />
                 <Button className="bg-white border" onClick={() => navigate(interviewsBasePath)}>Volver al codebook</Button>
@@ -756,6 +866,11 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
             className={`relative h-[620px] overflow-hidden bg-slate-50 ${isCodeMapPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
             onMouseDown={handleCodeMapCanvasMouseDown}
           >
+            {codeMapConnectSourceSlug ? (
+              <div className="absolute left-3 top-3 z-20 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs text-indigo-700">
+                Conectando desde <b>{codeBySlug[codeMapConnectSourceSlug]?.name || codeMapConnectSourceSlug}</b>. Haz clic en otro nodo para completar.
+              </div>
+            ) : null}
             <div
               className="absolute h-[2000px] w-[2200px] origin-top-left"
               style={{ transform: `translate(${codeMapPan.x}px, ${codeMapPan.y}px) scale(${codeMapZoom})` }}
@@ -769,12 +884,12 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                   return (
                     <line
                       key={edge.id}
-                      x1={source.x + 112}
-                      y1={source.y + 30}
-                      x2={target.x + 112}
-                      y2={target.y + 30}
+                      x1={source.x + 80}
+                      y1={source.y + 22}
+                      x2={target.x + 80}
+                      y2={target.y + 22}
                       stroke={selected ? '#4f46e5' : '#94a3b8'}
-                      strokeWidth={selected ? 3 : 2}
+                      strokeWidth={selected ? 2 : 1.5}
                       className="cursor-pointer"
                       onClick={(event) => {
                         event.stopPropagation();
@@ -792,40 +907,46 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                   <div
                     key={code.slug}
                     data-node-card="true"
-                    className={`absolute w-56 rounded-xl border bg-white p-3 shadow-sm ${draggingNodeSlug === code.slug || isNodeSelected ? 'border-indigo-400 shadow-lg' : 'border-slate-200'}`}
+                    className={`absolute min-w-[80px] max-w-[160px] rounded-md border bg-white px-2.5 py-1.5 text-[13px] font-medium text-slate-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:border-indigo-500 hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] ${draggingNodeSlug === code.slug || isNodeSelected ? 'border-2 border-indigo-500' : 'border-[#D0D5DD]'}`}
                     style={{ left: code.x, top: code.y }}
                     onMouseDown={(event) => handleCodeMapNodeMouseDown(event, code.slug)}
                     onClick={(event) => {
                       event.stopPropagation();
+                      if (codeMapConnectSourceSlug && codeMapConnectSourceSlug !== code.slug) {
+                        setCodeParent(code.slug, codeMapConnectSourceSlug);
+                        setCodeMapConnectSourceSlug('');
+                      }
                       setSelectedCodeMapEdgeId('');
                       setSelectedCodeMapNodeSlug(code.slug);
                     }}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setSelectedCodeMapNodeSlug(code.slug);
+                      setCodeMapContextMenu({ open: true, x: event.clientX, y: event.clientY, slug: code.slug });
+                    }}
                   >
-                    <p className="text-xs text-slate-500">{code.slug}</p>
-                    <p className="flex items-center gap-1 text-sm font-semibold text-slate-900"><Tag className="h-3.5 w-3.5 text-indigo-600" />{code.name}</p>
-                    <p className="mt-1 text-[11px] text-slate-500">{code.fragmentCount} fragmentos</p>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeMapConnectSourceSlug(code.slug); }}>Conectar</Button>
-                      {codeMapConnectSourceSlug && codeMapConnectSourceSlug !== code.slug ? (
-                        <Button
-                          className="h-7 bg-indigo-600 px-2 text-xs text-white"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setCodeParent(code.slug, codeMapConnectSourceSlug);
-                            setCodeMapConnectSourceSlug('');
-                          }}
-                        >
-                          Vincular aquí
-                        </Button>
-                      ) : null}
-                      <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeParent(code.slug, ''); }}>Quitar padre</Button>
-                      <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); openCodeModal(code.slug); }}>Gestionar</Button>
-                    </div>
-                    {code.parentSlug ? <p className="mt-2 text-[11px] text-slate-500">Padre: {code.parentSlug}</p> : <p className="mt-2 text-[11px] text-slate-400">Sin padre</p>}
+                    <p className="truncate">{code.name}</p>
+                    <p className="text-[10px] font-normal text-slate-500">({code.fragmentCount})</p>
                   </div>
                 );
               })}
             </div>
+
+            {codeMapContextMenu.open ? (
+              <div
+                ref={codeMapContextRefs.setFloating}
+                style={codeMapContextStyles}
+                className="z-30 min-w-[200px] rounded-md border border-slate-200 bg-white p-1 shadow-lg"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => { openCodeModal(codeMapContextMenu.slug); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Editar código</button>
+                <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => { setCodeMapConnectSourceSlug(codeMapContextMenu.slug); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Conectar con otro código</button>
+                <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => { setCodeParent(codeMapContextMenu.slug, ''); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Quitar padre</button>
+                <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => { openDeleteCodeModalForSlug(codeMapContextMenu.slug); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Eliminar código</button>
+                <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => { openCodeFragmentsFromMap(codeMapContextMenu.slug); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Ver fragmentos asociados</button>
+              </div>
+            ) : null}
           </div>
         </div>
       )}
