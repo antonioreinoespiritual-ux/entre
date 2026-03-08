@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 import { FormBuilder, createEmptyFormDraft } from '@/modules/interviews/components/FormBuilder';
 import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner';
+import { QuantitativeAnalysisLab } from '@/modules/interviews/components/QuantitativeAnalysisLab';
 import { SemanticAnalysisLab } from '@/modules/interviews/components/SemanticAnalysisLab';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
@@ -1615,6 +1616,17 @@ const InterviewCenterPage = () => {
             persistedFragments={semanticCloudFragments}
             onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
             onCreateFragment={createSemanticInterviewFragment}
+          />
+        )}
+
+        {!center.loading && !center.error && tab === 'quantitative' && (
+          <QuantitativeAnalysisLab
+            sessions={center.sessions}
+            audiences={center.audiences}
+            forms={center.forms}
+            clients={center.clients}
+            hypotheses={center.hypotheses}
+            onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
           />
         )}
       </InterviewModuleShell>
