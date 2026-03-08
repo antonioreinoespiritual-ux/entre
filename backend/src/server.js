@@ -1799,9 +1799,12 @@ async function ensureVideoHierarchyMigration() {
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
-  await pool.query('DROP TABLE IF EXISTS cloud_events');
-  await pool.query('DROP TABLE IF EXISTS cloud_edges');
-  await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  const forceCloudReset = String(process.env.RESET_CLOUD_SCHEMA || '').trim() === '1';
+  if (forceCloudReset) {
+    await pool.query('DROP TABLE IF EXISTS cloud_events');
+    await pool.query('DROP TABLE IF EXISTS cloud_edges');
+    await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  }
 
   await pool.query(`CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
@@ -1950,10 +1953,14 @@ async function ensureVideoHierarchyMigration() {
 }
 
 async function runMigrations() {
-  // Rebuild Cloud schema from scratch to avoid legacy column/index mismatches.
-  await pool.query('DROP TABLE IF EXISTS cloud_events');
-  await pool.query('DROP TABLE IF EXISTS cloud_edges');
-  await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  // Keep cloud data persistent across backend restarts/reconnects.
+  // If a destructive reset is explicitly needed for maintenance, use RESET_CLOUD_SCHEMA=1.
+  const forceCloudReset = String(process.env.RESET_CLOUD_SCHEMA || '').trim() === '1';
+  if (forceCloudReset) {
+    await pool.query('DROP TABLE IF EXISTS cloud_events');
+    await pool.query('DROP TABLE IF EXISTS cloud_edges');
+    await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  }
 
   for (const statement of schemaSql) {
     await pool.query(statement);
