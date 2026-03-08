@@ -1,6 +1,7 @@
 import { interviewsApi } from '@/services/interviewsApi';
+import { createStableId } from '@/lib/stableId';
 
-const createId = () => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `q_${Date.now()}_${Math.random().toString(16).slice(2)}`);
+const createId = () => createStableId('q_');
 
 export const QUESTION_TYPES = ['short_text', 'long_text', 'single_choice', 'multi_choice', 'scale_1_5'];
 

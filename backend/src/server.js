@@ -354,6 +354,24 @@ function uuid() {
   return crypto.randomUUID();
 }
 
+const ENTITY_ID_PREFIX = {
+  cloud_node_file: 'doc_',
+  cloud_node_folder: 'cfold_',
+  cloud_node_shortcut: 'cshort_',
+  cloud_edge: 'cedge_',
+  fragment: 'frag_',
+  interview_client: 'client_',
+  interview_hypothesis: 'hyp_',
+  interview_form: 'form_',
+  interview_session: 'int_',
+  hypothesis_video_link: 'hvid_',
+};
+
+function buildEntityId(entityType, fallbackPrefix = 'id_') {
+  const prefix = ENTITY_ID_PREFIX[entityType] || fallbackPrefix;
+  return `${prefix}${uuid()}`;
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -382,7 +400,7 @@ async function ensureCloudEdge(userId, parentId, childId) {
   if (!projectId || (childRows[0]?.project_id && String(childRows[0].project_id) !== String(projectId))) return null;
   await pool.query(
     'INSERT OR IGNORE INTO cloud_edges (id, project_id, user_id, parent_id, child_id, edge_kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [uuid(), projectId, userId, parentId, childId, 'link', nowIso()],
+    [buildEntityId('cloud_edge'), projectId, userId, parentId, childId, 'link', nowIso()],
   );
   const [rows] = await pool.query(
     'SELECT * FROM cloud_edges WHERE user_id = ? AND project_id = ? AND parent_id = ? AND child_id = ? LIMIT 1',
@@ -524,7 +542,7 @@ async function resolveProjectIdForCloudNode(userId, parentId, explicitProjectId 
 async function createCloudNode({ userId, parentId = null, projectId = null, name, type = 'folder', canonicalKey = null, mimeType = null, size = null, storagePath = null, targetType = null, targetId = null }) {
   const resolvedProjectId = await resolveProjectIdForCloudNode(userId, parentId, projectId);
   const node = {
-    id: uuid(),
+    id: buildEntityId(type === 'file' ? 'cloud_node_file' : (type === 'shortcut' ? 'cloud_node_shortcut' : 'cloud_node_folder')),
     project_id: resolvedProjectId,
     user_id: userId,
     parent_id: parentId,
@@ -1920,7 +1938,7 @@ async function ensureVideoHierarchyMigration() {
 
     let hypothesisId = existingHypRows[0]?.id;
     if (!hypothesisId) {
-      hypothesisId = uuid();
+      hypothesisId = buildEntityId('interview_hypothesis');
       await pool.query(
         'INSERT INTO hypotheses (id, campaign_id, user_id, type, condition, validation_status) VALUES (?, ?, ?, ?, ?, ?)',
         [hypothesisId, audience.campaign_id, video.user_id, 'Auto-migrated', migrationCondition, 'No Validada'],
@@ -3722,7 +3740,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       const fragment = {
-        id: uuid(),
+        id: buildEntityId('fragment'),
         user_id: user.id,
         project_id: context.project_id || node?.project_id,
         campaign_id: context.campaign_id || null,
@@ -4256,7 +4274,7 @@ const server = http.createServer(async (req, res) => {
           continue;
         }
         const contextAudienceId = hyp.audience_id || null;
-        await pool.query('INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [uuid(), hyp.id, video.id, contextAudienceId, user.id]);
+        await pool.query('INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [buildEntityId('hypothesis_video_link'), hyp.id, video.id, contextAudienceId, user.id]);
         await linkVideoFolderIntoHypothesis(user.id, hyp.campaign_id, hyp.id, video);
         await linkVideoFolderIntoAudience(user.id, hyp.campaign_id, contextAudienceId, video);
         linked.push(hyp.id);
@@ -4341,7 +4359,7 @@ const server = http.createServer(async (req, res) => {
       await pool.query(
         `INSERT INTO interview_clients (id, project_id, campaign_id, audience_id, user_id, name, contact, notes, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [uuid(), projectId, campaignId, body.audience_id || null, user.id, body.name || 'Cliente', body.contact || null, body.notes || null, now, now],
+        [buildEntityId('interview_client'), projectId, campaignId, body.audience_id || null, user.id, body.name || 'Cliente', body.contact || null, body.notes || null, now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_clients WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
       return sendJson(req, res, 200, { data: rows[0] || null });
@@ -4381,7 +4399,7 @@ const server = http.createServer(async (req, res) => {
       await pool.query(
         `INSERT INTO interview_hypotheses (id, project_id, campaign_id, audience_id, user_id, type, title, description, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [uuid(), projectId, campaignId, body.audience_id || null, user.id, body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', now, now],
+        [buildEntityId('interview_hypothesis'), projectId, campaignId, body.audience_id || null, user.id, body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
       return sendJson(req, res, 200, { data: rows[0] || null });
@@ -4422,7 +4440,7 @@ const server = http.createServer(async (req, res) => {
       await pool.query(
         `INSERT INTO interview_forms (id, project_id, campaign_id, user_id, title, description, questions_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [uuid(), projectId, campaignId, user.id, body.title || 'Formulario', body.description || null, JSON.stringify(questions), now, now],
+        [buildEntityId('interview_form'), projectId, campaignId, user.id, body.title || 'Formulario', body.description || null, JSON.stringify(questions), now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_forms WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
       return sendJson(req, res, 200, { data: { ...rows[0], questions_json: safeParseJsonField(rows[0]?.questions_json, []) } });
@@ -4491,7 +4509,7 @@ const server = http.createServer(async (req, res) => {
       await pool.query(
         `INSERT INTO interview_sessions (id, project_id, campaign_id, user_id, client_id, audience_id, form_id, interview_hypothesis_id, conducted_at, notes, status, completed_at, responses_json, form_snapshot_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [uuid(), projectId, campaignId, user.id, body.client_id, body.audience_id || client.audience_id || null, body.form_id, body.interview_hypothesis_id || null, body.conducted_at || now, body.notes || null, status, status === 'completed' ? now : null, JSON.stringify(responses), JSON.stringify(snapshot), now, now],
+        [buildEntityId('interview_session'), projectId, campaignId, user.id, body.client_id, body.audience_id || client.audience_id || null, body.form_id, body.interview_hypothesis_id || null, body.conducted_at || now, body.notes || null, status, status === 'completed' ? now : null, JSON.stringify(responses), JSON.stringify(snapshot), now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
       return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}), form_snapshot_json: safeParseJsonField(rows[0]?.form_snapshot_json, null) } });
@@ -4648,7 +4666,7 @@ const server = http.createServer(async (req, res) => {
       const previousAudienceId = prevRows[0]?.audience_id || null;
       await pool.query(
         'INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)',
-        [uuid(), hypothesisId, videoId, contextAudienceId, user.id],
+        [buildEntityId('hypothesis_video_link'), hypothesisId, videoId, contextAudienceId, user.id],
       );
       await pool.query(
         'UPDATE hypothesis_videos SET audience_id = ? WHERE hypothesis_id = ? AND video_id = ? AND user_id = ?',
@@ -4710,7 +4728,7 @@ const server = http.createServer(async (req, res) => {
       const contextAudienceId = hypothesis?.audience_id || body?.audience_id || null;
       const [prevRows] = await pool.query('SELECT audience_id FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1', [targetHypothesisId, targetVideoId, user.id]);
       const previousAudienceId = prevRows[0]?.audience_id || null;
-      await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [uuid(), targetHypothesisId, targetVideoId, contextAudienceId, user.id]);
+      await pool.query('INSERT OR IGNORE INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)', [buildEntityId('hypothesis_video_link'), targetHypothesisId, targetVideoId, contextAudienceId, user.id]);
       await linkVideoFolderIntoHypothesis(user.id, hypothesis.campaign_id, targetHypothesisId, video);
       await linkVideoFolderIntoAudience(user.id, hypothesis.campaign_id, contextAudienceId, video);
 
@@ -4801,7 +4819,7 @@ const server = http.createServer(async (req, res) => {
         const contextAudienceId = targetHypothesis.audience_id || null;
         await pool.query(
           'INSERT INTO hypothesis_videos (id, hypothesis_id, video_id, audience_id, user_id) VALUES (?, ?, ?, ?, ?)',
-          [uuid(), targetHypothesisId, video.id, contextAudienceId, user.id],
+          [buildEntityId('hypothesis_video_link'), targetHypothesisId, video.id, contextAudienceId, user.id],
         );
         await linkVideoFolderIntoHypothesis(user.id, targetHypothesis.campaign_id, targetHypothesisId, video);
         await linkVideoFolderIntoAudience(user.id, targetHypothesis.campaign_id, contextAudienceId, video);
