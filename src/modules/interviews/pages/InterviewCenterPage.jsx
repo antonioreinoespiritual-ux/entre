@@ -101,6 +101,8 @@ const InterviewCenterPage = () => {
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
+  const [cloudFilters, setCloudFilters] = useState({ clientId: '', interviewId: '' });
+  const [cloudNodeContextById, setCloudNodeContextById] = useState({});
   const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', manualTitle: '', manualClientId: '', manualInterviewId: '', manualCode: '', fragments: [] });
   const [activeFragmentId, setActiveFragmentId] = useState(null);
   const [highlightFragmentId, setHighlightFragmentId] = useState(null);
@@ -275,6 +277,44 @@ const InterviewCenterPage = () => {
     if (!docReader.manualClientId) return [];
     return sessionsByClientId[String(docReader.manualClientId)] || [];
   }, [docReader.manualClientId, sessionsByClientId]);
+
+
+  const cloudSessionsById = useMemo(() => Object.fromEntries(center.sessions.map((session) => [String(session.id), session])), [center.sessions]);
+
+  const cloudInterviewOptions = useMemo(() => {
+    if (cloudFilters.clientId) {
+      return center.sessions.filter((session) => String(session.client_id || '') === String(cloudFilters.clientId));
+    }
+    return center.sessions;
+  }, [center.sessions, cloudFilters.clientId]);
+
+  const currentCloudParentContext = useMemo(() => {
+    if (!cloudState.parentId) return null;
+    return cloudNodeContextById[String(cloudState.parentId)] || null;
+  }, [cloudNodeContextById, cloudState.parentId]);
+
+  const filteredCloudItems = useMemo(() => {
+    const selectedClientId = String(cloudFilters.clientId || '');
+    const selectedInterviewId = String(cloudFilters.interviewId || '');
+
+    if (!selectedClientId && !selectedInterviewId) return cloudState.items || [];
+
+    return (cloudState.items || []).filter((item) => {
+      const nodeId = String(item.id);
+      const directInterviewId = item.targetType === 'interview_session' ? String(item.targetEntityId || '') : '';
+      const inheritedContext = cloudNodeContextById[nodeId] || currentCloudParentContext || null;
+      const resolvedInterviewId = directInterviewId || String(inheritedContext?.interviewId || '');
+      const resolvedClientId = String(
+        inheritedContext?.clientId
+        || cloudSessionsById[resolvedInterviewId]?.client_id
+        || '',
+      );
+
+      if (selectedInterviewId && resolvedInterviewId !== selectedInterviewId) return false;
+      if (selectedClientId && resolvedClientId !== selectedClientId) return false;
+      return true;
+    });
+  }, [cloudFilters.clientId, cloudFilters.interviewId, cloudNodeContextById, cloudSessionsById, cloudState.items, currentCloudParentContext]);
 
   const mappedDocumentFragments = useMemo(() => {
     const source = String(docReader.document?.text || '');
@@ -571,11 +611,29 @@ const InterviewCenterPage = () => {
       const response = await fetch(url.toString(), { headers: authHeader });
       const json = await response.json();
       if (!response.ok) throw new Error(json?.error || 'No se pudo listar carpeta');
-      setCloudState((prev) => ({ ...prev, loading: false, parentId: targetParentId, items: json.data || [], breadcrumbs: json.breadcrumbs || [] }));
+      const rows = json.data || [];
+      setCloudNodeContextById((prev) => {
+        const next = { ...prev };
+        const parentContext = prev[String(targetParentId)] || null;
+        rows.forEach((item) => {
+          const nodeId = String(item.id);
+          if (item.targetType === 'interview_session') {
+            const interviewId = String(item.targetEntityId || '');
+            const interview = center.sessions.find((session) => String(session.id) === interviewId);
+            next[nodeId] = { interviewId, clientId: String(interview?.client_id || '') };
+            return;
+          }
+          if (parentContext && !next[nodeId]) {
+            next[nodeId] = parentContext;
+          }
+        });
+        return next;
+      });
+      setCloudState((prev) => ({ ...prev, loading: false, parentId: targetParentId, items: rows, breadcrumbs: json.breadcrumbs || [] }));
     } catch (error) {
       setCloudState((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo listar carpeta' }));
     }
-  }, [authHeader, projectId]);
+  }, [authHeader, center.sessions, projectId]);
 
   const uploadInterviewCloudFiles = useCallback(async (event) => {
     const files = [...(event.target.files || [])];
@@ -940,6 +998,15 @@ const InterviewCenterPage = () => {
     });
   }, [center.sessions, manualFragmentModalOpen]);
 
+
+  useEffect(() => {
+    if (!cloudFilters.clientId || !cloudFilters.interviewId) return;
+    const isValid = cloudInterviewOptions.some((session) => String(session.id) === String(cloudFilters.interviewId));
+    if (!isValid) {
+      setCloudFilters((prev) => ({ ...prev, interviewId: '' }));
+    }
+  }, [cloudFilters.clientId, cloudFilters.interviewId, cloudInterviewOptions]);
+
   const announcePendingTool = useCallback((label) => {
     toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
   }, [toast]);
@@ -1303,10 +1370,41 @@ const InterviewCenterPage = () => {
                   </button>
                 ))}
               </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3">
+                <div className="grid gap-2 md:grid-cols-3">
+                  <select
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                    value={cloudFilters.clientId}
+                    onChange={(event) => setCloudFilters((prev) => ({ ...prev, clientId: event.target.value, interviewId: '' }))}
+                  >
+                    <option value="">Filtrar por cliente…</option>
+                    {center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+                  </select>
+                  <select
+                    className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
+                    value={cloudFilters.interviewId}
+                    onChange={(event) => setCloudFilters((prev) => ({ ...prev, interviewId: event.target.value }))}
+                  >
+                    <option value="">Filtrar por entrevista…</option>
+                    {cloudInterviewOptions.map((session) => (
+                      <option key={session.id} value={session.id}>{session.interviewer_name || 'Entrevista'} · {session.created_at ? new Date(session.created_at).toLocaleDateString() : 'Sin fecha'}</option>
+                    ))}
+                  </select>
+                  <Button
+                    className="bg-white border text-slate-700"
+                    onClick={() => setCloudFilters({ clientId: '', interviewId: '' })}
+                    disabled={!cloudFilters.clientId && !cloudFilters.interviewId}
+                  >
+                    Limpiar filtros
+                  </Button>
+                </div>
+              </div>
+
               {cloudState.error ? <p className="text-sm text-red-600">{cloudState.error}</p> : null}
               {cloudState.loading ? <p className="text-sm text-slate-500">Cargando cloud...</p> : null}
               <div className="space-y-2">
-                {(cloudState.items || []).map((item) => (
+                {filteredCloudItems.map((item) => (
                   <div key={item.id} className="flex items-center justify-between rounded-lg border p-3">
                     <button
                       className="flex items-center gap-2 text-left"
@@ -1314,6 +1412,14 @@ const InterviewCenterPage = () => {
                         if (item.kind === 'file') {
                           navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/cloud/${item.id}`);
                           return;
+                        }
+                        if (item.targetType === 'interview_session') {
+                          const interviewId = String(item.targetEntityId || '');
+                          const interview = center.sessions.find((session) => String(session.id) === interviewId);
+                          setCloudNodeContextById((prev) => ({
+                            ...prev,
+                            [String(item.targetId || item.id)]: { interviewId, clientId: String(interview?.client_id || '') },
+                          }));
                         }
                         loadInterviewCloudFolder(item.targetId || item.id);
                       }}
@@ -1325,6 +1431,11 @@ const InterviewCenterPage = () => {
                     {item.kind === 'file' ? <a className="text-slate-500 hover:text-slate-900" href={`${apiBaseUrl}/api/cloud/download?nodeId=${encodeURIComponent(item.id)}`} target="_blank" rel="noreferrer"><Download className="h-4 w-4" /></a> : null}
                   </div>
                 ))}
+                {!cloudState.loading && !filteredCloudItems.length ? (
+                  <div className="rounded-lg border border-dashed p-3 text-sm text-slate-500">
+                    No hay elementos para los filtros seleccionados en esta ubicación.
+                  </div>
+                ) : null}
               </div>
             </div>
 
