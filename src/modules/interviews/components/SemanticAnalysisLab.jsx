@@ -47,7 +47,7 @@ const codeCategoryTone = {
   intento_solucion: 'border-emerald-200 bg-emerald-50 text-emerald-700',
 };
 
-export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], persistedFragments = [], onOpenSession, onCreateFragment }) => {
+export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [], clients = [], hypotheses = [], persistedFragments = [], onOpenSession, onCreateFragment }) => {
   const [filters, setFilters] = useState(defaultFilters);
   const [activeTab, setActiveTab] = useState('interviews');
   const [openInterviewId, setOpenInterviewId] = useState(null);
@@ -76,6 +76,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [manualFragmentDraft, setManualFragmentDraft] = useState({ clientId: '', interviewId: '', text: '', title: '', codeSlug: '' });
   const [expandedCodeSlugs, setExpandedCodeSlugs] = useState(new Set());
   const [codebookMenuOpen, setCodebookMenuOpen] = useState(false);
+  const [codebookHypothesisFilter, setCodebookHypothesisFilter] = useState('');
   const [codeMapLayoutBySlug, setCodeMapLayoutBySlug] = useState({});
   const [codeMapConnectSourceSlug, setCodeMapConnectSourceSlug] = useState('');
   const [codeMapZoom, setCodeMapZoom] = useState(1);
@@ -443,6 +444,58 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     });
     return roots.length ? roots : analysis.codes;
   }, [analysis.codes, codeBySlug]);
+
+  const hypothesisLabelById = useMemo(() => {
+    const fromCatalog = Object.fromEntries((hypotheses || []).map((hypothesis) => [String(hypothesis.id), hypothesis.title || `Hipótesis ${hypothesis.id}`]));
+    analysis.interviews.forEach((interview) => {
+      const hypothesisId = String(interview.session?.interview_hypothesis_id || interview.session?.hypothesis_id || '').trim();
+      if (!hypothesisId) return;
+      if (!fromCatalog[hypothesisId]) {
+        fromCatalog[hypothesisId] = interview.session?.hypothesis_title || `Hipótesis ${hypothesisId}`;
+      }
+    });
+    return fromCatalog;
+  }, [analysis.interviews, hypotheses]);
+
+  const hypothesisOptions = useMemo(
+    () => Object.entries(hypothesisLabelById)
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => String(a.label).localeCompare(String(b.label))),
+    [hypothesisLabelById],
+  );
+
+  const codeSlugsByHypothesis = useMemo(() => {
+    const map = {};
+    analysis.codes.forEach((code) => {
+      const relatedHypothesisIds = new Set();
+      (code.fragments || []).forEach((fragment) => {
+        const interview = interviewById[String(fragment.interview_id || '')];
+        const hypothesisId = String(interview?.session?.interview_hypothesis_id || interview?.session?.hypothesis_id || '').trim();
+        if (hypothesisId) relatedHypothesisIds.add(hypothesisId);
+      });
+      relatedHypothesisIds.forEach((hypothesisId) => {
+        map[hypothesisId] = map[hypothesisId] || new Set();
+        map[hypothesisId].add(code.slug);
+      });
+    });
+    return map;
+  }, [analysis.codes, interviewById]);
+
+  const filteredCodeSlugSet = useMemo(() => {
+    const selectedHypothesis = String(codebookHypothesisFilter || '').trim();
+    if (!selectedHypothesis) return null;
+    return new Set([...(codeSlugsByHypothesis[selectedHypothesis] || new Set())]);
+  }, [codeSlugsByHypothesis, codebookHypothesisFilter]);
+
+  const filteredCodeRoots = useMemo(() => {
+    if (!filteredCodeSlugSet) return codeRoots;
+    return analysis.codes.filter((code) => {
+      if (!filteredCodeSlugSet.has(code.slug)) return false;
+      const parentSlug = String(code.parentSlug || '');
+      if (!parentSlug) return true;
+      return !filteredCodeSlugSet.has(parentSlug);
+    });
+  }, [analysis.codes, codeRoots, filteredCodeSlugSet]);
 
   const hasCodeDescendant = useCallback((candidateSlug, targetSlug) => {
     if (!candidateSlug || !targetSlug) return false;
@@ -1084,6 +1137,29 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                 <p className="text-xs text-slate-500 mt-1">Diccionario semántico central con acciones contextuales por modal.</p>
               </div>
               <div className="relative flex items-center gap-2">
+                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Hipótesis</span>
+                  <select
+                    className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                    value={codebookHypothesisFilter}
+                    onChange={(event) => setCodebookHypothesisFilter(event.target.value)}
+                  >
+                    <option value="">Todas</option>
+                    {hypothesisOptions.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                  {codebookHypothesisFilter ? (
+                    <button
+                      type="button"
+                      className="rounded px-1 text-[11px] text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                      onClick={() => setCodebookHypothesisFilter('')}
+                      title="Limpiar filtro"
+                    >
+                      Limpiar
+                    </button>
+                  ) : null}
+                </div>
                 <Button className="bg-slate-900 text-white" onClick={openCreateCodeModal}><PlusCircle className="mr-1 h-4 w-4" />Crear código</Button>
                 <div ref={codebookMenuRef} className="relative">
                   <Button className="bg-white border" onClick={(event) => { event.stopPropagation(); setCodebookMenuOpen((prev) => !prev); }} title="Más opciones">
@@ -1112,7 +1188,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
           <div className="space-y-2 max-h-[560px] overflow-y-auto p-4 pr-3">
             {(() => {
               const renderCodeNode = (code, depth = 0) => {
-                const children = codeChildrenByParent[code.slug] || [];
+                const children = (codeChildrenByParent[code.slug] || []).filter((child) => (!filteredCodeSlugSet || filteredCodeSlugSet.has(child.slug)));
                 const expanded = expandedCodeSlugs.has(code.slug);
                 return (
                   <div key={`${code.slug}_${depth}`} className="space-y-2">
@@ -1153,7 +1229,11 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                   </div>
                 );
               };
-              return codeRoots.map((code) => renderCodeNode(code, 0));
+
+              if (!filteredCodeRoots.length) {
+                return <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">No hay códigos vinculados a la hipótesis seleccionada.</p>;
+              }
+              return filteredCodeRoots.map((code) => renderCodeNode(code, 0));
             })()}
           </div>
         </div>

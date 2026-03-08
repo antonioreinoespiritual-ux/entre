@@ -1611,6 +1611,7 @@ const InterviewCenterPage = () => {
             audiences={center.audiences}
             forms={center.forms}
             clients={center.clients}
+            hypotheses={center.hypotheses}
             persistedFragments={semanticCloudFragments}
             onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
             onCreateFragment={createSemanticInterviewFragment}
