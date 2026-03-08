@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, Braces, ChevronDown, ChevronRight, Code2, Hash, Link2, MoreHorizontal, Pencil, PlusCircle, Sparkles, Tag, Trash2 } from 'lucide-react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { getLeanProblemScore, getLeanSolutionScore } from '@/modules/interviews/components/LeanEvaluationPanel';
 import { buildSemanticAnalysis, defaultSemanticClusters, defaultSemanticCodebook } from '@/modules/interviews/services/semanticAnalysis';
@@ -7,6 +8,7 @@ import { buildSemanticAnalysis, defaultSemanticClusters, defaultSemanticCodebook
 const card = 'rounded-xl border border-slate-200 bg-white p-4';
 const tabButton = 'rounded-lg px-3 py-1.5 text-sm border transition-colors';
 const STORAGE_KEY = 'interviews.semantic.lab.workspace.v1';
+const CODE_MAP_LAYOUT_KEY = 'interviews.semantic.lab.code.map.layout.v1';
 
 const defaultFilters = {
   audience_id: '',
@@ -72,6 +74,14 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
   const [manualFragmentDraft, setManualFragmentDraft] = useState({ clientId: '', interviewId: '', text: '', title: '', codeSlug: '' });
   const [expandedCodeSlugs, setExpandedCodeSlugs] = useState(new Set());
+  const [codebookMenuOpen, setCodebookMenuOpen] = useState(false);
+  const [codeMapLayoutBySlug, setCodeMapLayoutBySlug] = useState({});
+  const [codeMapConnectSourceSlug, setCodeMapConnectSourceSlug] = useState('');
+  const [codeMapZoom, setCodeMapZoom] = useState(1);
+  const [draggingNodeSlug, setDraggingNodeSlug] = useState('');
+  const codebookMenuRef = useRef(null);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     try {
@@ -91,6 +101,34 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       // Ignore storage errors in constrained environments.
     }
   }, [workspace]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CODE_MAP_LAYOUT_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') setCodeMapLayoutBySlug(parsed);
+    } catch (error) {
+      // Ignore invalid saved layout payloads.
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CODE_MAP_LAYOUT_KEY, JSON.stringify(codeMapLayoutBySlug));
+    } catch (error) {
+      // Ignore storage errors in constrained environments.
+    }
+  }, [codeMapLayoutBySlug]);
+
+  useEffect(() => {
+    const onWindowClick = (event) => {
+      if (!codebookMenuRef.current) return;
+      if (!codebookMenuRef.current.contains(event.target)) setCodebookMenuOpen(false);
+    };
+    window.addEventListener('click', onWindowClick);
+    return () => window.removeEventListener('click', onWindowClick);
+  }, []);
 
   const filteredSessions = useMemo(
     () => sessions
@@ -247,6 +285,11 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       ...prev,
       customCodebook: [...prev.customCodebook, created],
     }));
+    setExpandedCodeSlugs((prev) => {
+      const next = new Set(prev);
+      if (parentSlug) next.add(parentSlug);
+      return next;
+    });
     setNewCode(emptyNewCode);
     return created;
   };
@@ -380,10 +423,13 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     return map;
   }, [analysis.codes, codeBySlug]);
 
-  const codeRoots = useMemo(() => analysis.codes.filter((code) => {
-    const parentSlug = String(code.parentSlug || '');
-    return !parentSlug || !codeBySlug[parentSlug] || parentSlug === code.slug;
-  }), [analysis.codes, codeBySlug]);
+  const codeRoots = useMemo(() => {
+    const roots = analysis.codes.filter((code) => {
+      const parentSlug = String(code.parentSlug || '');
+      return !parentSlug || !codeBySlug[parentSlug] || parentSlug === code.slug;
+    });
+    return roots.length ? roots : analysis.codes;
+  }, [analysis.codes, codeBySlug]);
 
   const hasCodeDescendant = useCallback((candidateSlug, targetSlug) => {
     if (!candidateSlug || !targetSlug) return false;
@@ -399,6 +445,35 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     }
     return false;
   }, [codeChildrenByParent]);
+
+  useEffect(() => {
+    setExpandedCodeSlugs((prev) => {
+      if (prev.size > 0) return prev;
+      return new Set(Object.keys(codeChildrenByParent));
+    });
+  }, [codeChildrenByParent]);
+
+  const setCodeParent = useCallback((childSlug, parentSlug) => {
+    const nextChildSlug = String(childSlug || '').trim();
+    const nextParentSlug = String(parentSlug || '').trim();
+    if (!nextChildSlug) return false;
+    if (nextParentSlug && nextParentSlug === nextChildSlug) return false;
+    if (nextParentSlug && !codeBySlug[nextParentSlug]) return false;
+    if (nextParentSlug && hasCodeDescendant(nextChildSlug, nextParentSlug)) return false;
+
+    setWorkspace((prev) => {
+      const nextOverrides = { ...(prev.codeParentOverrides || {}) };
+      if (nextParentSlug) nextOverrides[nextChildSlug] = nextParentSlug;
+      else delete nextOverrides[nextChildSlug];
+
+      return {
+        ...prev,
+        customCodebook: prev.customCodebook.map((code) => (code.slug === nextChildSlug ? { ...code, parentSlug: nextParentSlug } : code)),
+        codeParentOverrides: nextOverrides,
+      };
+    });
+    return true;
+  }, [codeBySlug, hasCodeDescendant]);
 
   const saveActiveCode = () => {
     if (!activeCodeSlug) return;
@@ -511,6 +586,64 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     }));
   };
 
+  const interviewsBasePath = useMemo(() => {
+    const match = location.pathname.match(/^(.*\/interviews)(?:\/.*)?$/);
+    return match?.[1] || '/interviews';
+  }, [location.pathname]);
+  const isCodeMapRoute = location.pathname.endsWith('/code-map');
+
+  const codeMapNodes = useMemo(() => analysis.codes.map((code, index) => {
+    const saved = codeMapLayoutBySlug[code.slug] || {};
+    const x = Number(saved.x);
+    const y = Number(saved.y);
+    return {
+      ...code,
+      x: Number.isFinite(x) ? x : 120 + ((index % 4) * 260),
+      y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 180),
+    };
+  }), [analysis.codes, codeMapLayoutBySlug]);
+
+  const codeMapEdges = useMemo(() => analysis.codes
+    .filter((code) => code.parentSlug && codeBySlug[code.parentSlug] && code.parentSlug !== code.slug)
+    .map((code) => ({
+      id: `edge_${code.parentSlug}_${code.slug}`,
+      source: code.parentSlug,
+      target: code.slug,
+    })), [analysis.codes, codeBySlug]);
+
+  const handleCodeMapNodeMouseDown = useCallback((event, slug) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDraggingNodeSlug(slug);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const start = codeMapLayoutBySlug[slug] || codeMapNodes.find((node) => node.slug === slug) || { x: 0, y: 0 };
+    const startNodeX = Number(start.x) || 0;
+    const startNodeY = Number(start.y) || 0;
+
+    const onMove = (moveEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / (codeMapZoom || 1);
+      const deltaY = (moveEvent.clientY - startY) / (codeMapZoom || 1);
+      setCodeMapLayoutBySlug((prev) => ({
+        ...prev,
+        [slug]: {
+          x: Math.max(12, Math.round(startNodeX + deltaX)),
+          y: Math.max(12, Math.round(startNodeY + deltaY)),
+        },
+      }));
+    };
+
+    const onUp = () => {
+      setDraggingNodeSlug('');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [codeMapLayoutBySlug, codeMapNodes, codeMapZoom]);
+
   return (
     <div className="space-y-4">
       <div className={card}>
@@ -536,26 +669,100 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         <div className={card}><p className="text-xs text-slate-500">Formularios incluidos</p><p className="text-sm font-semibold">{analysis.dashboard.formsIncluded.length || 0}</p></div>
       </div>
 
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 flex flex-wrap gap-2">
-        {[
-          { id: 'interviews', label: 'Entrevistas' },
-          { id: 'fragments', label: 'Fragmentos' },
-          { id: 'codes', label: 'Códigos' },
-          { id: 'clusters', label: 'Clusters' },
-          { id: 'distribution', label: 'Distribución / mapa' },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={`${tabButton} ${activeTab === tab.id ? 'bg-white border-slate-300 text-slate-900' : 'bg-transparent border-transparent text-slate-600 hover:bg-white'}`}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      {!isCodeMapRoute && (
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-2 flex flex-wrap gap-2">
+          {[
+            { id: 'interviews', label: 'Entrevistas' },
+            { id: 'fragments', label: 'Fragmentos' },
+            { id: 'codes', label: 'Códigos' },
+            { id: 'clusters', label: 'Clusters' },
+            { id: 'distribution', label: 'Distribución / mapa' },
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`${tabButton} ${activeTab === tab.id ? 'bg-white border-slate-300 text-slate-900' : 'bg-transparent border-transparent text-slate-600 hover:bg-white'}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {activeTab === 'interviews' && (
+      {isCodeMapRoute && (
+        <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Link2 className="h-4 w-4 text-indigo-600" />Mapa de códigos</h4>
+                <p className="mt-1 text-xs text-slate-500">Arrastra nodos para reorganizar. Usa “Conectar” para crear relación padre → hijo y “Quitar padre” para removerla.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-600">Zoom</label>
+                <input type="range" min={0.6} max={1.8} step={0.1} value={codeMapZoom} onChange={(e) => setCodeMapZoom(Number(e.target.value) || 1)} />
+                <Button className="bg-white border" onClick={() => navigate(interviewsBasePath)}>Volver al codebook</Button>
+              </div>
+            </div>
+          </div>
+
+          <div className="relative h-[620px] overflow-auto bg-slate-50">
+            <div className="relative h-[1600px] w-[1800px] origin-top-left" style={{ transform: `scale(${codeMapZoom})` }}>
+              <svg className="pointer-events-none absolute inset-0 h-full w-full">
+                {codeMapEdges.map((edge) => {
+                  const source = codeMapNodes.find((node) => node.slug === edge.source);
+                  const target = codeMapNodes.find((node) => node.slug === edge.target);
+                  if (!source || !target) return null;
+                  return (
+                    <line
+                      key={edge.id}
+                      x1={source.x + 110}
+                      y1={source.y + 26}
+                      x2={target.x + 110}
+                      y2={target.y + 26}
+                      stroke="#94a3b8"
+                      strokeWidth="2"
+                    />
+                  );
+                })}
+              </svg>
+
+              {codeMapNodes.map((code) => (
+                <div
+                  key={code.slug}
+                  className={`absolute w-56 rounded-xl border bg-white p-3 shadow-sm ${draggingNodeSlug === code.slug ? 'border-indigo-400 shadow-lg' : 'border-slate-200'}`}
+                  style={{ left: code.x, top: code.y }}
+                  onMouseDown={(event) => handleCodeMapNodeMouseDown(event, code.slug)}
+                >
+                  <p className="text-xs text-slate-500">{code.slug}</p>
+                  <p className="text-sm font-semibold text-slate-900">{code.name}</p>
+                  <p className="mt-1 text-[11px] text-slate-500">{code.fragmentCount} fragmentos</p>
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeMapConnectSourceSlug(code.slug); }}>Conectar</Button>
+                    {codeMapConnectSourceSlug && codeMapConnectSourceSlug !== code.slug ? (
+                      <Button
+                        className="h-7 bg-indigo-600 px-2 text-xs text-white"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setCodeParent(code.slug, codeMapConnectSourceSlug);
+                          setCodeMapConnectSourceSlug('');
+                        }}
+                      >
+                        Vincular aquí
+                      </Button>
+                    ) : null}
+                    <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeParent(code.slug, ''); }}>Quitar padre</Button>
+                    <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); openCodeModal(code.slug); }}>Gestionar</Button>
+                  </div>
+                  {code.parentSlug ? <p className="mt-2 text-[11px] text-slate-500">Padre: {code.parentSlug}</p> : <p className="mt-2 text-[11px] text-slate-400">Sin padre</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!isCodeMapRoute && activeTab === 'interviews' && (
         <div className="grid lg:grid-cols-[1.1fr_1.4fr] gap-4">
           <div className={card}>
             <h4 className="font-semibold text-slate-900">Entrevistas fuente</h4>
@@ -609,7 +816,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         </div>
       )}
 
-      {activeTab === 'fragments' && (
+      {!isCodeMapRoute && activeTab === 'fragments' && (
         <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between gap-3">
@@ -679,7 +886,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         </div>
       )}
 
-      {activeTab === 'codes' && (
+      {!isCodeMapRoute && activeTab === 'codes' && (
         <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 px-4 py-3">
             <div className="flex items-center justify-between gap-3">
@@ -687,7 +894,29 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                 <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><BookOpen className="h-4 w-4 text-indigo-600" /> Codebook</h4>
                 <p className="text-xs text-slate-500 mt-1">Diccionario semántico central con acciones contextuales por modal.</p>
               </div>
-              <Button className="bg-slate-900 text-white" onClick={openCreateCodeModal}><PlusCircle className="mr-1 h-4 w-4" />Crear código</Button>
+              <div className="relative flex items-center gap-2">
+                <Button className="bg-slate-900 text-white" onClick={openCreateCodeModal}><PlusCircle className="mr-1 h-4 w-4" />Crear código</Button>
+                <div ref={codebookMenuRef} className="relative">
+                  <Button className="bg-white border" onClick={(event) => { event.stopPropagation(); setCodebookMenuOpen((prev) => !prev); }} title="Más opciones">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                  {codebookMenuOpen ? (
+                    <div className="absolute right-0 z-20 mt-2 w-44 rounded-lg border border-slate-200 bg-white p-1 shadow-lg">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
+                        onClick={() => {
+                          setCodebookMenuOpen(false);
+                          navigate(`${interviewsBasePath}/code-map`);
+                        }}
+                      >
+                        <Link2 className="h-4 w-4 text-indigo-600" />
+                        Mapa de códigos
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -956,7 +1185,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         </div>
       ) : null}
 
-      {activeTab === 'clusters' && (
+      {!isCodeMapRoute && activeTab === 'clusters' && (
         <div className={card}>
           <h4 className="font-semibold text-slate-900">Clusters semánticos</h4>
           <p className="text-xs text-slate-500 mt-1">Cada cluster agrupa códigos y evidencia narrativa trazable.</p>
@@ -1021,7 +1250,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         </div>
       )}
 
-      {activeTab === 'distribution' && (
+      {!isCodeMapRoute && activeTab === 'distribution' && (
         <div className="grid xl:grid-cols-[1.1fr_1fr] gap-4">
           <div className={card}>
             <h4 className="font-semibold text-slate-900">Distribución de clusters</h4>
