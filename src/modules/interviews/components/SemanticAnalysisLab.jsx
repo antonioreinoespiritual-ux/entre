@@ -25,6 +25,15 @@ const formatDate = (value) => {
   return date.toLocaleString();
 };
 
+const normalizeStableSlug = (value = '') => String(value || '')
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/\p{Diacritic}/gu, '')
+  .replace(/[^a-z0-9\s_-]/g, '')
+  .trim()
+  .replace(/\s+/g, '_')
+  .replace(/_+/g, '_');
+
 const emptyNewCode = { name: '', slug: '', category: 'interpretacion', description: '', parentSlug: '' };
 
 const codeCategoryTone = {
@@ -219,12 +228,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const createCode = (payload = newCode) => {
     const name = String(payload.name || '').trim();
     if (!name) return null;
-    const slug = (payload.slug || name)
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/\p{Diacritic}/gu, '')
-      .replace(/[^a-z0-9\s_-]/g, '')
-      .replace(/\s+/g, '_');
+    const slug = normalizeStableSlug(payload.slug || '');
 
     if (!slug || analysis.codes.some((code) => code.slug === slug)) return null;
 
@@ -402,12 +406,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     const nextName = String(codeDraft.name || '').trim();
     if (!nextName) return;
 
-    const nextSlug = String(codeDraft.slug || nextName)
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/\p{Diacritic}/gu, '')
-      .replace(/[^a-z0-9\s_-]/g, '')
-      .replace(/\s+/g, '_');
+    const nextSlug = normalizeStableSlug(codeDraft.slug || nextName);
     if (!nextSlug) return;
 
     const slugTaken = analysis.codes.some((code) => code.slug !== activeCodeSlug && code.slug === nextSlug);
@@ -753,7 +752,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
             </div>
             <div className="grid gap-2">
               <input className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.name} onChange={(e) => setCodeDraft((prev) => ({ ...prev, name: e.target.value }))} placeholder="Nombre visible" />
-              <input className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.slug} onChange={(e) => setCodeDraft((prev) => ({ ...prev, slug: e.target.value }))} placeholder="slug_estable (opcional)" />
+              <input className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.slug} onChange={(e) => setCodeDraft((prev) => ({ ...prev, slug: normalizeStableSlug(e.target.value) }))} placeholder="slug_estable (obligatorio)" />
               <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.category} onChange={(e) => setCodeDraft((prev) => ({ ...prev, category: e.target.value }))}>
                 {['tipo_problema', 'interpretacion', 'emocion', 'comportamiento', 'intento_solucion'].map((category) => <option key={category} value={category}>{category}</option>)}
               </select>
@@ -763,7 +762,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               </select>
               <textarea className="rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={4} value={codeDraft.description} onChange={(e) => setCodeDraft((prev) => ({ ...prev, description: e.target.value }))} placeholder="Descripción opcional" />
               <div className="flex justify-end">
-                <Button className="bg-slate-900 text-white" onClick={() => { const created = createCode(codeDraft); if (created) setCodeCreateModalOpen(false); }}>Crear código</Button>
+                <Button className="bg-slate-900 text-white" onClick={() => { const created = createCode(codeDraft); if (created) setCodeCreateModalOpen(false); }} disabled={!codeDraft.name.trim() || !codeDraft.slug.trim()}>Crear código</Button>
               </div>
             </div>
           </div>
@@ -894,7 +893,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                 </div>
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Slug</p>
-                  <input className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" value={codeDraft.slug} onChange={(e) => setCodeDraft((prev) => ({ ...prev, slug: e.target.value }))} readOnly={!activeCodeIsCustom} />
+                  <input className="mt-1 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm" value={codeDraft.slug} onChange={(e) => setCodeDraft((prev) => ({ ...prev, slug: normalizeStableSlug(e.target.value) }))} readOnly={!activeCodeIsCustom} />
                 </div>
               </div>
               <div>
