@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { QUESTION_TYPES } from '@/modules/interviews/services/interviewsModuleApi';
+import { createStableId } from '@/lib/stableId';
 
 const makeQuestion = (index = 1) => ({
-  id: `q_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+  id: createStableId('q_'),
   title: '',
   type: 'short_text',
   required: false,
@@ -132,7 +133,7 @@ export const FormBuilder = ({
   const duplicateQuestion = (question, index) => {
     const clone = {
       ...question,
-      id: `q_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+      id: createStableId('q_'),
       options: Array.isArray(question.options) ? [...question.options] : [],
     };
     updateQuestions((next) => {
@@ -156,7 +157,7 @@ export const FormBuilder = ({
       const source = questions[index];
       return {
         ...source,
-        id: `q_${Date.now()}_${Math.random().toString(16).slice(2)}_${index}`,
+        id: createStableId('q_'),
         options: Array.isArray(source.options) ? [...source.options] : [],
       };
     });
