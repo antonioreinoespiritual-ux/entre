@@ -75,7 +75,35 @@ const getClientScoreTone = (score, type = 'problem') => {
 };
 
 const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
-const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
+const blankHypothesis = {
+  title: '',
+  description: '',
+  type: 'problema',
+  status: 'exploracion',
+  audience_id: '',
+  segment: '',
+  related_client_id: '',
+  interview_form_id: '',
+  last_evaluated_at: '',
+  min_interviews: '',
+  problem_score_min_avg: '',
+  problem_intensity_min_avg: '',
+  problem_frequency_min_avg: '',
+  problem_urgency_min_avg: '',
+  solution_score_min_avg: '',
+  solution_interest_min_avg: '',
+  solution_value_min_avg: '',
+  solution_payment_min_avg: '',
+  segment_fit_min_avg: '',
+  emotional_language_min_avg: '',
+  evaluated_interviews_count: '',
+  problem_score_avg: '',
+  solution_score_avg: '',
+  validation_result: 'no evaluada',
+  experiment_notes: '',
+  observations: '',
+  next_actions: '',
+};
 const defaultFragmentEvolutionCodeOptions = [
   { slug: 'problema_intenso', label: 'Problema intenso' },
   { slug: 'problema_frecuente', label: 'Problema frecuente' },
@@ -99,6 +127,9 @@ const InterviewCenterPage = () => {
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [clientDraft, setClientDraft] = useState(blankClient);
   const [hypDraft, setHypDraft] = useState(blankHypothesis);
+  const [hypothesisEditModalOpen, setHypothesisEditModalOpen] = useState(false);
+  const [hypothesisEditDraft, setHypothesisEditDraft] = useState(blankHypothesis);
+  const [activeHypothesisId, setActiveHypothesisId] = useState('');
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
@@ -241,6 +272,46 @@ const InterviewCenterPage = () => {
     await center.reload();
     return created;
   };
+
+  const buildHypothesisPayload = useCallback((draft = {}) => {
+    const numericKeys = [
+      'min_interviews',
+      'problem_score_min_avg',
+      'problem_intensity_min_avg',
+      'problem_frequency_min_avg',
+      'problem_urgency_min_avg',
+      'solution_score_min_avg',
+      'solution_interest_min_avg',
+      'solution_value_min_avg',
+      'solution_payment_min_avg',
+      'segment_fit_min_avg',
+      'emotional_language_min_avg',
+      'evaluated_interviews_count',
+      'problem_score_avg',
+      'solution_score_avg',
+    ];
+    const payload = { ...draft };
+    numericKeys.forEach((key) => {
+      const raw = payload[key];
+      if (raw === '' || raw == null) payload[key] = null;
+      else {
+        const parsed = Number(raw);
+        payload[key] = Number.isFinite(parsed) ? parsed : null;
+      }
+    });
+    ['audience_id', 'related_client_id', 'interview_form_id'].forEach((key) => {
+      if (!String(payload[key] || '').trim()) payload[key] = null;
+    });
+    if (!String(payload.last_evaluated_at || '').trim()) payload.last_evaluated_at = null;
+    return payload;
+  }, []);
+
+  const openEditHypothesis = useCallback((hypothesis) => {
+    if (!hypothesis) return;
+    setActiveHypothesisId(String(hypothesis.id || ''));
+    setHypothesisEditDraft({ ...blankHypothesis, ...hypothesis });
+    setHypothesisEditModalOpen(true);
+  }, []);
 
   const openClientEditor = (client, closeProfile = false) => {
     setClientDraft({
@@ -1261,20 +1332,96 @@ const InterviewCenterPage = () => {
 
         {!center.loading && !center.error && tab === 'hypotheses' && (
           <div className="space-y-2">
-            <div className="bg-white border rounded-xl p-4 grid md:grid-cols-5 gap-2">
-              <input className="border rounded p-2 md:col-span-2" placeholder="Título" value={hypDraft.title} onChange={(e) => setHypDraft((prev) => ({ ...prev, title: e.target.value }))} />
-              <select className="border rounded p-2" value={hypDraft.type} onChange={(e) => setHypDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="exploratoria">exploratoria</option><option value="validacion">validacion</option></select>
-              <select className="border rounded p-2" value={hypDraft.audience_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia (opcional)</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
-              <Button className="bg-indigo-600 text-white" onClick={() => center.runMutation(() => interviewsModuleApi.createHypothesis(projectId, campaignId, hypDraft), 'Hipótesis creada')}>Guardar</Button>
-              <textarea className="border rounded p-2 md:col-span-5" rows={2} placeholder="Descripción" value={hypDraft.description} onChange={(e) => setHypDraft((prev) => ({ ...prev, description: e.target.value }))} />
+            <div className="bg-white border rounded-xl p-4 space-y-3">
+              <h4 className="text-sm font-semibold text-slate-900">Nueva ficha de hipótesis</h4>
+
+              <div className="grid gap-2 md:grid-cols-4">
+                <input className="border rounded p-2 md:col-span-2" placeholder="Nombre de hipótesis" value={hypDraft.title} onChange={(e) => setHypDraft((prev) => ({ ...prev, title: e.target.value }))} />
+                <select className="border rounded p-2" value={hypDraft.type} onChange={(e) => setHypDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="problema">problema</option><option value="solucion">solución</option><option value="mercado">mercado</option><option value="pricing">pricing</option><option value="comportamiento">comportamiento</option></select>
+                <select className="border rounded p-2" value={hypDraft.status} onChange={(e) => setHypDraft((prev) => ({ ...prev, status: e.target.value }))}><option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option></select>
+                <textarea className="border rounded p-2 md:col-span-4" rows={2} placeholder="Descripción" value={hypDraft.description} onChange={(e) => setHypDraft((prev) => ({ ...prev, description: e.target.value }))} />
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-4">
+                <select className="border rounded p-2" value={hypDraft.audience_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia objetivo</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
+                <input className="border rounded p-2" placeholder="Segmento" value={hypDraft.segment} onChange={(e) => setHypDraft((prev) => ({ ...prev, segment: e.target.value }))} />
+                <select className="border rounded p-2" value={hypDraft.related_client_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}><option value="">Cliente relacionado</option>{center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select>
+                <select className="border rounded p-2" value={hypDraft.interview_form_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, interview_form_id: e.target.value }))}><option value="">Formulario asociado</option>{center.forms.map((form) => <option key={form.id} value={form.id}>{form.title}</option>)}</select>
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-4">
+                <input className="border rounded p-2" type="number" min="1" placeholder="Min entrevistas" value={hypDraft.min_interviews} onChange={(e) => setHypDraft((prev) => ({ ...prev, min_interviews: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Problem score min avg" value={hypDraft.problem_score_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, problem_score_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Solution score min avg" value={hypDraft.solution_score_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, solution_score_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="date" value={hypDraft.last_evaluated_at ? String(hypDraft.last_evaluated_at).slice(0, 10) : ''} onChange={(e) => setHypDraft((prev) => ({ ...prev, last_evaluated_at: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Intensidad min avg" value={hypDraft.problem_intensity_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, problem_intensity_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Frecuencia min avg" value={hypDraft.problem_frequency_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, problem_frequency_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Urgencia min avg" value={hypDraft.problem_urgency_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, problem_urgency_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Interés solución min avg" value={hypDraft.solution_interest_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, solution_interest_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Valor solución min avg" value={hypDraft.solution_value_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, solution_value_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Pago min avg" value={hypDraft.solution_payment_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, solution_payment_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Segment fit min avg" value={hypDraft.segment_fit_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, segment_fit_min_avg: e.target.value }))} />
+                <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Lenguaje emocional min avg" value={hypDraft.emotional_language_min_avg} onChange={(e) => setHypDraft((prev) => ({ ...prev, emotional_language_min_avg: e.target.value }))} />
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-3">
+                <textarea className="border rounded p-2" rows={2} placeholder="Notas del experimento" value={hypDraft.experiment_notes} onChange={(e) => setHypDraft((prev) => ({ ...prev, experiment_notes: e.target.value }))} />
+                <textarea className="border rounded p-2" rows={2} placeholder="Observaciones" value={hypDraft.observations} onChange={(e) => setHypDraft((prev) => ({ ...prev, observations: e.target.value }))} />
+                <textarea className="border rounded p-2" rows={2} placeholder="Próximas acciones" value={hypDraft.next_actions} onChange={(e) => setHypDraft((prev) => ({ ...prev, next_actions: e.target.value }))} />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button className="bg-white border" onClick={() => setHypDraft(blankHypothesis)}>Limpiar</Button>
+                <Button
+                  className="bg-indigo-600 text-white"
+                  onClick={() => center.runMutation(async () => {
+                    const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, buildHypothesisPayload(hypDraft));
+                    setHypDraft(blankHypothesis);
+                    return created;
+                  }, 'Hipótesis creada')}
+                >
+                  Guardar ficha
+                </Button>
+              </div>
             </div>
             {center.hypotheses.map((hypothesis) => (
-              <div key={hypothesis.id} className="bg-white border rounded-xl p-4 flex justify-between">
-                <div>
-                  <p className="font-semibold">{hypothesis.title}</p>
-                  <p className="text-sm text-slate-500">{hypothesis.type} · {hypothesis.status || 'active'} · {hypothesis.audience_name || 'Sin audiencia'}</p>
+              <div key={hypothesis.id} className="bg-white border rounded-xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">{hypothesis.title}</p>
+                    <p className="text-sm text-slate-500">{hypothesis.type} · {hypothesis.status || 'exploracion'} · {hypothesis.audience_name || 'Sin audiencia'}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button className="bg-white border" onClick={() => openEditHypothesis(hypothesis)}>Editar</Button>
+                    <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada')}>Borrar</Button>
+                  </div>
                 </div>
-                <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada')}>Borrar</Button>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 1 · Información general</p>
+                    <p className="mt-1 text-sm text-slate-700">{hypothesis.description || 'Sin descripción'}</p>
+                    <p className="mt-1 text-xs text-slate-500">Segmento: {hypothesis.segment || '—'} · Cliente: {hypothesis.related_client_name || '—'} · Formulario: {hypothesis.interview_form_title || '—'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 2 · Configuración de validación</p>
+                    <p className="mt-1 text-xs text-slate-600">Min entrevistas: {hypothesis.min_interviews ?? '—'} · Problem score min: {hypothesis.problem_score_min_avg ?? '—'} · Solution score min: {hypothesis.solution_score_min_avg ?? '—'}</p>
+                    <p className="text-xs text-slate-600">Intensidad: {hypothesis.problem_intensity_min_avg ?? '—'} · Frecuencia: {hypothesis.problem_frequency_min_avg ?? '—'} · Urgencia: {hypothesis.problem_urgency_min_avg ?? '—'}</p>
+                    <p className="text-xs text-slate-600">Interés: {hypothesis.solution_interest_min_avg ?? '—'} · Valor: {hypothesis.solution_value_min_avg ?? '—'} · Pago: {hypothesis.solution_payment_min_avg ?? '—'}</p>
+                    <p className="text-xs text-slate-600">Segment fit: {hypothesis.segment_fit_min_avg ?? '—'} · Lenguaje emocional: {hypothesis.emotional_language_min_avg ?? '—'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 3 · Resultados (preparado para 14.1)</p>
+                    <p className="mt-1 text-xs text-slate-600">Entrevistas evaluadas: {hypothesis.evaluated_interviews_count ?? '—'} · Avg problema: {hypothesis.problem_score_avg ?? '—'} · Avg solución: {hypothesis.solution_score_avg ?? '—'}</p>
+                    <p className="text-xs text-slate-600">Resultado de validación: {hypothesis.validation_result || 'no evaluada'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 4 · Notas del experimento</p>
+                    <p className="mt-1 text-xs text-slate-600">Notas: {hypothesis.experiment_notes || '—'}</p>
+                    <p className="text-xs text-slate-600">Observaciones: {hypothesis.observations || '—'}</p>
+                    <p className="text-xs text-slate-600">Siguientes acciones: {hypothesis.next_actions || '—'}</p>
+                  </div>
+                </div>
               </div>
             ))}
           </div>
@@ -1630,6 +1777,48 @@ const InterviewCenterPage = () => {
           />
         )}
       </InterviewModuleShell>
+
+      <Modal
+        title="Editar ficha de hipótesis"
+        open={hypothesisEditModalOpen}
+        onClose={() => {
+          setHypothesisEditModalOpen(false);
+          setActiveHypothesisId('');
+          setHypothesisEditDraft(blankHypothesis);
+        }}
+      >
+        <div className="grid gap-2 md:grid-cols-3">
+          <input className="border rounded p-2 md:col-span-2" placeholder="Nombre de hipótesis" value={hypothesisEditDraft.title} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, title: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.type} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="problema">problema</option><option value="solucion">solución</option><option value="mercado">mercado</option><option value="pricing">pricing</option><option value="comportamiento">comportamiento</option></select>
+          <textarea className="border rounded p-2 md:col-span-3" rows={2} placeholder="Descripción" value={hypothesisEditDraft.description} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, description: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.status} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, status: e.target.value }))}><option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option></select>
+          <select className="border rounded p-2" value={hypothesisEditDraft.audience_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia objetivo</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
+          <input className="border rounded p-2" placeholder="Segmento" value={hypothesisEditDraft.segment || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, segment: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.related_client_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}><option value="">Cliente relacionado</option>{center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select>
+          <select className="border rounded p-2" value={hypothesisEditDraft.interview_form_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, interview_form_id: e.target.value }))}><option value="">Formulario asociado</option>{center.forms.map((form) => <option key={form.id} value={form.id}>{form.title}</option>)}</select>
+          <input className="border rounded p-2" type="number" min="1" placeholder="Min entrevistas" value={hypothesisEditDraft.min_interviews || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, min_interviews: e.target.value }))} />
+          <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Problem score min avg" value={hypothesisEditDraft.problem_score_min_avg || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, problem_score_min_avg: e.target.value }))} />
+          <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Solution score min avg" value={hypothesisEditDraft.solution_score_min_avg || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, solution_score_min_avg: e.target.value }))} />
+          <textarea className="border rounded p-2" rows={2} placeholder="Notas experimento" value={hypothesisEditDraft.experiment_notes || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, experiment_notes: e.target.value }))} />
+          <textarea className="border rounded p-2" rows={2} placeholder="Observaciones" value={hypothesisEditDraft.observations || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, observations: e.target.value }))} />
+          <textarea className="border rounded p-2" rows={2} placeholder="Próximas acciones" value={hypothesisEditDraft.next_actions || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, next_actions: e.target.value }))} />
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button className="bg-white border" onClick={() => setHypothesisEditModalOpen(false)}>Cancelar</Button>
+          <Button
+            className="bg-indigo-600 text-white"
+            onClick={() => center.runMutation(async () => {
+              const updated = await interviewsModuleApi.updateHypothesis(activeHypothesisId, buildHypothesisPayload(hypothesisEditDraft));
+              setHypothesisEditModalOpen(false);
+              setActiveHypothesisId('');
+              return updated;
+            }, 'Hipótesis actualizada')}
+            disabled={!activeHypothesisId}
+          >
+            Guardar cambios
+          </Button>
+        </div>
+      </Modal>
 
       <Modal
         title="Detalle del fragmento"

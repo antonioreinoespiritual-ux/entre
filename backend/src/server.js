@@ -232,16 +232,40 @@ const schemaSql = [
     project_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
     audience_id TEXT,
+    segment TEXT,
+    related_client_id TEXT,
+    interview_form_id TEXT,
     user_id TEXT NOT NULL,
     type TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT,
     status TEXT DEFAULT 'active',
+    last_evaluated_at TEXT,
+    min_interviews INTEGER,
+    problem_score_min_avg REAL,
+    problem_intensity_min_avg REAL,
+    problem_frequency_min_avg REAL,
+    problem_urgency_min_avg REAL,
+    solution_score_min_avg REAL,
+    solution_interest_min_avg REAL,
+    solution_value_min_avg REAL,
+    solution_payment_min_avg REAL,
+    segment_fit_min_avg REAL,
+    emotional_language_min_avg REAL,
+    evaluated_interviews_count INTEGER,
+    problem_score_avg REAL,
+    solution_score_avg REAL,
+    validation_result TEXT,
+    experiment_notes TEXT,
+    observations TEXT,
+    next_actions TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
     FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+    FOREIGN KEY (related_client_id) REFERENCES interview_clients(id) ON DELETE SET NULL,
+    FOREIGN KEY (interview_form_id) REFERENCES interview_forms(id) ON DELETE SET NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_interview_hypotheses_campaign ON interview_hypotheses(campaign_id)',
@@ -1740,6 +1764,37 @@ async function ensureVideoHierarchyMigration() {
   for (const [columnName, columnType] of optionalHypothesisColumns) {
     if (!(await hasColumn('hypotheses', columnName))) {
       await pool.query(`ALTER TABLE hypotheses ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
+  const optionalInterviewHypothesisColumns = [
+    ['segment', 'TEXT'],
+    ['related_client_id', 'TEXT'],
+    ['interview_form_id', 'TEXT'],
+    ['last_evaluated_at', 'TEXT'],
+    ['min_interviews', 'INTEGER'],
+    ['problem_score_min_avg', 'REAL'],
+    ['problem_intensity_min_avg', 'REAL'],
+    ['problem_frequency_min_avg', 'REAL'],
+    ['problem_urgency_min_avg', 'REAL'],
+    ['solution_score_min_avg', 'REAL'],
+    ['solution_interest_min_avg', 'REAL'],
+    ['solution_value_min_avg', 'REAL'],
+    ['solution_payment_min_avg', 'REAL'],
+    ['segment_fit_min_avg', 'REAL'],
+    ['emotional_language_min_avg', 'REAL'],
+    ['evaluated_interviews_count', 'INTEGER'],
+    ['problem_score_avg', 'REAL'],
+    ['solution_score_avg', 'REAL'],
+    ['validation_result', 'TEXT'],
+    ['experiment_notes', 'TEXT'],
+    ['observations', 'TEXT'],
+    ['next_actions', 'TEXT'],
+  ];
+
+  for (const [columnName, columnType] of optionalInterviewHypothesisColumns) {
+    if (!(await hasColumn('interview_hypotheses', columnName))) {
+      await pool.query(`ALTER TABLE interview_hypotheses ADD COLUMN ${columnName} ${columnType}`);
     }
   }
 
@@ -4398,15 +4453,68 @@ const server = http.createServer(async (req, res) => {
       const campaign = await fetchOwnedCampaignById(campaignId, user.id);
       if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
       if (req.method === 'GET') {
-        const [rows] = await pool.query('SELECT ih.*, a.name AS audience_name FROM interview_hypotheses ih LEFT JOIN audiences a ON a.id = ih.audience_id WHERE ih.user_id = ? AND ih.project_id = ? AND ih.campaign_id = ? ORDER BY ih.created_at DESC', [user.id, projectId, campaignId]);
+        const [rows] = await pool.query(
+          `SELECT ih.*, a.name AS audience_name, c.name AS related_client_name, f.title AS interview_form_title
+           FROM interview_hypotheses ih
+           LEFT JOIN audiences a ON a.id = ih.audience_id
+           LEFT JOIN interview_clients c ON c.id = ih.related_client_id
+           LEFT JOIN interview_forms f ON f.id = ih.interview_form_id
+           WHERE ih.user_id = ? AND ih.project_id = ? AND ih.campaign_id = ?
+           ORDER BY ih.created_at DESC`,
+          [user.id, projectId, campaignId],
+        );
         return sendJson(req, res, 200, { data: rows });
       }
       const body = await readBody(req);
       const now = nowIso();
       await pool.query(
-        `INSERT INTO interview_hypotheses (id, project_id, campaign_id, audience_id, user_id, type, title, description, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [buildEntityId('interview_hypothesis'), projectId, campaignId, body.audience_id || null, user.id, body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', now, now],
+        `INSERT INTO interview_hypotheses (
+          id, project_id, campaign_id, audience_id, segment, related_client_id, interview_form_id,
+          user_id, type, title, description, status, last_evaluated_at,
+          min_interviews,
+          problem_score_min_avg, problem_intensity_min_avg, problem_frequency_min_avg, problem_urgency_min_avg,
+          solution_score_min_avg, solution_interest_min_avg, solution_value_min_avg, solution_payment_min_avg,
+          segment_fit_min_avg, emotional_language_min_avg,
+          evaluated_interviews_count, problem_score_avg, solution_score_avg, validation_result,
+          experiment_notes, observations, next_actions,
+          created_at, updated_at
+        )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          buildEntityId('interview_hypothesis'),
+          projectId,
+          campaignId,
+          body.audience_id || null,
+          body.segment || null,
+          body.related_client_id || null,
+          body.interview_form_id || null,
+          user.id,
+          body.type || 'problema',
+          body.title || 'Hipótesis entrevistas',
+          body.description || null,
+          body.status || 'exploracion',
+          body.last_evaluated_at || null,
+          body.min_interviews ?? null,
+          body.problem_score_min_avg ?? null,
+          body.problem_intensity_min_avg ?? null,
+          body.problem_frequency_min_avg ?? null,
+          body.problem_urgency_min_avg ?? null,
+          body.solution_score_min_avg ?? null,
+          body.solution_interest_min_avg ?? null,
+          body.solution_value_min_avg ?? null,
+          body.solution_payment_min_avg ?? null,
+          body.segment_fit_min_avg ?? null,
+          body.emotional_language_min_avg ?? null,
+          body.evaluated_interviews_count ?? null,
+          body.problem_score_avg ?? null,
+          body.solution_score_avg ?? null,
+          body.validation_result || 'no evaluada',
+          body.experiment_notes || null,
+          body.observations || null,
+          body.next_actions || null,
+          now,
+          now,
+        ],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
       return sendJson(req, res, 200, { data: rows[0] || null });
@@ -4423,8 +4531,49 @@ const server = http.createServer(async (req, res) => {
       }
       const body = await readBody(req);
       await pool.query(
-        'UPDATE interview_hypotheses SET type = ?, title = ?, description = ?, status = ?, audience_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
-        [body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', body.audience_id || null, nowIso(), id, user.id],
+        `UPDATE interview_hypotheses
+         SET type = ?, title = ?, description = ?, status = ?, audience_id = ?,
+             segment = ?, related_client_id = ?, interview_form_id = ?, last_evaluated_at = ?,
+             min_interviews = ?,
+             problem_score_min_avg = ?, problem_intensity_min_avg = ?, problem_frequency_min_avg = ?, problem_urgency_min_avg = ?,
+             solution_score_min_avg = ?, solution_interest_min_avg = ?, solution_value_min_avg = ?, solution_payment_min_avg = ?,
+             segment_fit_min_avg = ?, emotional_language_min_avg = ?,
+             evaluated_interviews_count = ?, problem_score_avg = ?, solution_score_avg = ?, validation_result = ?,
+             experiment_notes = ?, observations = ?, next_actions = ?,
+             updated_at = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          body.type || 'problema',
+          body.title || 'Hipótesis entrevistas',
+          body.description || null,
+          body.status || 'exploracion',
+          body.audience_id || null,
+          body.segment || null,
+          body.related_client_id || null,
+          body.interview_form_id || null,
+          body.last_evaluated_at || null,
+          body.min_interviews ?? null,
+          body.problem_score_min_avg ?? null,
+          body.problem_intensity_min_avg ?? null,
+          body.problem_frequency_min_avg ?? null,
+          body.problem_urgency_min_avg ?? null,
+          body.solution_score_min_avg ?? null,
+          body.solution_interest_min_avg ?? null,
+          body.solution_value_min_avg ?? null,
+          body.solution_payment_min_avg ?? null,
+          body.segment_fit_min_avg ?? null,
+          body.emotional_language_min_avg ?? null,
+          body.evaluated_interviews_count ?? null,
+          body.problem_score_avg ?? null,
+          body.solution_score_avg ?? null,
+          body.validation_result || 'no evaluada',
+          body.experiment_notes || null,
+          body.observations || null,
+          body.next_actions || null,
+          nowIso(),
+          id,
+          user.id,
+        ],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
       return sendJson(req, res, 200, { data: rows[0] || null });
