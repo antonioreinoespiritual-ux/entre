@@ -33,6 +33,7 @@ export const interviewsApi = {
   listInterviewHypotheses: (projectId, campaignId) => request(`/api/projects/${projectId}/campaigns/${campaignId}/interviews/hypotheses`).then((r) => r.data || []),
   createInterviewHypothesis: (projectId, campaignId, payload) => request(`/api/projects/${projectId}/campaigns/${campaignId}/interviews/hypotheses`, { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data),
   updateInterviewHypothesis: (id, payload) => request(`/api/interview-hypotheses/${id}`, { method: 'PUT', body: JSON.stringify(payload) }).then((r) => r.data),
+  evaluateInterviewHypothesis: (id) => request(`/api/interview-hypotheses/${id}/evaluate`, { method: 'POST' }).then((r) => r.data),
   deleteInterviewHypothesis: (id) => request(`/api/interview-hypotheses/${id}`, { method: 'DELETE' }),
 
   listForms: (projectId, campaignId) => request(`/api/projects/${projectId}/campaigns/${campaignId}/interviews/forms`).then((r) => r.data || []),

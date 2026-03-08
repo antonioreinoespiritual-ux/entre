@@ -74,6 +74,29 @@ const getClientScoreTone = (score, type = 'problem') => {
   return 'border-rose-200 bg-rose-50 text-rose-700';
 };
 
+const validationToneByResult = {
+  'no evaluada': 'border-slate-200 bg-slate-50 text-slate-600',
+  'señal débil': 'border-amber-200 bg-amber-50 text-amber-700',
+  'señal moderada': 'border-indigo-200 bg-indigo-50 text-indigo-700',
+  'señal fuerte': 'border-sky-200 bg-sky-50 text-sky-700',
+  validada: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  refutada: 'border-rose-200 bg-rose-50 text-rose-700',
+};
+
+const hypothesisCriteriaConfig = [
+  { id: 'min_interviews', label: 'Min entrevistas', threshold: 'min_interviews', actual: 'evaluated_interviews_count' },
+  { id: 'problem_score_min_avg', label: 'Score problema promedio', threshold: 'problem_score_min_avg', actual: 'problem_score_avg' },
+  { id: 'problem_intensity_min_avg', label: 'Intensidad problema', threshold: 'problem_intensity_min_avg', actual: 'problem_intensity_avg' },
+  { id: 'problem_frequency_min_avg', label: 'Frecuencia problema', threshold: 'problem_frequency_min_avg', actual: 'problem_frequency_avg' },
+  { id: 'problem_urgency_min_avg', label: 'Urgencia problema', threshold: 'problem_urgency_min_avg', actual: 'problem_urgency_avg' },
+  { id: 'solution_score_min_avg', label: 'Score solución promedio', threshold: 'solution_score_min_avg', actual: 'solution_score_avg' },
+  { id: 'solution_interest_min_avg', label: 'Interés solución', threshold: 'solution_interest_min_avg', actual: 'solution_interest_avg' },
+  { id: 'solution_value_min_avg', label: 'Valor solución', threshold: 'solution_value_min_avg', actual: 'solution_value_avg' },
+  { id: 'solution_payment_min_avg', label: 'Pago solución', threshold: 'solution_payment_min_avg', actual: 'solution_payment_avg' },
+  { id: 'segment_fit_min_avg', label: 'Encaje segmento', threshold: 'segment_fit_min_avg', actual: 'segment_fit_avg' },
+  { id: 'emotional_language_min_avg', label: 'Lenguaje emocional', threshold: 'emotional_language_min_avg', actual: 'emotional_language_avg' },
+];
+
 const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
 const blankHypothesis = {
   title: '',
@@ -99,6 +122,22 @@ const blankHypothesis = {
   evaluated_interviews_count: '',
   problem_score_avg: '',
   solution_score_avg: '',
+  problem_intensity_avg: '',
+  problem_frequency_avg: '',
+  problem_urgency_avg: '',
+  problem_attempts_avg: '',
+  problem_spend_avg: '',
+  problem_clarity_avg: '',
+  segment_fit_avg: '',
+  emotional_language_avg: '',
+  solution_interest_avg: '',
+  solution_clarity_avg: '',
+  solution_value_avg: '',
+  solution_recurrence_avg: '',
+  solution_payment_avg: '',
+  criteria_passed_count: '',
+  criteria_failed_count: '',
+  validation_summary: '',
   validation_result: 'no evaluada',
   experiment_notes: '',
   observations: '',
@@ -289,6 +328,21 @@ const InterviewCenterPage = () => {
       'evaluated_interviews_count',
       'problem_score_avg',
       'solution_score_avg',
+      'problem_intensity_avg',
+      'problem_frequency_avg',
+      'problem_urgency_avg',
+      'problem_attempts_avg',
+      'problem_spend_avg',
+      'problem_clarity_avg',
+      'segment_fit_avg',
+      'emotional_language_avg',
+      'solution_interest_avg',
+      'solution_clarity_avg',
+      'solution_value_avg',
+      'solution_recurrence_avg',
+      'solution_payment_avg',
+      'criteria_passed_count',
+      'criteria_failed_count',
     ];
     const payload = { ...draft };
     numericKeys.forEach((key) => {
@@ -312,6 +366,24 @@ const InterviewCenterPage = () => {
     setHypothesisEditDraft({ ...blankHypothesis, ...hypothesis });
     setHypothesisEditModalOpen(true);
   }, []);
+
+  const getHypothesisCriteriaRows = useCallback((hypothesis) => hypothesisCriteriaConfig.map((criterion) => {
+    const thresholdRaw = hypothesis?.[criterion.threshold];
+    const actualRaw = hypothesis?.[criterion.actual];
+    const threshold = Number(thresholdRaw);
+    const actual = Number(actualRaw);
+    const configured = Number.isFinite(threshold);
+    const passed = configured && Number.isFinite(actual) && actual >= threshold;
+    const failed = configured && !passed;
+    return {
+      ...criterion,
+      configured,
+      passed,
+      failed,
+      threshold: configured ? threshold : null,
+      actual: Number.isFinite(actual) ? actual : null,
+    };
+  }), []);
 
   const openClientEditor = (client, closeProfile = false) => {
     setClientDraft({
@@ -1392,6 +1464,12 @@ const InterviewCenterPage = () => {
                     <p className="text-sm text-slate-500">{hypothesis.type} · {hypothesis.status || 'exploracion'} · {hypothesis.audience_name || 'Sin audiencia'}</p>
                   </div>
                   <div className="flex items-center gap-2">
+                    <Button
+                      className="bg-indigo-600 text-white"
+                      onClick={() => center.runMutation(() => interviewsModuleApi.evaluateHypothesis(hypothesis.id), 'Hipótesis evaluada')}
+                    >
+                      Evaluar hipótesis
+                    </Button>
                     <Button className="bg-white border" onClick={() => openEditHypothesis(hypothesis)}>Editar</Button>
                     <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada')}>Borrar</Button>
                   </div>
@@ -1413,13 +1491,37 @@ const InterviewCenterPage = () => {
                   <div className="rounded-lg border border-slate-200 p-3">
                     <p className="text-xs font-semibold uppercase text-slate-500">Sección 3 · Resultados (preparado para 14.1)</p>
                     <p className="mt-1 text-xs text-slate-600">Entrevistas evaluadas: {hypothesis.evaluated_interviews_count ?? '—'} · Avg problema: {hypothesis.problem_score_avg ?? '—'} · Avg solución: {hypothesis.solution_score_avg ?? '—'}</p>
-                    <p className="text-xs text-slate-600">Resultado de validación: {hypothesis.validation_result || 'no evaluada'}</p>
+                    <p className="text-xs text-slate-600">Última evaluación: {hypothesis.last_evaluated_at ? new Date(hypothesis.last_evaluated_at).toLocaleString() : '—'}</p>
+                    <div className="mt-1">
+                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${validationToneByResult[hypothesis.validation_result || 'no evaluada'] || validationToneByResult['no evaluada']}`}>{hypothesis.validation_result || 'no evaluada'}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600">{hypothesis.validation_summary || 'Sin resumen de validación aún.'}</p>
                   </div>
                   <div className="rounded-lg border border-slate-200 p-3">
                     <p className="text-xs font-semibold uppercase text-slate-500">Sección 4 · Notas del experimento</p>
                     <p className="mt-1 text-xs text-slate-600">Notas: {hypothesis.experiment_notes || '—'}</p>
                     <p className="text-xs text-slate-600">Observaciones: {hypothesis.observations || '—'}</p>
                     <p className="text-xs text-slate-600">Siguientes acciones: {hypothesis.next_actions || '—'}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs font-semibold uppercase text-slate-500">Detalle de criterios</p>
+                  <div className="mt-2 grid gap-1 md:grid-cols-2">
+                    {getHypothesisCriteriaRows(hypothesis).map((criterion) => (
+                      <div key={`${hypothesis.id}_${criterion.id}`} className="flex items-center justify-between rounded bg-slate-50 px-2 py-1 text-xs">
+                        <span>{criterion.label}</span>
+                        <span>
+                          {!criterion.configured ? (
+                            <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-slate-500">No configurado</span>
+                          ) : criterion.passed ? (
+                            <span className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-emerald-700">Cumplido ({criterion.actual ?? '—'} ≥ {criterion.threshold})</span>
+                          ) : (
+                            <span className="rounded border border-rose-200 bg-rose-50 px-1.5 py-0.5 text-rose-700">No cumplido ({criterion.actual ?? '—'} &lt; {criterion.threshold})</span>
+                          )}
+                        </span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>

@@ -255,6 +255,22 @@ const schemaSql = [
     evaluated_interviews_count INTEGER,
     problem_score_avg REAL,
     solution_score_avg REAL,
+    problem_intensity_avg REAL,
+    problem_frequency_avg REAL,
+    problem_urgency_avg REAL,
+    problem_attempts_avg REAL,
+    problem_spend_avg REAL,
+    problem_clarity_avg REAL,
+    segment_fit_avg REAL,
+    emotional_language_avg REAL,
+    solution_interest_avg REAL,
+    solution_clarity_avg REAL,
+    solution_value_avg REAL,
+    solution_recurrence_avg REAL,
+    solution_payment_avg REAL,
+    criteria_passed_count INTEGER,
+    criteria_failed_count INTEGER,
+    validation_summary TEXT,
     validation_result TEXT,
     experiment_notes TEXT,
     observations TEXT,
@@ -1786,6 +1802,22 @@ async function ensureVideoHierarchyMigration() {
     ['evaluated_interviews_count', 'INTEGER'],
     ['problem_score_avg', 'REAL'],
     ['solution_score_avg', 'REAL'],
+    ['problem_intensity_avg', 'REAL'],
+    ['problem_frequency_avg', 'REAL'],
+    ['problem_urgency_avg', 'REAL'],
+    ['problem_attempts_avg', 'REAL'],
+    ['problem_spend_avg', 'REAL'],
+    ['problem_clarity_avg', 'REAL'],
+    ['segment_fit_avg', 'REAL'],
+    ['emotional_language_avg', 'REAL'],
+    ['solution_interest_avg', 'REAL'],
+    ['solution_clarity_avg', 'REAL'],
+    ['solution_value_avg', 'REAL'],
+    ['solution_recurrence_avg', 'REAL'],
+    ['solution_payment_avg', 'REAL'],
+    ['criteria_passed_count', 'INTEGER'],
+    ['criteria_failed_count', 'INTEGER'],
+    ['validation_summary', 'TEXT'],
     ['validation_result', 'TEXT'],
     ['experiment_notes', 'TEXT'],
     ['observations', 'TEXT'],
@@ -2060,6 +2092,51 @@ function parseTypedValue(value, type) {
   if (!Number.isFinite(parsed)) return null;
   if (type === 'int') return Math.trunc(parsed);
   return parsed;
+}
+
+const HYPOTHESIS_PROBLEM_KEYS = ['problem_intensity', 'problem_frequency', 'perceived_urgency', 'solution_attempts', 'previous_spend', 'problem_clarity', 'segment_fit', 'emotional_language'];
+const HYPOTHESIS_SOLUTION_KEYS = ['solution_interest', 'solution_clarity', 'perceived_value', 'usage_probability', 'willingness_to_pay'];
+
+function toValidScore(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < 1 || parsed > 5) return null;
+  return parsed;
+}
+
+function averageScores(values = []) {
+  const clean = values.map(toValidScore).filter((value) => value != null);
+  if (!clean.length) return null;
+  return Number((clean.reduce((acc, value) => acc + value, 0) / clean.length).toFixed(2));
+}
+
+function buildHypothesisValidationSummary({ result, interviewsCount, passCount, failCount, minInterviews, problemScoreAvg, solutionScoreAvg }) {
+  if (result === 'no evaluada') return `Muestra insuficiente para evaluar la hipótesis (${interviewsCount}/${minInterviews || 0} entrevistas).`;
+  if (result === 'validada') return `Hipótesis validada: problema y solución superan umbrales (${passCount} criterios cumplidos).`;
+  if (result === 'refutada') return `Hipótesis refutada: bajo cumplimiento de criterios (${failCount} fallos).`;
+  if (result === 'señal fuerte') return `Señal fuerte: cumplimiento alto de criterios con evidencia consistente.`;
+  if (result === 'señal moderada') return `Señal moderada: buen dolor (${problemScoreAvg ?? '—'}) y/o solución (${solutionScoreAvg ?? '—'}) con brechas puntuales.`;
+  return 'Señal débil: resultados iniciales aún no alcanzan umbrales robustos.';
+}
+
+function decideHypothesisValidation({ interviewsCount, minInterviews, configuredCriteria, passedCriteria, failedCriteria, primaryConfigured, primaryPassed, problemScoreAvg, solutionScoreAvg }) {
+  if (interviewsCount < minInterviews) return 'no evaluada';
+
+  if (!configuredCriteria) {
+    if ((problemScoreAvg || 0) >= 4 && (solutionScoreAvg || 0) >= 4) return 'señal fuerte';
+    if ((problemScoreAvg || 0) >= 3 && (solutionScoreAvg || 0) >= 3) return 'señal moderada';
+    return 'señal débil';
+  }
+
+  const passRate = configuredCriteria ? (passedCriteria / configuredCriteria) : 0;
+  const primaryRate = primaryConfigured ? (primaryPassed / primaryConfigured) : passRate;
+
+  if (primaryRate <= 0.25 || passRate <= 0.25) return 'refutada';
+  if (primaryRate >= 0.9 && passRate >= 0.8) return 'validada';
+  if (primaryRate >= 0.75 && passRate >= 0.7) return 'señal fuerte';
+  if (primaryRate >= 0.5 && passRate >= 0.5) return 'señal moderada';
+  if (failedCriteria > passedCriteria) return 'señal débil';
+  return 'señal moderada';
 }
 
 function normalizeBulkUpdateFields(fields) {
@@ -4576,6 +4653,168 @@ const server = http.createServer(async (req, res) => {
         ],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      return sendJson(req, res, 200, { data: rows[0] || null });
+    }
+
+    const interviewHypothesisEvaluateMatch = url.pathname.match(/^\/api\/interview-hypotheses\/([^/]+)\/evaluate$/);
+    if (interviewHypothesisEvaluateMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const id = interviewHypothesisEvaluateMatch[1];
+
+      const [hypRows] = await pool.query('SELECT * FROM interview_hypotheses WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      const hypothesis = hypRows[0] || null;
+      if (!hypothesis) return sendJson(req, res, 404, { error: 'Hypothesis not found' });
+
+      const [linkedRows] = await pool.query(
+        `SELECT * FROM interview_sessions
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND interview_hypothesis_id = ?`,
+        [user.id, hypothesis.project_id, hypothesis.campaign_id, hypothesis.id],
+      );
+
+      let interviews = linkedRows;
+      if (!interviews.length) {
+        const clauses = ['user_id = ?', 'project_id = ?', 'campaign_id = ?'];
+        const params = [user.id, hypothesis.project_id, hypothesis.campaign_id];
+        if (hypothesis.audience_id) {
+          clauses.push('audience_id = ?');
+          params.push(hypothesis.audience_id);
+        }
+        if (hypothesis.related_client_id) {
+          clauses.push('client_id = ?');
+          params.push(hypothesis.related_client_id);
+        }
+        if (hypothesis.interview_form_id) {
+          clauses.push('form_id = ?');
+          params.push(hypothesis.interview_form_id);
+        }
+        const [contextRows] = await pool.query(`SELECT * FROM interview_sessions WHERE ${clauses.join(' AND ')}`, params);
+        interviews = contextRows;
+      }
+
+      const evaluations = interviews.map((row) => safeParseJsonField(row.responses_json, {})?.__lean_evaluation || {});
+
+      const metric = {
+        problem_score_avg: averageScores(evaluations.map((item) => averageScores(HYPOTHESIS_PROBLEM_KEYS.map((key) => item[key])))),
+        solution_score_avg: averageScores(evaluations.map((item) => averageScores(HYPOTHESIS_SOLUTION_KEYS.map((key) => item[key])))),
+        problem_intensity_avg: averageScores(evaluations.map((item) => item.problem_intensity)),
+        problem_frequency_avg: averageScores(evaluations.map((item) => item.problem_frequency)),
+        problem_urgency_avg: averageScores(evaluations.map((item) => item.perceived_urgency)),
+        problem_attempts_avg: averageScores(evaluations.map((item) => item.solution_attempts)),
+        problem_spend_avg: averageScores(evaluations.map((item) => item.previous_spend)),
+        problem_clarity_avg: averageScores(evaluations.map((item) => item.problem_clarity)),
+        segment_fit_avg: averageScores(evaluations.map((item) => item.segment_fit)),
+        emotional_language_avg: averageScores(evaluations.map((item) => item.emotional_language)),
+        solution_interest_avg: averageScores(evaluations.map((item) => item.solution_interest)),
+        solution_clarity_avg: averageScores(evaluations.map((item) => item.solution_clarity)),
+        solution_value_avg: averageScores(evaluations.map((item) => item.perceived_value)),
+        solution_recurrence_avg: averageScores(evaluations.map((item) => item.usage_probability)),
+        solution_payment_avg: averageScores(evaluations.map((item) => item.willingness_to_pay)),
+      };
+
+      const criteriaMap = [
+        { threshold: 'problem_score_min_avg', value: 'problem_score_avg', primary: true },
+        { threshold: 'problem_intensity_min_avg', value: 'problem_intensity_avg', primary: true },
+        { threshold: 'problem_frequency_min_avg', value: 'problem_frequency_avg', primary: true },
+        { threshold: 'problem_urgency_min_avg', value: 'problem_urgency_avg', primary: true },
+        { threshold: 'solution_score_min_avg', value: 'solution_score_avg', primary: true },
+        { threshold: 'solution_interest_min_avg', value: 'solution_interest_avg', primary: true },
+        { threshold: 'solution_value_min_avg', value: 'solution_value_avg', primary: true },
+        { threshold: 'solution_payment_min_avg', value: 'solution_payment_avg', primary: true },
+        { threshold: 'segment_fit_min_avg', value: 'segment_fit_avg', primary: false },
+        { threshold: 'emotional_language_min_avg', value: 'emotional_language_avg', primary: false },
+      ];
+
+      let configuredCriteria = 0;
+      let passedCriteria = 0;
+      let failedCriteria = 0;
+      let primaryConfigured = 0;
+      let primaryPassed = 0;
+      criteriaMap.forEach((rule) => {
+        const threshold = Number(hypothesis[rule.threshold]);
+        if (!Number.isFinite(threshold)) return;
+        configuredCriteria += 1;
+        if (rule.primary) primaryConfigured += 1;
+        const actual = Number(metric[rule.value]);
+        if (Number.isFinite(actual) && actual >= threshold) {
+          passedCriteria += 1;
+          if (rule.primary) primaryPassed += 1;
+        } else {
+          failedCriteria += 1;
+        }
+      });
+
+      const minInterviews = Number(hypothesis.min_interviews);
+      const minInterviewsTarget = Number.isFinite(minInterviews) && minInterviews > 0 ? minInterviews : 1;
+
+      const validationResult = decideHypothesisValidation({
+        interviewsCount: interviews.length,
+        minInterviews: minInterviewsTarget,
+        configuredCriteria,
+        passedCriteria,
+        failedCriteria,
+        primaryConfigured,
+        primaryPassed,
+        problemScoreAvg: metric.problem_score_avg,
+        solutionScoreAvg: metric.solution_score_avg,
+      });
+
+      const validationSummary = buildHypothesisValidationSummary({
+        result: validationResult,
+        interviewsCount: interviews.length,
+        passCount: passedCriteria,
+        failCount: failedCriteria,
+        minInterviews: minInterviewsTarget,
+        problemScoreAvg: metric.problem_score_avg,
+        solutionScoreAvg: metric.solution_score_avg,
+      });
+
+      await pool.query(
+        `UPDATE interview_hypotheses
+         SET evaluated_interviews_count = ?, problem_score_avg = ?, solution_score_avg = ?,
+             problem_intensity_avg = ?, problem_frequency_avg = ?, problem_urgency_avg = ?, problem_attempts_avg = ?,
+             problem_spend_avg = ?, problem_clarity_avg = ?, segment_fit_avg = ?, emotional_language_avg = ?,
+             solution_interest_avg = ?, solution_clarity_avg = ?, solution_value_avg = ?, solution_recurrence_avg = ?, solution_payment_avg = ?,
+             criteria_passed_count = ?, criteria_failed_count = ?, validation_summary = ?, validation_result = ?,
+             last_evaluated_at = ?, updated_at = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          interviews.length,
+          metric.problem_score_avg,
+          metric.solution_score_avg,
+          metric.problem_intensity_avg,
+          metric.problem_frequency_avg,
+          metric.problem_urgency_avg,
+          metric.problem_attempts_avg,
+          metric.problem_spend_avg,
+          metric.problem_clarity_avg,
+          metric.segment_fit_avg,
+          metric.emotional_language_avg,
+          metric.solution_interest_avg,
+          metric.solution_clarity_avg,
+          metric.solution_value_avg,
+          metric.solution_recurrence_avg,
+          metric.solution_payment_avg,
+          passedCriteria,
+          failedCriteria,
+          validationSummary,
+          validationResult,
+          nowIso(),
+          nowIso(),
+          id,
+          user.id,
+        ],
+      );
+
+      const [rows] = await pool.query(
+        `SELECT ih.*, a.name AS audience_name, c.name AS related_client_name, f.title AS interview_form_title
+         FROM interview_hypotheses ih
+         LEFT JOIN audiences a ON a.id = ih.audience_id
+         LEFT JOIN interview_clients c ON c.id = ih.related_client_id
+         LEFT JOIN interview_forms f ON f.id = ih.interview_form_id
+         WHERE ih.id = ? AND ih.user_id = ? LIMIT 1`,
+        [id, user.id],
+      );
       return sendJson(req, res, 200, { data: rows[0] || null });
     }
 

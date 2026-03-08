@@ -163,10 +163,23 @@ export const QuantitativeAnalysisLab = ({ sessions = [], audiences = [], forms =
         problemScore,
         solutionScore,
         variableAverages,
+        validationResult: groupBy === 'hypothesis'
+          ? (hypotheses.find((hypothesis) => String(hypothesis.id) === String(item.id))?.validation_result || 'no evaluada')
+          : '',
         quickReading: scoreLabel(problemScore, solutionScore),
       };
     }).sort((a, b) => (b.problemScore || 0) - (a.problemScore || 0));
-  }, [filteredInterviews, groupBy]);
+  }, [filteredInterviews, groupBy, hypotheses]);
+
+  const hypothesisValidationSummary = useMemo(() => {
+    const counts = { validada: 0, refutada: 0, 'señal fuerte': 0, 'señal moderada': 0, 'señal débil': 0, 'no evaluada': 0 };
+    hypotheses.forEach((hypothesis) => {
+      const key = String(hypothesis.validation_result || 'no evaluada');
+      if (!Object.prototype.hasOwnProperty.call(counts, key)) counts['no evaluada'] += 1;
+      else counts[key] += 1;
+    });
+    return counts;
+  }, [hypotheses]);
 
   const kpis = useMemo(() => {
     const bestAudienceProblem = [...groupedRows].filter((row) => row.problemScore != null && groupBy === 'audience').sort((a, b) => b.problemScore - a.problemScore)[0];
@@ -294,6 +307,15 @@ export const QuantitativeAnalysisLab = ({ sessions = [], audiences = [], forms =
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <h4 className="text-sm font-semibold text-slate-900">Estado de hipótesis (validación cuantitativa)</h4>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+          {Object.entries(hypothesisValidationSummary).map(([label, count]) => (
+            <span key={label} className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1 text-slate-700">{label}: <b>{count}</b></span>
+          ))}
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between">
           <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Filter className="h-4 w-4 text-indigo-600" />Tabla analítica</h4>
           <div className="flex items-center gap-2">
@@ -315,6 +337,7 @@ export const QuantitativeAnalysisLab = ({ sessions = [], audiences = [], forms =
                 <th className="px-2 py-2">Entrevistas</th>
                 <th className="px-2 py-2">Score problema</th>
                 <th className="px-2 py-2">Score solución</th>
+                {groupBy === 'hypothesis' ? <th className="px-2 py-2">Estado hipótesis</th> : null}
                 <th className="px-2 py-2">Lectura</th>
               </tr>
             </thead>
@@ -325,6 +348,7 @@ export const QuantitativeAnalysisLab = ({ sessions = [], audiences = [], forms =
                   <td className="px-2 py-2">{row.interviewsCount}</td>
                   <td className="px-2 py-2">{row.problemScore ?? '—'}</td>
                   <td className="px-2 py-2">{row.solutionScore ?? '—'}</td>
+                  {groupBy === 'hypothesis' ? <td className="px-2 py-2">{row.validationResult || 'no evaluada'}</td> : null}
                   <td className="px-2 py-2 text-xs text-slate-600">{row.quickReading}</td>
                 </tr>
               ))}
@@ -414,4 +438,3 @@ export const QuantitativeAnalysisLab = ({ sessions = [], audiences = [], forms =
     </div>
   );
 };
-
