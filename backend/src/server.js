@@ -3577,10 +3577,21 @@ const server = http.createServer(async (req, res) => {
            JOIN cloud_edges e ON e.child_id = ancestors.id AND e.user_id = ?
            WHERE ancestors.depth < 20
          )
-         SELECT s.id AS interview_id, s.client_id, s.project_id, s.campaign_id
+         SELECT
+           COALESCE(st.id, sc.id) AS interview_id,
+           COALESCE(st.client_id, sc.client_id) AS client_id,
+           COALESCE(st.project_id, sc.project_id) AS project_id,
+           COALESCE(st.campaign_id, sc.campaign_id) AS campaign_id
          FROM ancestors a
          JOIN cloud_nodes n ON n.id = a.id AND n.user_id = ?
-         JOIN interview_sessions s ON s.id = n.target_id AND n.target_type = 'interview_session' AND s.user_id = n.user_id
+         LEFT JOIN interview_sessions st
+           ON st.id = n.target_id
+          AND n.target_type = 'interview_session'
+          AND st.user_id = n.user_id
+         LEFT JOIN interview_sessions sc
+           ON n.canonical_key = ('interviews_cloud_session:' || sc.campaign_id || ':' || sc.id)
+          AND sc.user_id = n.user_id
+         WHERE st.id IS NOT NULL OR sc.id IS NOT NULL
          ORDER BY a.depth ASC
          LIMIT 1`,
         [nodeId, user.id, user.id, user.id],
@@ -3678,10 +3689,21 @@ const server = http.createServer(async (req, res) => {
              JOIN cloud_edges e ON e.child_id = ancestors.id AND e.user_id = ?
              WHERE ancestors.depth < 20
            )
-           SELECT s.id AS interview_id, s.client_id, s.project_id, s.campaign_id
+           SELECT
+             COALESCE(st.id, sc.id) AS interview_id,
+             COALESCE(st.client_id, sc.client_id) AS client_id,
+             COALESCE(st.project_id, sc.project_id) AS project_id,
+             COALESCE(st.campaign_id, sc.campaign_id) AS campaign_id
            FROM ancestors a
            JOIN cloud_nodes n ON n.id = a.id AND n.user_id = ?
-           JOIN interview_sessions s ON s.id = n.target_id AND n.target_type = 'interview_session' AND s.user_id = n.user_id
+           LEFT JOIN interview_sessions st
+             ON st.id = n.target_id
+            AND n.target_type = 'interview_session'
+            AND st.user_id = n.user_id
+           LEFT JOIN interview_sessions sc
+             ON n.canonical_key = ('interviews_cloud_session:' || sc.campaign_id || ':' || sc.id)
+            AND sc.user_id = n.user_id
+           WHERE st.id IS NOT NULL OR sc.id IS NOT NULL
            ORDER BY a.depth ASC
            LIMIT 1`,
           [documentNodeId, user.id, user.id, user.id],
