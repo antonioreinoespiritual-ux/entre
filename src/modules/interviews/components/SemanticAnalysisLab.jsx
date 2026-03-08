@@ -675,7 +675,19 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   }, [location.pathname]);
   const isCodeMapRoute = location.pathname.endsWith('/code-map');
 
-  const codeMapNodes = useMemo(() => analysis.codes.map((code, index) => {
+  useEffect(() => {
+    if (!isCodeMapRoute) return;
+    const queryHypothesis = new URLSearchParams(location.search).get('hypothesis') || '';
+    if (queryHypothesis === codebookHypothesisFilter) return;
+    setCodebookHypothesisFilter(queryHypothesis);
+  }, [isCodeMapRoute, location.search, codebookHypothesisFilter]);
+
+  const mapVisibleCodes = useMemo(
+    () => (filteredCodeSlugSet ? analysis.codes.filter((code) => filteredCodeSlugSet.has(code.slug)) : analysis.codes),
+    [analysis.codes, filteredCodeSlugSet],
+  );
+
+  const codeMapNodes = useMemo(() => mapVisibleCodes.map((code, index) => {
     const saved = codeMapLayoutBySlug[code.slug] || {};
     const x = Number(saved.x);
     const y = Number(saved.y);
@@ -684,15 +696,18 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       x: Number.isFinite(x) ? x : 120 + ((index % 4) * 260),
       y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 180),
     };
-  }), [analysis.codes, codeMapLayoutBySlug]);
+  }), [mapVisibleCodes, codeMapLayoutBySlug]);
 
-  const codeMapEdges = useMemo(() => analysis.codes
+  const mapVisibleSlugSet = useMemo(() => new Set(mapVisibleCodes.map((code) => code.slug)), [mapVisibleCodes]);
+
+  const codeMapEdges = useMemo(() => mapVisibleCodes
     .filter((code) => code.parentSlug && codeBySlug[code.parentSlug] && code.parentSlug !== code.slug)
+    .filter((code) => mapVisibleSlugSet.has(code.parentSlug) && mapVisibleSlugSet.has(code.slug))
     .map((code) => ({
       id: `edge_${code.parentSlug}_${code.slug}`,
       source: code.parentSlug,
       target: code.slug,
-    })), [analysis.codes, codeBySlug]);
+    })), [mapVisibleCodes, codeBySlug, mapVisibleSlugSet]);
 
   const handleCodeMapNodeMouseDown = useCallback((event, slug) => {
     if (event.button !== 0) return;
@@ -903,6 +918,24 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                 <p className="mt-1 text-xs text-slate-500">Nodos compactos estilo Atlas.ti. Clic derecho sobre nodo para abrir acciones. Arrastra conexiones y elimina líneas con Supr/Backspace.</p>
               </div>
               <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Hipótesis</span>
+                  <select
+                    className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                    value={codebookHypothesisFilter}
+                    onChange={(event) => {
+                      const nextHypothesis = event.target.value;
+                      setCodebookHypothesisFilter(nextHypothesis);
+                      const query = nextHypothesis ? `?hypothesis=${encodeURIComponent(nextHypothesis)}` : '';
+                      navigate(`${interviewsBasePath}/code-map${query}`, { replace: true });
+                    }}
+                  >
+                    <option value="">Todas</option>
+                    {hypothesisOptions.map((option) => (
+                      <option key={option.id} value={option.id}>{option.label}</option>
+                    ))}
+                  </select>
+                </div>
                 <select className="rounded border border-slate-200 bg-white px-2 py-1 text-xs" value={codeMapLayoutMode} onChange={(event) => applyCodeMapAutoLayout(event.target.value)}>
                   <option value="hierarchical">Auto layout: Hierarchical</option>
                   <option value="radial">Auto layout: Radial</option>
@@ -998,6 +1031,12 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                 <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => { setCodeParent(codeMapContextMenu.slug, ''); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Quitar padre</button>
                 <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => { openDeleteCodeModalForSlug(codeMapContextMenu.slug); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Eliminar código</button>
                 <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => { openCodeFragmentsFromMap(codeMapContextMenu.slug); setCodeMapContextMenu((prev) => ({ ...prev, open: false })); }}>Ver fragmentos asociados</button>
+              </div>
+            ) : null}
+
+            {!codeMapNodes.length ? (
+              <div className="absolute inset-x-0 top-20 z-10 mx-auto w-fit rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 shadow-sm">
+                No hay códigos para la hipótesis seleccionada.
               </div>
             ) : null}
           </div>
@@ -1172,7 +1211,8 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
                         className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm text-slate-700 hover:bg-slate-50"
                         onClick={() => {
                           setCodebookMenuOpen(false);
-                          navigate(`${interviewsBasePath}/code-map`);
+                          const query = codebookHypothesisFilter ? `?hypothesis=${encodeURIComponent(codebookHypothesisFilter)}` : '';
+                          navigate(`${interviewsBasePath}/code-map${query}`);
                         }}
                       >
                         <Link2 className="h-4 w-4 text-indigo-600" />
