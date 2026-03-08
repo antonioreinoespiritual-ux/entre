@@ -79,6 +79,10 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [codeMapConnectSourceSlug, setCodeMapConnectSourceSlug] = useState('');
   const [codeMapZoom, setCodeMapZoom] = useState(1);
   const [draggingNodeSlug, setDraggingNodeSlug] = useState('');
+  const [selectedCodeMapNodeSlug, setSelectedCodeMapNodeSlug] = useState('');
+  const [selectedCodeMapEdgeId, setSelectedCodeMapEdgeId] = useState('');
+  const [codeMapPan, setCodeMapPan] = useState({ x: 0, y: 0 });
+  const [isCodeMapPanning, setIsCodeMapPanning] = useState(false);
   const codebookMenuRef = useRef(null);
   const navigate = useNavigate();
   const location = useLocation();
@@ -616,6 +620,8 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     event.preventDefault();
     event.stopPropagation();
     setDraggingNodeSlug(slug);
+    setSelectedCodeMapNodeSlug(slug);
+    setSelectedCodeMapEdgeId('');
     const startX = event.clientX;
     const startY = event.clientY;
     const start = codeMapLayoutBySlug[slug] || codeMapNodes.find((node) => node.slug === slug) || { x: 0, y: 0 };
@@ -643,6 +649,46 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
   }, [codeMapLayoutBySlug, codeMapNodes, codeMapZoom]);
+
+  const handleCodeMapCanvasMouseDown = useCallback((event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest('[data-node-card="true"]')) return;
+    setSelectedCodeMapNodeSlug('');
+    setSelectedCodeMapEdgeId('');
+    setIsCodeMapPanning(true);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startPan = { ...codeMapPan };
+
+    const onMove = (moveEvent) => {
+      setCodeMapPan({
+        x: startPan.x + (moveEvent.clientX - startX),
+        y: startPan.y + (moveEvent.clientY - startY),
+      });
+    };
+
+    const onUp = () => {
+      setIsCodeMapPanning(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [codeMapPan]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (!selectedCodeMapEdgeId) return;
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      const edge = codeMapEdges.find((item) => item.id === selectedCodeMapEdgeId);
+      if (!edge) return;
+      setCodeParent(edge.target, '');
+      setSelectedCodeMapEdgeId('');
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [codeMapEdges, selectedCodeMapEdgeId, setCodeParent]);
 
   return (
     <div className="space-y-4">
@@ -696,7 +742,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h4 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><Link2 className="h-4 w-4 text-indigo-600" />Mapa de códigos</h4>
-                <p className="mt-1 text-xs text-slate-500">Arrastra nodos para reorganizar. Usa “Conectar” para crear relación padre → hijo y “Quitar padre” para removerla.</p>
+                <p className="mt-1 text-xs text-slate-500">Arrastra nodos para reorganizar, usa “Conectar” para crear padre → hijo y selecciona una línea para eliminarla con Supr/Backspace.</p>
               </div>
               <div className="flex items-center gap-2">
                 <label className="text-xs text-slate-600">Zoom</label>
@@ -706,57 +752,79 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
             </div>
           </div>
 
-          <div className="relative h-[620px] overflow-auto bg-slate-50">
-            <div className="relative h-[1600px] w-[1800px] origin-top-left" style={{ transform: `scale(${codeMapZoom})` }}>
-              <svg className="pointer-events-none absolute inset-0 h-full w-full">
+          <div
+            className={`relative h-[620px] overflow-hidden bg-slate-50 ${isCodeMapPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+            onMouseDown={handleCodeMapCanvasMouseDown}
+          >
+            <div
+              className="absolute h-[2000px] w-[2200px] origin-top-left"
+              style={{ transform: `translate(${codeMapPan.x}px, ${codeMapPan.y}px) scale(${codeMapZoom})` }}
+            >
+              <svg className="absolute inset-0 h-full w-full">
                 {codeMapEdges.map((edge) => {
                   const source = codeMapNodes.find((node) => node.slug === edge.source);
                   const target = codeMapNodes.find((node) => node.slug === edge.target);
                   if (!source || !target) return null;
+                  const selected = selectedCodeMapEdgeId === edge.id;
                   return (
                     <line
                       key={edge.id}
-                      x1={source.x + 110}
-                      y1={source.y + 26}
-                      x2={target.x + 110}
-                      y2={target.y + 26}
-                      stroke="#94a3b8"
-                      strokeWidth="2"
+                      x1={source.x + 112}
+                      y1={source.y + 30}
+                      x2={target.x + 112}
+                      y2={target.y + 30}
+                      stroke={selected ? '#4f46e5' : '#94a3b8'}
+                      strokeWidth={selected ? 3 : 2}
+                      className="cursor-pointer"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedCodeMapNodeSlug('');
+                        setSelectedCodeMapEdgeId(edge.id);
+                      }}
                     />
                   );
                 })}
               </svg>
 
-              {codeMapNodes.map((code) => (
-                <div
-                  key={code.slug}
-                  className={`absolute w-56 rounded-xl border bg-white p-3 shadow-sm ${draggingNodeSlug === code.slug ? 'border-indigo-400 shadow-lg' : 'border-slate-200'}`}
-                  style={{ left: code.x, top: code.y }}
-                  onMouseDown={(event) => handleCodeMapNodeMouseDown(event, code.slug)}
-                >
-                  <p className="text-xs text-slate-500">{code.slug}</p>
-                  <p className="text-sm font-semibold text-slate-900">{code.name}</p>
-                  <p className="mt-1 text-[11px] text-slate-500">{code.fragmentCount} fragmentos</p>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeMapConnectSourceSlug(code.slug); }}>Conectar</Button>
-                    {codeMapConnectSourceSlug && codeMapConnectSourceSlug !== code.slug ? (
-                      <Button
-                        className="h-7 bg-indigo-600 px-2 text-xs text-white"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setCodeParent(code.slug, codeMapConnectSourceSlug);
-                          setCodeMapConnectSourceSlug('');
-                        }}
-                      >
-                        Vincular aquí
-                      </Button>
-                    ) : null}
-                    <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeParent(code.slug, ''); }}>Quitar padre</Button>
-                    <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); openCodeModal(code.slug); }}>Gestionar</Button>
+              {codeMapNodes.map((code) => {
+                const isNodeSelected = selectedCodeMapNodeSlug === code.slug;
+                return (
+                  <div
+                    key={code.slug}
+                    data-node-card="true"
+                    className={`absolute w-56 rounded-xl border bg-white p-3 shadow-sm ${draggingNodeSlug === code.slug || isNodeSelected ? 'border-indigo-400 shadow-lg' : 'border-slate-200'}`}
+                    style={{ left: code.x, top: code.y }}
+                    onMouseDown={(event) => handleCodeMapNodeMouseDown(event, code.slug)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedCodeMapEdgeId('');
+                      setSelectedCodeMapNodeSlug(code.slug);
+                    }}
+                  >
+                    <p className="text-xs text-slate-500">{code.slug}</p>
+                    <p className="flex items-center gap-1 text-sm font-semibold text-slate-900"><Tag className="h-3.5 w-3.5 text-indigo-600" />{code.name}</p>
+                    <p className="mt-1 text-[11px] text-slate-500">{code.fragmentCount} fragmentos</p>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeMapConnectSourceSlug(code.slug); }}>Conectar</Button>
+                      {codeMapConnectSourceSlug && codeMapConnectSourceSlug !== code.slug ? (
+                        <Button
+                          className="h-7 bg-indigo-600 px-2 text-xs text-white"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setCodeParent(code.slug, codeMapConnectSourceSlug);
+                            setCodeMapConnectSourceSlug('');
+                          }}
+                        >
+                          Vincular aquí
+                        </Button>
+                      ) : null}
+                      <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); setCodeParent(code.slug, ''); }}>Quitar padre</Button>
+                      <Button className="h-7 bg-white border px-2 text-xs" onClick={(event) => { event.stopPropagation(); openCodeModal(code.slug); }}>Gestionar</Button>
+                    </div>
+                    {code.parentSlug ? <p className="mt-2 text-[11px] text-slate-500">Padre: {code.parentSlug}</p> : <p className="mt-2 text-[11px] text-slate-400">Sin padre</p>}
                   </div>
-                  {code.parentSlug ? <p className="mt-2 text-[11px] text-slate-500">Padre: {code.parentSlug}</p> : <p className="mt-2 text-[11px] text-slate-400">Sin padre</p>}
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>
