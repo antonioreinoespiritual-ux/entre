@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { BookOpen, Braces, Code2, Hash, Link2, MoreHorizontal, Pencil, PlusCircle, Sparkles, Tag, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { BookOpen, Braces, ChevronDown, ChevronRight, Code2, Hash, Link2, MoreHorizontal, Pencil, PlusCircle, Sparkles, Tag, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { getLeanProblemScore, getLeanSolutionScore } from '@/modules/interviews/components/LeanEvaluationPanel';
 import { buildSemanticAnalysis, defaultSemanticClusters, defaultSemanticCodebook } from '@/modules/interviews/services/semanticAnalysis';
@@ -25,7 +25,7 @@ const formatDate = (value) => {
   return date.toLocaleString();
 };
 
-const emptyNewCode = { name: '', slug: '', category: 'interpretacion', description: '' };
+const emptyNewCode = { name: '', slug: '', category: 'interpretacion', description: '', parentSlug: '' };
 
 const codeCategoryTone = {
   tipo_problema: 'border-rose-200 bg-rose-50 text-rose-700',
@@ -61,6 +61,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const [codeDeleteTargetSlug, setCodeDeleteTargetSlug] = useState('');
   const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
   const [manualFragmentDraft, setManualFragmentDraft] = useState({ clientId: '', interviewId: '', text: '', title: '', codeSlug: '' });
+  const [expandedCodeSlugs, setExpandedCodeSlugs] = useState(new Set());
 
   useEffect(() => {
     try {
@@ -225,11 +226,15 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
 
     if (!slug || analysis.codes.some((code) => code.slug === slug)) return null;
 
+    const parentSlug = String(payload.parentSlug || '').trim();
+    if (parentSlug && !analysis.codes.some((code) => code.slug === parentSlug)) return null;
+
     const created = {
       slug,
       name,
       category: payload.category || 'interpretacion',
       description: String(payload.description || '').trim(),
+      parentSlug: parentSlug || '',
     };
 
     setWorkspace((prev) => ({
@@ -342,6 +347,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       slug: code?.slug || slug,
       category: code?.category || 'interpretacion',
       description: code?.description || '',
+      parentSlug: code?.parentSlug || '',
     });
     setCodeModalOpen(true);
   };
@@ -354,6 +360,39 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   const activeCode = analysis.codes.find((code) => code.slug === activeCodeSlug) || null;
   const activeCodeIsCustom = Boolean(workspace.customCodebook.some((code) => code.slug === activeCodeSlug));
   const activeCodeFragments = useMemo(() => analysis.fragments.filter((fragment) => fragment.codeSlugs?.includes(activeCodeSlug)).filter((fragment) => !(workspace.deletedFragmentIds || []).map(String).includes(String(fragment.id))), [activeCodeSlug, analysis.fragments, workspace.deletedFragmentIds]);
+
+
+  const codeBySlug = useMemo(() => Object.fromEntries(analysis.codes.map((code) => [code.slug, code])), [analysis.codes]);
+
+  const codeChildrenByParent = useMemo(() => {
+    const map = {};
+    analysis.codes.forEach((code) => {
+      const parentSlug = String(code.parentSlug || '');
+      if (!parentSlug || !codeBySlug[parentSlug] || parentSlug === code.slug) return;
+      map[parentSlug] = [...(map[parentSlug] || []), code];
+    });
+    return map;
+  }, [analysis.codes, codeBySlug]);
+
+  const codeRoots = useMemo(() => analysis.codes.filter((code) => {
+    const parentSlug = String(code.parentSlug || '');
+    return !parentSlug || !codeBySlug[parentSlug] || parentSlug === code.slug;
+  }), [analysis.codes, codeBySlug]);
+
+  const hasCodeDescendant = useCallback((candidateSlug, targetSlug) => {
+    if (!candidateSlug || !targetSlug) return false;
+    const queue = [...(codeChildrenByParent[candidateSlug] || [])];
+    const seen = new Set();
+    while (queue.length) {
+      const node = queue.shift();
+      if (!node) continue;
+      if (node.slug === targetSlug) return true;
+      if (seen.has(node.slug)) continue;
+      seen.add(node.slug);
+      queue.push(...(codeChildrenByParent[node.slug] || []));
+    }
+    return false;
+  }, [codeChildrenByParent]);
 
   const saveActiveCode = () => {
     if (!activeCodeIsCustom || !activeCodeSlug) return;
@@ -371,17 +410,30 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     const slugTaken = analysis.codes.some((code) => code.slug !== activeCodeSlug && code.slug === nextSlug);
     if (slugTaken) return;
 
+    const nextParentSlug = String(codeDraft.parentSlug || '').trim();
+    if (nextParentSlug && nextParentSlug === activeCodeSlug) return;
+    if (nextParentSlug && hasCodeDescendant(activeCodeSlug, nextParentSlug)) return;
+
     setWorkspace((prev) => {
       const renamedAssignments = Object.fromEntries(Object.entries(prev.codeAssignments || {}).map(([fragmentId, slugs]) => [fragmentId, (slugs || []).map((slug) => (slug === activeCodeSlug ? nextSlug : slug))]));
       return {
         ...prev,
-        customCodebook: prev.customCodebook.map((code) => (code.slug === activeCodeSlug ? {
-          ...code,
-          slug: nextSlug,
-          name: nextName,
-          category: codeDraft.category || 'interpretacion',
-          description: String(codeDraft.description || '').trim(),
-        } : code)),
+        customCodebook: prev.customCodebook.map((code) => {
+          if (code.slug === activeCodeSlug) {
+            return {
+              ...code,
+              slug: nextSlug,
+              name: nextName,
+              category: codeDraft.category || 'interpretacion',
+              description: String(codeDraft.description || '').trim(),
+              parentSlug: nextParentSlug || '',
+            };
+          }
+          if (String(code.parentSlug || '') === activeCodeSlug) {
+            return { ...code, parentSlug: nextSlug };
+          }
+          return code;
+        }),
         codeAssignments: renamedAssignments,
       };
     });
@@ -413,7 +465,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
 
       return {
         ...prev,
-        customCodebook: prev.customCodebook.filter((code) => code.slug !== activeCodeSlug),
+        customCodebook: prev.customCodebook.filter((code) => code.slug !== activeCodeSlug).map((code) => (String(code.parentSlug || '') === activeCodeSlug ? { ...code, parentSlug: '' } : code)),
         codeAssignments: nextAssignments,
       };
     });
@@ -613,27 +665,51 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
           </div>
 
           <div className="space-y-2 max-h-[560px] overflow-y-auto p-4 pr-3">
-            {analysis.codes.map((code) => (
-              <div key={code.slug} className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-semibold text-slate-900">{code.name}</p>
-                    <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500"><Braces className="h-3.5 w-3.5" />{code.slug}</p>
+            {(() => {
+              const renderCodeNode = (code, depth = 0) => {
+                const children = codeChildrenByParent[code.slug] || [];
+                const expanded = expandedCodeSlugs.has(code.slug);
+                return (
+                  <div key={`${code.slug}_${depth}`} className="space-y-2">
+                    <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm" style={{ marginLeft: `${depth * 18}px` }}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1">
+                            {children.length ? (
+                              <button type="button" className="rounded border border-slate-200 bg-white p-0.5 text-slate-600" onClick={() => setExpandedCodeSlugs((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(code.slug)) next.delete(code.slug);
+                                else next.add(code.slug);
+                                return next;
+                              })}>
+                                {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+                              </button>
+                            ) : <span className="inline-block h-5 w-5" />}
+                            <p className="text-sm font-semibold text-slate-900">{code.name}</p>
+                          </div>
+                          <p className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-500"><Braces className="h-3.5 w-3.5" />{code.slug}</p>
+                          {code.parentSlug ? <p className="text-[11px] text-slate-500">Padre: {code.parentSlug}</p> : null}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${codeCategoryTone[code.category] || 'border-slate-200 bg-slate-50 text-slate-600'}`}>{code.category}</span>
+                          <button type="button" className="rounded border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-50" onClick={() => openCodeModal(code.slug)} title="Gestionar código">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-600">{code.description || 'Sin descripción'}</p>
+                      <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+                        <span className="rounded bg-slate-100 px-2 py-0.5">{code.fragmentCount} fragmentos</span>
+                        <span className="rounded bg-slate-100 px-2 py-0.5">{code.interviewCount} entrevistas</span>
+                        {children.length ? <span className="rounded bg-indigo-50 px-2 py-0.5 text-indigo-700">{children.length} hijos</span> : null}
+                      </div>
+                    </div>
+                    {children.length && expanded ? children.map((child) => renderCodeNode(child, depth + 1)) : null}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${codeCategoryTone[code.category] || 'border-slate-200 bg-slate-50 text-slate-600'}`}>{code.category}</span>
-                    <button type="button" className="rounded border border-slate-200 bg-white p-1.5 text-slate-600 hover:bg-slate-50" onClick={() => openCodeModal(code.slug)} title="Gestionar código">
-                      <MoreHorizontal className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-                <p className="mt-2 text-xs text-slate-600">{code.description || 'Sin descripción'}</p>
-                <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
-                  <span className="rounded bg-slate-100 px-2 py-0.5">{code.fragmentCount} fragmentos</span>
-                  <span className="rounded bg-slate-100 px-2 py-0.5">{code.interviewCount} entrevistas</span>
-                </div>
-              </div>
-            ))}
+                );
+              };
+              return codeRoots.map((code) => renderCodeNode(code, 0));
+            })()}
           </div>
         </div>
       )}
@@ -652,6 +728,10 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               <input className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.slug} onChange={(e) => setCodeDraft((prev) => ({ ...prev, slug: e.target.value }))} placeholder="slug_estable (opcional)" />
               <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.category} onChange={(e) => setCodeDraft((prev) => ({ ...prev, category: e.target.value }))}>
                 {['tipo_problema', 'interpretacion', 'emocion', 'comportamiento', 'intento_solucion'].map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+              <select className="rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.parentSlug || ''} onChange={(e) => setCodeDraft((prev) => ({ ...prev, parentSlug: e.target.value }))}>
+                <option value="">Sin código padre</option>
+                {analysis.codes.map((code) => <option key={code.slug} value={code.slug}>{code.name} ({code.slug})</option>)}
               </select>
               <textarea className="rounded-lg border border-slate-200 px-3 py-2 text-sm" rows={4} value={codeDraft.description} onChange={(e) => setCodeDraft((prev) => ({ ...prev, description: e.target.value }))} placeholder="Descripción opcional" />
               <div className="flex justify-end">
@@ -792,6 +872,15 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Descripción</p>
                 <textarea className="mt-1 h-20 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.description || ''} onChange={(e) => setCodeDraft((prev) => ({ ...prev, description: e.target.value }))} readOnly={!activeCodeIsCustom} />
+              </div>
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Código padre</p>
+                <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.parentSlug || ''} onChange={(e) => setCodeDraft((prev) => ({ ...prev, parentSlug: e.target.value }))} disabled={!activeCodeIsCustom}>
+                  <option value="">Sin código padre</option>
+                  {analysis.codes.filter((code) => code.slug !== activeCodeSlug && !hasCodeDescendant(activeCodeSlug, code.slug)).map((code) => (
+                    <option key={code.slug} value={code.slug}>{code.name} ({code.slug})</option>
+                  ))}
+                </select>
               </div>
 
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
