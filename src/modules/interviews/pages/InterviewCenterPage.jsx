@@ -653,25 +653,43 @@ const InterviewCenterPage = () => {
 
   const createSelectionFragment = useCallback(async () => {
     if (!docReader.document?.node_id || !docReader.selectionText) return;
+    const inferredInterviewId = String(docReader.document.interview_id || '').trim();
+    const inferredClientId = String(docReader.document.client_id || '').trim() || String(center.sessions.find((session) => String(session.id) === inferredInterviewId)?.client_id || '');
     const payload = {
       document_node_id: docReader.document.node_id,
-      interview_session_id: docReader.document.interview_id || null,
+      interview_session_id: inferredInterviewId || null,
       selected_text: docReader.selectionText,
       start_offset: docReader.selectionRange?.start_offset ?? null,
       end_offset: docReader.selectionRange?.end_offset ?? null,
       source_type: 'selection',
     };
     try {
-      await interviewsModuleApi.createDocumentFragment(payload);
+      const created = await interviewsModuleApi.createDocumentFragment(payload);
+      const createdInterviewId = String(created?.interview_session_id || inferredInterviewId || '').trim();
+      const createdClientId = String(inferredClientId || center.sessions.find((session) => String(session.id) === createdInterviewId)?.client_id || '');
+      if (created?.id && (createdInterviewId || createdClientId)) {
+        setFragmentDetailsById((prev) => ({
+          ...prev,
+          [String(created.id)]: {
+            ...(prev[String(created.id)] || {}),
+            title: String(prev[String(created.id)]?.title || ''),
+            description: String(docReader.selectionText || '').trim(),
+            clientId: createdClientId,
+            interviewId: createdInterviewId,
+            linkedCode: String(prev[String(created.id)]?.linkedCode || '').trim(),
+            evolvedToCode: Boolean(prev[String(created.id)]?.evolvedToCode),
+          },
+        }));
+      }
       setDocReader((prev) => ({ ...prev, selectionText: '', selectionRange: null }));
       setDocSelectionMenu((prev) => ({ ...prev, open: false }));
       await loadDocumentFragments(docReader.document.node_id);
       await loadSemanticCloudFragments();
-      toast({ title: 'Fragmento creado', description: 'Se guardó desde selección con trazabilidad.' });
+      toast({ title: 'Fragmento creado', description: 'Se guardó desde selección con trazabilidad y contexto de Cloud.' });
     } catch (error) {
       toast({ title: 'Error', description: error.message, variant: 'destructive' });
     }
-  }, [docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
+  }, [center.sessions, docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
   const createManualFragment = useCallback(async () => {
     if (!docReader.document?.node_id || !docReader.manualText.trim() || !docReader.manualClientId || !docReader.manualInterviewId) return;

@@ -3563,13 +3563,27 @@ const server = http.createServer(async (req, res) => {
       }
 
       const [contextRows] = await pool.query(
-        `SELECT s.id AS interview_id, s.project_id, s.campaign_id
-         FROM cloud_nodes d
-         LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
-         LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
-         LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
-         WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
-        [nodeId, user.id],
+        `WITH RECURSIVE ancestors(id, depth) AS (
+           SELECT id, 0 FROM cloud_nodes WHERE id = ? AND user_id = ?
+           UNION ALL
+           SELECT p.id, ancestors.depth + 1
+           FROM ancestors
+           JOIN cloud_nodes c ON c.id = ancestors.id
+           JOIN cloud_nodes p ON p.id = c.parent_id AND p.user_id = c.user_id
+           WHERE ancestors.depth < 20
+           UNION ALL
+           SELECT e.parent_id, ancestors.depth + 1
+           FROM ancestors
+           JOIN cloud_edges e ON e.child_id = ancestors.id AND e.user_id = ?
+           WHERE ancestors.depth < 20
+         )
+         SELECT s.id AS interview_id, s.client_id, s.project_id, s.campaign_id
+         FROM ancestors a
+         JOIN cloud_nodes n ON n.id = a.id AND n.user_id = ?
+         JOIN interview_sessions s ON s.id = n.target_id AND n.target_type = 'interview_session' AND s.user_id = n.user_id
+         ORDER BY a.depth ASC
+         LIMIT 1`,
+        [nodeId, user.id, user.id, user.id],
       );
       const context = contextRows[0] || {};
       const parsed = readInterviewDocumentForNode(node);
@@ -3580,6 +3594,7 @@ const server = http.createServer(async (req, res) => {
           mime_type: node.mime_type,
           size: node.size,
           interview_id: context.interview_id || null,
+          client_id: context.client_id || null,
           project_id: context.project_id || node.project_id,
           campaign_id: context.campaign_id || null,
           format: parsed.format,
@@ -3649,13 +3664,27 @@ const server = http.createServer(async (req, res) => {
         if (!node || node.type !== 'file') return sendJson(req, res, 404, { error: 'Document not found' });
 
         const [contextRows] = await pool.query(
-          `SELECT s.id AS interview_id, s.project_id, s.campaign_id
-           FROM cloud_nodes d
-           LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
-           LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
-           LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
-           WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
-          [documentNodeId, user.id],
+          `WITH RECURSIVE ancestors(id, depth) AS (
+             SELECT id, 0 FROM cloud_nodes WHERE id = ? AND user_id = ?
+             UNION ALL
+             SELECT p.id, ancestors.depth + 1
+             FROM ancestors
+             JOIN cloud_nodes c ON c.id = ancestors.id
+             JOIN cloud_nodes p ON p.id = c.parent_id AND p.user_id = c.user_id
+             WHERE ancestors.depth < 20
+             UNION ALL
+             SELECT e.parent_id, ancestors.depth + 1
+             FROM ancestors
+             JOIN cloud_edges e ON e.child_id = ancestors.id AND e.user_id = ?
+             WHERE ancestors.depth < 20
+           )
+           SELECT s.id AS interview_id, s.client_id, s.project_id, s.campaign_id
+           FROM ancestors a
+           JOIN cloud_nodes n ON n.id = a.id AND n.user_id = ?
+           JOIN interview_sessions s ON s.id = n.target_id AND n.target_type = 'interview_session' AND s.user_id = n.user_id
+           ORDER BY a.depth ASC
+           LIMIT 1`,
+          [documentNodeId, user.id, user.id, user.id],
         );
         context = contextRows[0] || {};
       }
