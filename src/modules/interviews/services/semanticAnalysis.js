@@ -157,6 +157,7 @@ export const buildSemanticAnalysis = ({
   customCodebook = [],
   codeAssignments = {},
   clusterNameOverrides = {},
+  codeParentOverrides = {},
 }) => {
   const interviews = buildInterviewSources({ sessions, audiencesById, formsById, clientsById });
   const normalizedFragments = (fragments || [])
@@ -182,7 +183,15 @@ export const buildSemanticAnalysis = ({
   const codebook = uniq([...CODEBOOK, ...customCodebook].map((item) => item.slug)).map((slug) => {
     const fromCustom = customCodebook.find((item) => item.slug === slug);
     const fromDefault = CODEBOOK.find((item) => item.slug === slug);
-    return fromCustom || fromDefault;
+    const source = fromCustom || fromDefault;
+    if (!source) return null;
+    const overrideParent = Object.prototype.hasOwnProperty.call(codeParentOverrides || {}, slug)
+      ? String(codeParentOverrides[slug] || '')
+      : null;
+    return {
+      ...source,
+      parentSlug: overrideParent != null ? overrideParent : String(source.parentSlug || ''),
+    };
   }).filter(Boolean);
 
   const fragmentsWithCodes = normalizedFragments.map((fragment) => {

@@ -48,6 +48,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
     customCodebook: [],
     codeAssignments: {},
     clusterNameOverrides: {},
+    codeParentOverrides: {},
     fragmentMetaById: {},
     deletedFragmentIds: [],
   });
@@ -139,6 +140,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
       customCodebook: workspace.customCodebook,
       codeAssignments: workspace.codeAssignments,
       clusterNameOverrides: workspace.clusterNameOverrides,
+      codeParentOverrides: workspace.codeParentOverrides,
     }),
     [filteredSessions, audiencesById, formsById, clientsById, normalizedFragments, workspace],
   );
@@ -395,7 +397,8 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
   }, [codeChildrenByParent]);
 
   const saveActiveCode = () => {
-    if (!activeCodeIsCustom || !activeCodeSlug) return;
+    if (!activeCodeSlug) return;
+    if (!activeCodeIsCustom && String(codeDraft.parentSlug || '') === String(activeCode?.parentSlug || '')) return;
     const nextName = String(codeDraft.name || '').trim();
     if (!nextName) return;
 
@@ -416,6 +419,21 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
 
     setWorkspace((prev) => {
       const renamedAssignments = Object.fromEntries(Object.entries(prev.codeAssignments || {}).map(([fragmentId, slugs]) => [fragmentId, (slugs || []).map((slug) => (slug === activeCodeSlug ? nextSlug : slug))]));
+      const nextParentOverrides = { ...(prev.codeParentOverrides || {}) };
+      if (nextParentSlug) nextParentOverrides[nextSlug] = nextParentSlug;
+      else delete nextParentOverrides[nextSlug];
+      if (nextSlug !== activeCodeSlug) {
+        if (Object.prototype.hasOwnProperty.call(nextParentOverrides, activeCodeSlug)) {
+          nextParentOverrides[nextSlug] = nextParentOverrides[activeCodeSlug];
+          delete nextParentOverrides[activeCodeSlug];
+        }
+        Object.keys(nextParentOverrides).forEach((slug) => {
+          if (String(nextParentOverrides[slug] || '') === activeCodeSlug) {
+            nextParentOverrides[slug] = nextSlug;
+          }
+        });
+      }
+
       return {
         ...prev,
         customCodebook: prev.customCodebook.map((code) => {
@@ -435,6 +453,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
           return code;
         }),
         codeAssignments: renamedAssignments,
+        codeParentOverrides: nextParentOverrides,
       };
     });
 
@@ -463,10 +482,19 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
         return [fragmentId, withoutCurrent];
       }));
 
+      const nextParentOverrides = { ...(prev.codeParentOverrides || {}) };
+      delete nextParentOverrides[activeCodeSlug];
+      Object.keys(nextParentOverrides).forEach((slug) => {
+        if (String(nextParentOverrides[slug] || '') === activeCodeSlug) {
+          nextParentOverrides[slug] = '';
+        }
+      });
+
       return {
         ...prev,
         customCodebook: prev.customCodebook.filter((code) => code.slug !== activeCodeSlug).map((code) => (String(code.parentSlug || '') === activeCodeSlug ? { ...code, parentSlug: '' } : code)),
         codeAssignments: nextAssignments,
+        codeParentOverrides: nextParentOverrides,
       };
     });
 
@@ -875,7 +903,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               </div>
               <div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Código padre</p>
-                <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.parentSlug || ''} onChange={(e) => setCodeDraft((prev) => ({ ...prev, parentSlug: e.target.value }))} disabled={!activeCodeIsCustom}>
+                <select className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" value={codeDraft.parentSlug || ''} onChange={(e) => setCodeDraft((prev) => ({ ...prev, parentSlug: e.target.value }))} disabled={false}>
                   <option value="">Sin código padre</option>
                   {analysis.codes.filter((code) => code.slug !== activeCodeSlug && !hasCodeDescendant(activeCodeSlug, code.slug)).map((code) => (
                     <option key={code.slug} value={code.slug}>{code.name} ({code.slug})</option>
@@ -897,7 +925,7 @@ export const SemanticAnalysisLab = ({ sessions = [], audiences = [], forms = [],
               </div>
 
               <div className="flex items-center justify-end gap-2">
-                <Button className="bg-white border" onClick={saveActiveCode} disabled={!activeCodeIsCustom}><Pencil className="mr-1 h-4 w-4" />Guardar cambios</Button>
+                <Button className="bg-white border" onClick={saveActiveCode} disabled={!activeCodeIsCustom && codeDraft.parentSlug === (activeCode?.parentSlug || '')}><Pencil className="mr-1 h-4 w-4" />Guardar cambios</Button>
                 <Button className="bg-white border text-rose-700" onClick={openDeleteCodeModal} disabled={!activeCodeIsCustom}><Trash2 className="mr-1 h-4 w-4" />Eliminar código</Button>
               </div>
             </div>
