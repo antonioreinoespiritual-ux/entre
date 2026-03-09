@@ -242,16 +242,7 @@ const schemaSql = [
     status TEXT DEFAULT 'active',
     last_evaluated_at TEXT,
     min_interviews INTEGER,
-    problem_score_min_avg REAL,
-    problem_intensity_min_avg REAL,
-    problem_frequency_min_avg REAL,
-    problem_urgency_min_avg REAL,
-    solution_score_min_avg REAL,
-    solution_interest_min_avg REAL,
-    solution_value_min_avg REAL,
-    solution_payment_min_avg REAL,
-    segment_fit_min_avg REAL,
-    emotional_language_min_avg REAL,
+    validation_metric_config TEXT,
     evaluated_interviews_count INTEGER,
     problem_score_avg REAL,
     solution_score_avg REAL,
@@ -1789,16 +1780,7 @@ async function ensureVideoHierarchyMigration() {
     ['interview_form_id', 'TEXT'],
     ['last_evaluated_at', 'TEXT'],
     ['min_interviews', 'INTEGER'],
-    ['problem_score_min_avg', 'REAL'],
-    ['problem_intensity_min_avg', 'REAL'],
-    ['problem_frequency_min_avg', 'REAL'],
-    ['problem_urgency_min_avg', 'REAL'],
-    ['solution_score_min_avg', 'REAL'],
-    ['solution_interest_min_avg', 'REAL'],
-    ['solution_value_min_avg', 'REAL'],
-    ['solution_payment_min_avg', 'REAL'],
-    ['segment_fit_min_avg', 'REAL'],
-    ['emotional_language_min_avg', 'REAL'],
+    ['validation_metric_config', 'TEXT'],
     ['evaluated_interviews_count', 'INTEGER'],
     ['problem_score_avg', 'REAL'],
     ['solution_score_avg', 'REAL'],
@@ -2096,6 +2078,39 @@ function parseTypedValue(value, type) {
 
 const HYPOTHESIS_PROBLEM_KEYS = ['problem_intensity', 'problem_frequency', 'perceived_urgency', 'solution_attempts', 'previous_spend', 'problem_clarity', 'segment_fit', 'emotional_language'];
 const HYPOTHESIS_SOLUTION_KEYS = ['solution_interest', 'solution_clarity', 'perceived_value', 'usage_probability', 'willingness_to_pay'];
+const INTERVIEW_HYPOTHESIS_METRIC_ALIASES = {
+  score_problema: 'problem_score_avg',
+  score_solucion: 'solution_score_avg',
+  intensidad_problema: 'problem_intensity_avg',
+  frecuencia_problema: 'problem_frequency_avg',
+  urgencia_percibida: 'problem_urgency_avg',
+  intentos_solucion: 'problem_attempts_avg',
+  gasto_previo: 'problem_spend_avg',
+  claridad_problema: 'problem_clarity_avg',
+  encaje_segmento: 'segment_fit_avg',
+  lenguaje_emocional: 'emotional_language_avg',
+  interes_solucion: 'solution_interest_avg',
+  claridad_solucion: 'solution_clarity_avg',
+  valor_percibido: 'solution_value_avg',
+  probabilidad_uso_recurrente: 'solution_recurrence_avg',
+  disposicion_pagar: 'solution_payment_avg',
+  problem_score_avg: 'problem_score_avg',
+  solution_score_avg: 'solution_score_avg',
+  problem_intensity_avg: 'problem_intensity_avg',
+  problem_frequency_avg: 'problem_frequency_avg',
+  problem_urgency_avg: 'problem_urgency_avg',
+  problem_attempts_avg: 'problem_attempts_avg',
+  problem_spend_avg: 'problem_spend_avg',
+  problem_clarity_avg: 'problem_clarity_avg',
+  segment_fit_avg: 'segment_fit_avg',
+  emotional_language_avg: 'emotional_language_avg',
+  solution_interest_avg: 'solution_interest_avg',
+  solution_clarity_avg: 'solution_clarity_avg',
+  solution_value_avg: 'solution_value_avg',
+  solution_recurrence_avg: 'solution_recurrence_avg',
+  solution_payment_avg: 'solution_payment_avg',
+};
+const INTERVIEW_HYPOTHESIS_COMPARISON_OPERATORS = new Set(['>=', '>', '<=', '<']);
 
 function toValidScore(value) {
   const parsed = Number(value);
@@ -2110,6 +2125,53 @@ function averageScores(values = []) {
   return Number((clean.reduce((acc, value) => acc + value, 0) / clean.length).toFixed(2));
 }
 
+function normalizeInterviewHypothesisValidationConfig(rawConfig) {
+  let parsedConfig = rawConfig;
+  if (typeof parsedConfig === 'string') {
+    parsedConfig = safeParseJsonField(parsedConfig, null);
+  }
+  if (!parsedConfig || typeof parsedConfig !== 'object' || Array.isArray(parsedConfig)) return null;
+  const selectedMetrics = Array.isArray(parsedConfig.selected_metrics)
+    ? parsedConfig.selected_metrics
+      .map((metric) => INTERVIEW_HYPOTHESIS_METRIC_ALIASES[String(metric || '').trim()])
+      .filter(Boolean)
+    : [];
+  const deduplicatedMetrics = [...new Set(selectedMetrics)];
+  const thresholdValue = Number(parsedConfig.threshold_value);
+  const comparisonOperator = String(parsedConfig.comparison_operator || '>=').trim();
+  const outcomeIfTrue = String(parsedConfig.outcome_if_true || 'validada').trim() || 'validada';
+  const outcomeIfFalse = String(parsedConfig.outcome_if_false || 'refutada').trim() || 'refutada';
+  const evaluationType = String(parsedConfig.evaluation_type || 'average_selected_metrics').trim() || 'average_selected_metrics';
+  if (!deduplicatedMetrics.length || !Number.isFinite(thresholdValue) || !INTERVIEW_HYPOTHESIS_COMPARISON_OPERATORS.has(comparisonOperator)) {
+    return null;
+  }
+  return {
+    selected_metrics: deduplicatedMetrics,
+    threshold_value: Number(thresholdValue.toFixed(2)),
+    comparison_operator: comparisonOperator,
+    outcome_if_true: outcomeIfTrue,
+    outcome_if_false: outcomeIfFalse,
+    evaluation_type: evaluationType,
+  };
+}
+
+function evaluateComparison(actualValue, thresholdValue, operator) {
+  if (!Number.isFinite(actualValue) || !Number.isFinite(thresholdValue)) return false;
+  if (operator === '>=') return actualValue >= thresholdValue;
+  if (operator === '>') return actualValue > thresholdValue;
+  if (operator === '<=') return actualValue <= thresholdValue;
+  if (operator === '<') return actualValue < thresholdValue;
+  return false;
+}
+
+function parseInterviewHypothesisRow(row = null) {
+  if (!row) return row;
+  return {
+    ...row,
+    validation_metric_config: normalizeInterviewHypothesisValidationConfig(row.validation_metric_config),
+  };
+}
+
 function buildHypothesisValidationSummary({ result, interviewsCount, passCount, failCount, minInterviews, problemScoreAvg, solutionScoreAvg }) {
   if (result === 'no evaluada') return `Muestra insuficiente para evaluar la hipótesis (${interviewsCount}/${minInterviews || 0} entrevistas).`;
   if (result === 'validada') return `Hipótesis validada: problema y solución superan umbrales (${passCount} criterios cumplidos).`;
@@ -2117,26 +2179,6 @@ function buildHypothesisValidationSummary({ result, interviewsCount, passCount, 
   if (result === 'señal fuerte') return `Señal fuerte: cumplimiento alto de criterios con evidencia consistente.`;
   if (result === 'señal moderada') return `Señal moderada: buen dolor (${problemScoreAvg ?? '—'}) y/o solución (${solutionScoreAvg ?? '—'}) con brechas puntuales.`;
   return 'Señal débil: resultados iniciales aún no alcanzan umbrales robustos.';
-}
-
-function decideHypothesisValidation({ interviewsCount, minInterviews, configuredCriteria, passedCriteria, failedCriteria, primaryConfigured, primaryPassed, problemScoreAvg, solutionScoreAvg }) {
-  if (interviewsCount < minInterviews) return 'no evaluada';
-
-  if (!configuredCriteria) {
-    if ((problemScoreAvg || 0) >= 4 && (solutionScoreAvg || 0) >= 4) return 'señal fuerte';
-    if ((problemScoreAvg || 0) >= 3 && (solutionScoreAvg || 0) >= 3) return 'señal moderada';
-    return 'señal débil';
-  }
-
-  const passRate = configuredCriteria ? (passedCriteria / configuredCriteria) : 0;
-  const primaryRate = primaryConfigured ? (primaryPassed / primaryConfigured) : passRate;
-
-  if (primaryRate <= 0.25 || passRate <= 0.25) return 'refutada';
-  if (primaryRate >= 0.9 && passRate >= 0.8) return 'validada';
-  if (primaryRate >= 0.75 && passRate >= 0.7) return 'señal fuerte';
-  if (primaryRate >= 0.5 && passRate >= 0.5) return 'señal moderada';
-  if (failedCriteria > passedCriteria) return 'señal débil';
-  return 'señal moderada';
 }
 
 function normalizeBulkUpdateFields(fields) {
@@ -4540,23 +4582,21 @@ const server = http.createServer(async (req, res) => {
            ORDER BY ih.created_at DESC`,
           [user.id, projectId, campaignId],
         );
-        return sendJson(req, res, 200, { data: rows });
+        return sendJson(req, res, 200, { data: rows.map(parseInterviewHypothesisRow) });
       }
       const body = await readBody(req);
       const now = nowIso();
+      const validationMetricConfig = normalizeInterviewHypothesisValidationConfig(body.validation_metric_config);
       await pool.query(
         `INSERT INTO interview_hypotheses (
           id, project_id, campaign_id, audience_id, segment, related_client_id, interview_form_id,
           user_id, type, title, description, status, last_evaluated_at,
-          min_interviews,
-          problem_score_min_avg, problem_intensity_min_avg, problem_frequency_min_avg, problem_urgency_min_avg,
-          solution_score_min_avg, solution_interest_min_avg, solution_value_min_avg, solution_payment_min_avg,
-          segment_fit_min_avg, emotional_language_min_avg,
+          min_interviews, validation_metric_config,
           evaluated_interviews_count, problem_score_avg, solution_score_avg, validation_result,
           experiment_notes, observations, next_actions,
           created_at, updated_at
         )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           buildEntityId('interview_hypothesis'),
           projectId,
@@ -4572,16 +4612,7 @@ const server = http.createServer(async (req, res) => {
           body.status || 'exploracion',
           body.last_evaluated_at || null,
           body.min_interviews ?? null,
-          body.problem_score_min_avg ?? null,
-          body.problem_intensity_min_avg ?? null,
-          body.problem_frequency_min_avg ?? null,
-          body.problem_urgency_min_avg ?? null,
-          body.solution_score_min_avg ?? null,
-          body.solution_interest_min_avg ?? null,
-          body.solution_value_min_avg ?? null,
-          body.solution_payment_min_avg ?? null,
-          body.segment_fit_min_avg ?? null,
-          body.emotional_language_min_avg ?? null,
+          validationMetricConfig ? JSON.stringify(validationMetricConfig) : null,
           body.evaluated_interviews_count ?? null,
           body.problem_score_avg ?? null,
           body.solution_score_avg ?? null,
@@ -4594,7 +4625,7 @@ const server = http.createServer(async (req, res) => {
         ],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
-      return sendJson(req, res, 200, { data: rows[0] || null });
+      return sendJson(req, res, 200, { data: parseInterviewHypothesisRow(rows[0] || null) });
     }
 
     const interviewHypothesisMatch = url.pathname.match(/^\/api\/interview-hypotheses\/([^/]+)$/);
@@ -4607,14 +4638,12 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 200, { ok: true });
       }
       const body = await readBody(req);
+      const validationMetricConfig = normalizeInterviewHypothesisValidationConfig(body.validation_metric_config);
       await pool.query(
         `UPDATE interview_hypotheses
          SET type = ?, title = ?, description = ?, status = ?, audience_id = ?,
              segment = ?, related_client_id = ?, interview_form_id = ?, last_evaluated_at = ?,
-             min_interviews = ?,
-             problem_score_min_avg = ?, problem_intensity_min_avg = ?, problem_frequency_min_avg = ?, problem_urgency_min_avg = ?,
-             solution_score_min_avg = ?, solution_interest_min_avg = ?, solution_value_min_avg = ?, solution_payment_min_avg = ?,
-             segment_fit_min_avg = ?, emotional_language_min_avg = ?,
+             min_interviews = ?, validation_metric_config = ?,
              evaluated_interviews_count = ?, problem_score_avg = ?, solution_score_avg = ?, validation_result = ?,
              experiment_notes = ?, observations = ?, next_actions = ?,
              updated_at = ?
@@ -4630,16 +4659,7 @@ const server = http.createServer(async (req, res) => {
           body.interview_form_id || null,
           body.last_evaluated_at || null,
           body.min_interviews ?? null,
-          body.problem_score_min_avg ?? null,
-          body.problem_intensity_min_avg ?? null,
-          body.problem_frequency_min_avg ?? null,
-          body.problem_urgency_min_avg ?? null,
-          body.solution_score_min_avg ?? null,
-          body.solution_interest_min_avg ?? null,
-          body.solution_value_min_avg ?? null,
-          body.solution_payment_min_avg ?? null,
-          body.segment_fit_min_avg ?? null,
-          body.emotional_language_min_avg ?? null,
+          validationMetricConfig ? JSON.stringify(validationMetricConfig) : null,
           body.evaluated_interviews_count ?? null,
           body.problem_score_avg ?? null,
           body.solution_score_avg ?? null,
@@ -4653,7 +4673,7 @@ const server = http.createServer(async (req, res) => {
         ],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
-      return sendJson(req, res, 200, { data: rows[0] || null });
+      return sendJson(req, res, 200, { data: parseInterviewHypothesisRow(rows[0] || null) });
     }
 
     const interviewHypothesisEvaluateMatch = url.pathname.match(/^\/api\/interview-hypotheses\/([^/]+)\/evaluate$/);
@@ -4712,52 +4732,43 @@ const server = http.createServer(async (req, res) => {
         solution_payment_avg: averageScores(evaluations.map((item) => item.willingness_to_pay)),
       };
 
-      const criteriaMap = [
-        { threshold: 'problem_score_min_avg', value: 'problem_score_avg', primary: true },
-        { threshold: 'problem_intensity_min_avg', value: 'problem_intensity_avg', primary: true },
-        { threshold: 'problem_frequency_min_avg', value: 'problem_frequency_avg', primary: true },
-        { threshold: 'problem_urgency_min_avg', value: 'problem_urgency_avg', primary: true },
-        { threshold: 'solution_score_min_avg', value: 'solution_score_avg', primary: true },
-        { threshold: 'solution_interest_min_avg', value: 'solution_interest_avg', primary: true },
-        { threshold: 'solution_value_min_avg', value: 'solution_value_avg', primary: true },
-        { threshold: 'solution_payment_min_avg', value: 'solution_payment_avg', primary: true },
-        { threshold: 'segment_fit_min_avg', value: 'segment_fit_avg', primary: false },
-        { threshold: 'emotional_language_min_avg', value: 'emotional_language_avg', primary: false },
-      ];
+      const validationMetricConfig = normalizeInterviewHypothesisValidationConfig(hypothesis.validation_metric_config);
+      const selectedMetricValues = validationMetricConfig
+        ? validationMetricConfig.selected_metrics
+          .map((metricKey) => Number(metric[metricKey]))
+          .filter((value) => Number.isFinite(value))
+        : [];
+      const selectedMetricsAverage = selectedMetricValues.length
+        ? Number((selectedMetricValues.reduce((acc, value) => acc + value, 0) / selectedMetricValues.length).toFixed(2))
+        : null;
 
-      let configuredCriteria = 0;
       let passedCriteria = 0;
       let failedCriteria = 0;
-      let primaryConfigured = 0;
-      let primaryPassed = 0;
-      criteriaMap.forEach((rule) => {
-        const threshold = Number(hypothesis[rule.threshold]);
-        if (!Number.isFinite(threshold)) return;
-        configuredCriteria += 1;
-        if (rule.primary) primaryConfigured += 1;
-        const actual = Number(metric[rule.value]);
-        if (Number.isFinite(actual) && actual >= threshold) {
-          passedCriteria += 1;
-          if (rule.primary) primaryPassed += 1;
-        } else {
-          failedCriteria += 1;
-        }
-      });
+      if (validationMetricConfig) {
+        const passed = evaluateComparison(
+          selectedMetricsAverage,
+          validationMetricConfig.threshold_value,
+          validationMetricConfig.comparison_operator,
+        );
+        passedCriteria = passed ? 1 : 0;
+        failedCriteria = passed ? 0 : 1;
+      }
 
       const minInterviews = Number(hypothesis.min_interviews);
       const minInterviewsTarget = Number.isFinite(minInterviews) && minInterviews > 0 ? minInterviews : 1;
-
-      const validationResult = decideHypothesisValidation({
-        interviewsCount: interviews.length,
-        minInterviews: minInterviewsTarget,
-        configuredCriteria,
-        passedCriteria,
-        failedCriteria,
-        primaryConfigured,
-        primaryPassed,
-        problemScoreAvg: metric.problem_score_avg,
-        solutionScoreAvg: metric.solution_score_avg,
-      });
+      let validationResult = 'no evaluada';
+      if (interviews.length >= minInterviewsTarget) {
+        if (validationMetricConfig) {
+          const passed = evaluateComparison(
+            selectedMetricsAverage,
+            validationMetricConfig.threshold_value,
+            validationMetricConfig.comparison_operator,
+          );
+          validationResult = passed ? validationMetricConfig.outcome_if_true : validationMetricConfig.outcome_if_false;
+        } else {
+          validationResult = 'señal débil';
+        }
+      }
 
       const validationSummary = buildHypothesisValidationSummary({
         result: validationResult,
@@ -4774,9 +4785,9 @@ const server = http.createServer(async (req, res) => {
          SET evaluated_interviews_count = ?, problem_score_avg = ?, solution_score_avg = ?,
              problem_intensity_avg = ?, problem_frequency_avg = ?, problem_urgency_avg = ?, problem_attempts_avg = ?,
              problem_spend_avg = ?, problem_clarity_avg = ?, segment_fit_avg = ?, emotional_language_avg = ?,
-             solution_interest_avg = ?, solution_clarity_avg = ?, solution_value_avg = ?, solution_recurrence_avg = ?, solution_payment_avg = ?,
-             criteria_passed_count = ?, criteria_failed_count = ?, validation_summary = ?, validation_result = ?,
-             last_evaluated_at = ?, updated_at = ?
+            solution_interest_avg = ?, solution_clarity_avg = ?, solution_value_avg = ?, solution_recurrence_avg = ?, solution_payment_avg = ?,
+            criteria_passed_count = ?, criteria_failed_count = ?, validation_summary = ?, validation_result = ?,
+            last_evaluated_at = ?, updated_at = ?
          WHERE id = ? AND user_id = ?`,
         [
           interviews.length,
@@ -4815,7 +4826,7 @@ const server = http.createServer(async (req, res) => {
          WHERE ih.id = ? AND ih.user_id = ? LIMIT 1`,
         [id, user.id],
       );
-      return sendJson(req, res, 200, { data: rows[0] || null });
+      return sendJson(req, res, 200, { data: parseInterviewHypothesisRow(rows[0] || null) });
     }
 
     const campaignInterviewsFormsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/forms$/);
