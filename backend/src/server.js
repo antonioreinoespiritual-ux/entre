@@ -66,6 +66,19 @@ const schemaSql = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_youtube_connections_user ON youtube_connections(user_id)',
+  `CREATE TABLE IF NOT EXISTS youtube_integrations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    api_key TEXT,
+    client_id TEXT,
+    client_secret TEXT,
+    redirect_uri TEXT,
+    scopes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_youtube_integrations_user ON youtube_integrations(user_id)',
   `CREATE TABLE IF NOT EXISTS youtube_oauth_states (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -2216,6 +2229,37 @@ function computeFutureIso(seconds = 0) {
   return new Date(base).toISOString();
 }
 
+
+async function getYouTubeIntegrationByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM youtube_integrations WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+function mergeYouTubeConfig(baseConfig, integration = null) {
+  const parsedScopes = String(integration?.scopes || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return {
+    ...baseConfig,
+    apiKey: String(integration?.api_key || '').trim() || baseConfig.apiKey,
+    clientId: String(integration?.client_id || '').trim() || baseConfig.clientId,
+    clientSecret: String(integration?.client_secret || '').trim() || baseConfig.clientSecret,
+    redirectUri: String(integration?.redirect_uri || '').trim() || baseConfig.redirectUri,
+    scopes: parsedScopes.length ? parsedScopes : baseConfig.scopes,
+  };
+}
+
+async function getYouTubeConfigForUser(userId) {
+  const baseConfig = getYouTubeConfig();
+  const integration = await getYouTubeIntegrationByUserId(userId);
+  return {
+    config: mergeYouTubeConfig(baseConfig, integration),
+    integration,
+    hasCustomConfig: Boolean(integration),
+  };
+}
+
 async function getYouTubeConnectionByUserId(userId) {
   const [rows] = await pool.query('SELECT * FROM youtube_connections WHERE user_id = ? LIMIT 1', [userId]);
   return rows[0] || null;
@@ -3669,7 +3713,7 @@ const server = http.createServer(async (req, res) => {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
 
-      const config = getYouTubeConfig();
+      const { config, integration } = await getYouTubeConfigForUser(user.id);
       const connection = await getYouTubeConnectionByUserId(user.id);
       return sendJson(req, res, 200, {
         data: {
@@ -3678,6 +3722,14 @@ const server = http.createServer(async (req, res) => {
           redirectUri: config.redirectUri || null,
           scopes: config.scopes,
           connected: Boolean(connection),
+          hasCustomConfig: Boolean(integration),
+          integration: integration ? {
+            api_key: integration.api_key || '',
+            client_id: integration.client_id || '',
+            client_secret: integration.client_secret || '',
+            redirect_uri: integration.redirect_uri || '',
+            scopes: integration.scopes || '',
+          } : null,
           channel: connection ? {
             id: connection.youtube_channel_id || '',
             title: connection.youtube_channel_title || '',
@@ -3686,10 +3738,55 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+
+    if (url.pathname === '/api/youtube/settings' && req.method === 'PUT') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+
+      const apiKey = String(body.api_key || '').trim();
+      const clientId = String(body.client_id || '').trim();
+      const clientSecret = String(body.client_secret || '').trim();
+      const redirectUri = String(body.redirect_uri || '').trim();
+      const scopes = String(body.scopes || '').trim();
+
+      const id = buildEntityId('youtube_integration');
+      await pool.query(
+        `INSERT INTO youtube_integrations (id, user_id, api_key, client_id, client_secret, redirect_uri, scopes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           api_key = excluded.api_key,
+           client_id = excluded.client_id,
+           client_secret = excluded.client_secret,
+           redirect_uri = excluded.redirect_uri,
+           scopes = excluded.scopes,
+           updated_at = excluded.updated_at`,
+        [id, user.id, apiKey, clientId, clientSecret, redirectUri, scopes, nowIso(), nowIso()],
+      );
+
+      const { config, integration } = await getYouTubeConfigForUser(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          oauthConfigured: isYouTubeOAuthConfigured(config),
+          apiKeyConfigured: isYouTubeApiKeyConfigured(config),
+          redirectUri: config.redirectUri || null,
+          scopes: config.scopes,
+          hasCustomConfig: Boolean(integration),
+          integration: integration ? {
+            api_key: integration.api_key || '',
+            client_id: integration.client_id || '',
+            client_secret: integration.client_secret || '',
+            redirect_uri: integration.redirect_uri || '',
+            scopes: integration.scopes || '',
+          } : null,
+        },
+      });
+    }
+
     if (url.pathname === '/api/youtube/auth/start' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
-      const config = getYouTubeConfig();
+      const { config } = await getYouTubeConfigForUser(user.id);
       if (!isYouTubeOAuthConfigured(config)) {
         return sendJson(req, res, 400, { error: 'YouTube OAuth is not configured on backend' });
       }
@@ -3713,13 +3810,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/youtube/auth/callback' && req.method === 'GET') {
-      const config = getYouTubeConfig();
+      const baseConfig = getYouTubeConfig();
       const stateToken = String(url.searchParams.get('state') || '').trim();
       const code = String(url.searchParams.get('code') || '').trim();
       const errorParam = String(url.searchParams.get('error') || '').trim();
 
       const redirectWithStatus = (status, message = '') => {
-        const frontend = config.frontendBaseUrl.replace(/\/$/, '');
+        const frontend = baseConfig.frontendBaseUrl.replace(/\/$/, '');
         const destination = new URL('/projects', frontend);
         destination.searchParams.set('youtube', status);
         if (message) destination.searchParams.set('reason', message);
@@ -3744,6 +3841,7 @@ const server = http.createServer(async (req, res) => {
         return redirectWithStatus('error', 'expired_state');
       }
 
+      const { config } = await getYouTubeConfigForUser(state.user_id);
       const tokenPayload = await exchangeYouTubeCodeForTokens({ code, config });
       const accessToken = tokenPayload.access_token || '';
       const refreshToken = tokenPayload.refresh_token || '';
@@ -3807,7 +3905,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/youtube/auth/disconnect' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
-      const config = getYouTubeConfig();
+      const { config } = await getYouTubeConfigForUser(user.id);
       const connection = await getYouTubeConnectionByUserId(user.id);
       if (connection?.refresh_token) {
         try {
@@ -3833,7 +3931,7 @@ const server = http.createServer(async (req, res) => {
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
 
       const resource = youtubeResourceMatch[1];
-      const config = getYouTubeConfig();
+      const { config } = await getYouTubeConfigForUser(user.id);
       const auth = await getYouTubeAuthForUser(user.id, config);
 
       if (!auth.accessToken && !auth.apiKey) {

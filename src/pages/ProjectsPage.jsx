@@ -19,6 +19,7 @@ const ProjectsPage = () => {
   const [editingProject, setEditingProject] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [youtubeConfig, setYoutubeConfig] = useState({ loading: false, error: '', data: null, channelPreview: null });
+  const [youtubeSettingsDraft, setYoutubeSettingsDraft] = useState({ api_key: '', client_id: '', client_secret: '', redirect_uri: '', scopes: '' });
 
   useEffect(() => {
     fetchProjects();
@@ -41,6 +42,13 @@ const ProjectsPage = () => {
       setYoutubeConfig((prev) => ({ ...prev, loading: true, error: '' }));
       const data = await youtubeApi.getConfig();
       setYoutubeConfig((prev) => ({ ...prev, loading: false, data }));
+      setYoutubeSettingsDraft({
+        api_key: data?.integration?.api_key || '',
+        client_id: data?.integration?.client_id || '',
+        client_secret: data?.integration?.client_secret || '',
+        redirect_uri: data?.integration?.redirect_uri || data?.redirectUri || '',
+        scopes: data?.integration?.scopes || (Array.isArray(data?.scopes) ? data.scopes.join(', ') : ''),
+      });
     } catch (error) {
       setYoutubeConfig((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar configuración de YouTube' }));
     }
@@ -54,6 +62,18 @@ const ProjectsPage = () => {
       }
     } catch (error) {
       setYoutubeConfig((prev) => ({ ...prev, error: error.message || 'No se pudo iniciar OAuth de YouTube' }));
+    }
+  };
+
+
+  const saveYouTubeSettings = async () => {
+    try {
+      setYoutubeConfig((prev) => ({ ...prev, error: '' }));
+      const data = await youtubeApi.saveSettings(youtubeSettingsDraft);
+      setYoutubeConfig((prev) => ({ ...prev, data }));
+      await loadYouTubeConfig();
+    } catch (error) {
+      setYoutubeConfig((prev) => ({ ...prev, error: error.message || 'No se pudo guardar la configuración de YouTube' }));
     }
   };
 
@@ -260,27 +280,36 @@ const ProjectsPage = () => {
                 {youtubeConfig.loading ? <p className="text-sm text-slate-500">Cargando configuración...</p> : null}
                 {youtubeConfig.error ? <p className="text-sm text-rose-600">{youtubeConfig.error}</p> : null}
 
-                {youtubeConfig.data ? (
-                  <div className="grid md:grid-cols-2 gap-3">
-                    <div className="rounded-lg border bg-white p-3 text-sm">
-                      <p className="text-xs text-slate-500">OAuth backend</p>
-                      <p className="font-medium text-slate-800">{youtubeConfig.data.oauthConfigured ? 'Configurado' : 'No configurado'}</p>
-                      <p className="mt-1 text-xs text-slate-500">Redirect URI: {youtubeConfig.data.redirectUri || '—'}</p>
-                    </div>
-                    <div className="rounded-lg border bg-white p-3 text-sm">
-                      <p className="text-xs text-slate-500">API key backend</p>
-                      <p className="font-medium text-slate-800">{youtubeConfig.data.apiKeyConfigured ? 'Configurada' : 'No configurada'}</p>
-                      <p className="mt-1 text-xs text-slate-500">Scopes: {(youtubeConfig.data.scopes || []).join(', ') || '—'}</p>
-                    </div>
-                    <div className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
-                      <p className="text-xs text-slate-500">Canal conectado</p>
-                      <p className="font-medium text-slate-800">{youtubeConfig.data.channel?.title || '—'}</p>
-                      <p className="text-xs text-slate-500">{youtubeConfig.data.channel?.id || 'Sin canal vinculado'}</p>
-                    </div>
+                <div className="grid md:grid-cols-2 gap-3">
+                  <label className="rounded-lg border bg-white p-3 text-sm">
+                    <p className="text-xs text-slate-500">API key (lecturas públicas)</p>
+                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.api_key} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, api_key: e.target.value }))} placeholder="AIza..." />
+                  </label>
+                  <label className="rounded-lg border bg-white p-3 text-sm">
+                    <p className="text-xs text-slate-500">OAuth Client ID</p>
+                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.client_id} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, client_id: e.target.value }))} placeholder="xxxxx.apps.googleusercontent.com" />
+                  </label>
+                  <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                    <p className="text-xs text-slate-500">OAuth Client Secret</p>
+                    <input className="mt-1 w-full rounded border px-2 py-1.5" type="password" value={youtubeSettingsDraft.client_secret} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, client_secret: e.target.value }))} placeholder="GOCSPX-..." />
+                  </label>
+                  <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                    <p className="text-xs text-slate-500">Redirect URI</p>
+                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.redirect_uri} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: e.target.value }))} placeholder="https://tu-app.com/api/youtube/auth/callback" />
+                  </label>
+                  <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                    <p className="text-xs text-slate-500">Scopes (separados por coma)</p>
+                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.scopes} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, scopes: e.target.value }))} placeholder="https://www.googleapis.com/auth/youtube.readonly, https://www.googleapis.com/auth/youtube.force-ssl" />
+                  </label>
+                  <div className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                    <p className="text-xs text-slate-500">Canal conectado</p>
+                    <p className="font-medium text-slate-800">{youtubeConfig.data?.channel?.title || '—'}</p>
+                    <p className="text-xs text-slate-500">{youtubeConfig.data?.channel?.id || 'Sin canal vinculado'}</p>
                   </div>
-                ) : null}
+                </div>
 
                 <div className="flex flex-wrap gap-2">
+                  <Button className="bg-indigo-600 text-white" onClick={saveYouTubeSettings}>Guardar configuración</Button>
                   <Button className="bg-indigo-600 text-white" onClick={connectYouTube}><Link2 className="w-4 h-4 mr-2" />Conectar YouTube</Button>
                   <Button className="bg-white border text-slate-700" onClick={previewChannel}><Youtube className="w-4 h-4 mr-2" />Probar canal</Button>
                   <Button className="bg-white border text-rose-700" onClick={disconnectYouTube}><Unlink className="w-4 h-4 mr-2" />Desconectar</Button>

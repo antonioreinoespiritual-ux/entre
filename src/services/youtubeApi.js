@@ -29,6 +29,7 @@ export const youtubeApi = {
     method: 'POST',
     body: JSON.stringify({ redirect_path: redirectPath }),
   }).then((r) => r.data || {}),
+  saveSettings: (payload) => request('/api/youtube/settings', { method: 'PUT', body: JSON.stringify(payload) }).then((r) => r.data || {}),
   disconnect: () => request('/api/youtube/auth/disconnect', { method: 'POST' }),
   listChannels: (query = {}) => request(`/api/youtube/channels?${new URLSearchParams(query).toString()}`).then((r) => r.data || { items: [] }),
 };
