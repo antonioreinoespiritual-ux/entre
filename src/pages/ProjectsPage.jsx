@@ -295,7 +295,7 @@ const ProjectsPage = () => {
         {settingsOpen ? (
           <div className="fixed inset-0 z-50 bg-black/40 overflow-y-auto p-3 sm:p-4">
             <div className="min-h-full flex items-start sm:items-center justify-center">
-              <div className="w-full max-w-5xl bg-white rounded-2xl border shadow-2xl overflow-hidden max-h-[calc(100vh-1.5rem)] sm:max-h-[calc(100vh-2rem)] flex flex-col">
+              <div className="w-full max-w-5xl bg-white rounded-2xl border shadow-2xl overflow-hidden h-[calc(100vh-1.5rem)] sm:h-[calc(100vh-2rem)] flex flex-col">
               <div className="flex items-center justify-between p-5 border-b bg-white shrink-0">
                 <div>
                   <p className="text-xs text-slate-500">Panel de configuración</p>
@@ -304,9 +304,9 @@ const ProjectsPage = () => {
                 <Button className="bg-white border" onClick={() => setSettingsOpen(false)}>Cerrar</Button>
               </div>
 
-              <div className="bg-slate-50 flex-1 min-h-0">
-                <div className="grid md:grid-cols-[220px_1fr] h-full min-h-0">
-                  <aside className="border-r bg-white p-3 space-y-2 shrink-0 md:overflow-y-auto">
+              <div className="bg-slate-50 flex-1 min-h-0 overflow-y-auto">
+                <div className="grid md:grid-cols-[220px_1fr] min-h-full">
+                  <aside className="border-r bg-white p-3 space-y-2 shrink-0">
                     <button type="button" className={`w-full text-left px-3 py-2 rounded-lg text-sm ${settingsTab === 'general' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'hover:bg-slate-50 text-slate-700 border border-transparent'}`} onClick={() => setSettingsTab('general')}>
                       General
                     </button>
@@ -315,7 +315,7 @@ const ProjectsPage = () => {
                     </button>
                   </aside>
 
-                  <div className="p-4 md:p-5 space-y-4 overflow-y-auto min-h-0">
+                  <div className="p-4 md:p-5 space-y-4 min-h-0">
                     {settingsTab === 'general' ? (
                       <div className="rounded-lg border bg-white p-4">
                         <h4 className="text-base font-semibold text-slate-900">General</h4>
