@@ -45,4 +45,16 @@ export const interviewsApi = {
   readSession: (id) => request(`/api/interview-sessions/${id}`).then((r) => r.data),
   updateSession: (id, payload) => request(`/api/interview-sessions/${id}`, { method: 'PUT', body: JSON.stringify(payload) }).then((r) => r.data),
   deleteSession: (id) => request(`/api/interview-sessions/${id}`, { method: 'DELETE' }),
+
+  listInterviewCloudOverview: (projectId, campaignId) => request(`/api/projects/${projectId}/campaigns/${campaignId}/interviews/cloud`).then((r) => r.data || null),
+  listInterviewCloudNodes: (projectId, parentId) => {
+    const qs = new URLSearchParams({ projectId, ...(parentId ? { parentId } : {}) });
+    return request(`/api/cloud/list?${qs.toString()}`).then((r) => r.data || []);
+  },
+
+  readInterviewCloudDocument: (nodeId) => request(`/api/interviews/cloud/document?nodeId=${encodeURIComponent(nodeId)}`).then((r) => r.data || null),
+  listInterviewDocumentFragments: (documentNodeId) => request(`/api/interviews/fragments?documentNodeId=${encodeURIComponent(documentNodeId)}`).then((r) => r.data || []),
+  listInterviewProjectFragments: (projectId, campaignId) => request(`/api/interviews/fragments?projectId=${encodeURIComponent(projectId)}&campaignId=${encodeURIComponent(campaignId)}`).then((r) => r.data || []),
+  createInterviewDocumentFragment: (payload) => request('/api/interviews/fragments', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || null),
+
 };

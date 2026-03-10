@@ -4,6 +4,8 @@ import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { createPool, validateDbEnv } from './config/db.js';
 import { loadBackendEnv } from './config/env.js';
 
@@ -71,7 +73,7 @@ const schemaSql = [
   'CREATE INDEX IF NOT EXISTS idx_campaigns_user_id ON campaigns(user_id)',
   `CREATE TABLE IF NOT EXISTS audiences (
     id TEXT PRIMARY KEY,
-    campaign_id TEXT NOT NULL,
+    campaign_id TEXT,
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
@@ -284,6 +286,26 @@ const schemaSql = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_interview_sessions_campaign ON interview_sessions(campaign_id, client_id)',
+  `CREATE TABLE IF NOT EXISTS interview_semantic_fragments (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT,
+    interview_session_id TEXT,
+    document_node_id TEXT,
+    source_type TEXT NOT NULL CHECK(source_type IN ('selection','manual')),
+    selected_text TEXT NOT NULL,
+    start_offset INTEGER,
+    end_offset INTEGER,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (interview_session_id) REFERENCES interview_sessions(id) ON DELETE SET NULL,
+    FOREIGN KEY (document_node_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_interview_semantic_fragments_document ON interview_semantic_fragments(document_node_id, created_at)',
   `CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -641,6 +663,114 @@ async function ensureCampaignCloudFolders(userId, campaignId) {
   return { campaign, roots, campaignRoot, videosFolder, hypothesesFolder, audiencesFolder };
 }
 
+function interviewSessionFolderLabel(session = {}) {
+  const interviewCode = String(session?.id || '').slice(0, 8).toUpperCase() || 'ENTREVISTA';
+  const clientName = String(session?.client_name || 'Cliente sin nombre').trim();
+  return `${interviewCode} · ${clientName}`.slice(0, 80);
+}
+
+async function ensureInterviewCloudFolders(userId, projectId, campaignId) {
+  const [campaignRows] = await pool.query(
+    `SELECT c.id, c.name, c.project_id
+     FROM campaigns c
+     JOIN projects p ON p.id = c.project_id
+     WHERE c.id = ? AND c.project_id = ? AND c.user_id = ? AND p.user_id = ?
+     LIMIT 1`,
+    [campaignId, projectId, userId, userId],
+  );
+  const campaign = campaignRows[0] || null;
+  if (!campaign) return null;
+
+  const roots = await ensureProjectCloudRoots(userId, projectId);
+  if (!roots?.projectRoot?.id) return null;
+
+  const ensureCanonicalFolder = async (canonicalKey, name, parentId, targetType = null, targetId = null) => {
+    const [found] = await pool.query(
+      'SELECT * FROM cloud_nodes WHERE user_id = ? AND project_id = ? AND canonical_key = ? LIMIT 1',
+      [userId, projectId, canonicalKey],
+    );
+    const existing = found[0] || null;
+    if (existing) {
+      if (String(existing.name || '') !== String(name || '') || String(existing.parent_id || '') !== String(parentId || '')) {
+        await pool.query('UPDATE cloud_nodes SET name = ?, parent_id = ?, updated_at = ? WHERE id = ? AND user_id = ?', [name, parentId, nowIso(), existing.id, userId]);
+      }
+      return existing;
+    }
+    return createCloudNode({ userId, projectId, parentId, name, type: 'folder', canonicalKey, targetType, targetId });
+  };
+
+  const cloudRoot = await ensureCanonicalFolder(`interviews_cloud_root:${campaign.id}`, `Centro de Entrevistas · ${campaign.name || campaign.id}`, roots.projectRoot.id, 'interview_center', campaign.id);
+  const audiencesRoot = await ensureCanonicalFolder(`interviews_cloud_audiences_root:${campaign.id}`, 'Audiencias', cloudRoot.id);
+  const interviewsRoot = await ensureCanonicalFolder(`interviews_cloud_sessions_root:${campaign.id}`, 'Entrevistas', cloudRoot.id);
+  const hypothesesRoot = await ensureCanonicalFolder(`interviews_cloud_hypotheses_root:${campaign.id}`, 'Hipótesis', cloudRoot.id);
+
+  const [audiences] = await pool.query(
+    `SELECT a.id, a.name
+     FROM audiences a
+     WHERE a.user_id = ? AND a.campaign_id = ?
+     ORDER BY a.created_at ASC`,
+    [userId, campaign.id],
+  );
+
+  const audienceFoldersById = new Map();
+  for (const audience of audiences) {
+    const folder = await ensureCanonicalFolder(
+      `interviews_cloud_audience:${campaign.id}:${audience.id}`,
+      String(audience.name || 'Audiencia sin nombre').slice(0, 80),
+      audiencesRoot.id,
+      'audience',
+      audience.id,
+    );
+    audienceFoldersById.set(String(audience.id), folder);
+  }
+
+  const [sessions] = await pool.query(
+    `SELECT s.id, s.audience_id, c.name AS client_name
+     FROM interview_sessions s
+     LEFT JOIN interview_clients c ON c.id = s.client_id
+     WHERE s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
+     ORDER BY s.created_at ASC`,
+    [userId, projectId, campaign.id],
+  );
+
+  for (const session of sessions) {
+    const sessionFolder = await ensureCanonicalFolder(
+      `interviews_cloud_session:${campaign.id}:${session.id}`,
+      interviewSessionFolderLabel(session),
+      interviewsRoot.id,
+      'interview_session',
+      session.id,
+    );
+    await ensureFolder(userId, sessionFolder.id, 'Transcripción');
+    await ensureFolder(userId, sessionFolder.id, 'Audio');
+    await ensureFolder(userId, sessionFolder.id, 'Notas');
+    await ensureFolder(userId, sessionFolder.id, 'Archivos');
+
+    const audienceFolder = audienceFoldersById.get(String(session.audience_id || ''));
+    if (audienceFolder) await ensureCloudEdge(userId, audienceFolder.id, sessionFolder.id);
+  }
+
+  const [hypotheses] = await pool.query(
+    `SELECT id, title
+     FROM interview_hypotheses
+     WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+     ORDER BY created_at ASC`,
+    [userId, projectId, campaign.id],
+  );
+
+  for (const hypothesis of hypotheses) {
+    await ensureCanonicalFolder(
+      `interviews_cloud_hypothesis:${campaign.id}:${hypothesis.id}`,
+      String(hypothesis.title || `Hipótesis ${hypothesis.id}`).slice(0, 80),
+      hypothesesRoot.id,
+      'interview_hypothesis',
+      hypothesis.id,
+    );
+  }
+
+  return { cloudRoot, audiencesRoot, interviewsRoot, hypothesesRoot };
+}
+
 async function ensureHypothesisFolder(userId, campaignId, hypothesisId) {
   const [rows] = await pool.query(
     `SELECT h.id, h.hypothesis_statement, h.condition, h.type, c.project_id
@@ -944,6 +1074,8 @@ async function syncCloudForUser(userId, projectId = null) {
       for (const audience of campaignAudiences) {
         await ensureAudienceFolder(userId, campaign.id, audience.id);
       }
+
+      await ensureInterviewCloudFolders(userId, project.id, campaign.id);
     }
 
     const [videos] = await pool.query('SELECT * FROM videos WHERE user_id = ? AND project_id = ? ORDER BY created_at ASC', [userId, project.id]);
@@ -1121,6 +1253,69 @@ function safeParseJsonField(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function decodeWordDocumentBinary(buffer) {
+  const candidates = [
+    buffer.toString('utf8'),
+    buffer.toString('latin1'),
+    buffer.toString('utf16le'),
+  ];
+  const cleaned = candidates
+    .map((value) => String(value || '').replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]+/g, ' '))
+    .map((value) => value.replace(/[^\S\r\n]+/g, ' '))
+    .map((value) => value.replace(/\s+\n/g, '\n').trim())
+    .sort((a, b) => b.length - a.length);
+  return cleaned[0] || '';
+}
+
+function extractDocxTextWithSystemUnzip(storagePath) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-docx-'));
+  try {
+    const xml = execFileSync('unzip', ['-p', storagePath, 'word/document.xml'], { encoding: 'utf8', maxBuffer: 12 * 1024 * 1024 });
+    const paragraphs = String(xml || '')
+      .replace(/<w:p[^>]*>/g, '\n')
+      .replace(/<w:tab\/?\s*>/g, '\t')
+      .replace(/<w:br\/?\s*>/g, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[^\S\r\n]+/g, ' ')
+      .trim();
+    return paragraphs;
+  } finally {
+    try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+function readInterviewDocumentForNode(node) {
+  const name = String(node?.name || '').toLowerCase();
+  const ext = path.extname(name);
+  if (!node?.storage_path || !fs.existsSync(node.storage_path)) {
+    return { text: '', format: 'unknown', warning: 'Archivo no encontrado en storage.' };
+  }
+
+  const buffer = fs.readFileSync(node.storage_path);
+
+  if (ext === '.txt' || ext === '.md' || ext === '.log' || (node.mime_type || '').startsWith('text/')) {
+    return { text: buffer.toString('utf8'), format: 'text' };
+  }
+
+  if (ext === '.docx') {
+    try {
+      const text = extractDocxTextWithSystemUnzip(node.storage_path);
+      return { text, format: 'docx' };
+    } catch (error) {
+      return { text: '', format: 'docx', warning: `No se pudo parsear .docx: ${error?.message || String(error)}` };
+    }
+  }
+
+  if (ext === '.doc') {
+    const text = decodeWordDocumentBinary(buffer);
+    return { text, format: 'doc', warning: 'Lectura .doc en modo compatibilidad (texto aproximado).' };
+  }
+
+  return { text: '', format: ext.replace('.', '') || 'unknown', warning: 'Formato no soportado aún para lectura enriquecida.' };
 }
 
 function normalizeInterviewQuestion(question, index = 0) {
@@ -1401,6 +1596,46 @@ async function ensureHypothesisVideosVideoForeignKeyTarget() {
 }
 
 
+async function rebuildInterviewSemanticFragmentsWithNullableDocumentNode() {
+  const hasTable = await tableExists('interview_semantic_fragments');
+  if (!hasTable) return;
+
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    const legacyTable = `interview_semantic_fragments_legacy_${Date.now()}`;
+    await pool.query(`ALTER TABLE interview_semantic_fragments RENAME TO ${normalizeIdentifier(legacyTable)}`);
+    await pool.query(`CREATE TABLE interview_semantic_fragments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      campaign_id TEXT,
+      interview_session_id TEXT,
+      document_node_id TEXT,
+      source_type TEXT NOT NULL CHECK(source_type IN ('selection','manual')),
+      selected_text TEXT NOT NULL,
+      start_offset INTEGER,
+      end_offset INTEGER,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+      FOREIGN KEY (interview_session_id) REFERENCES interview_sessions(id) ON DELETE SET NULL,
+      FOREIGN KEY (document_node_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE
+    )`);
+    await pool.query(
+      `INSERT INTO interview_semantic_fragments
+      (id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at)
+      SELECT id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at
+      FROM ${normalizeIdentifier(legacyTable)}`,
+    );
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTable)}`);
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
+
 async function ensureVideoHierarchyMigration() {
   if (!(await hasColumn('videos', 'hypothesis_id'))) {
     await pool.query('ALTER TABLE videos ADD COLUMN hypothesis_id TEXT');
@@ -1538,6 +1773,11 @@ async function ensureVideoHierarchyMigration() {
   }
   if (!(await hasColumn('interview_sessions', 'form_snapshot_json'))) {
     await pool.query('ALTER TABLE interview_sessions ADD COLUMN form_snapshot_json TEXT');
+  }
+
+  if (await tableExists('interview_semantic_fragments')) {
+    const docNotNull = await hasNotNullColumn('interview_semantic_fragments', 'document_node_id');
+    if (docNotNull) await rebuildInterviewSemanticFragmentsWithNullableDocumentNode();
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
@@ -3175,6 +3415,8 @@ const server = http.createServer(async (req, res) => {
           updatedAt: row.updated_at,
           mimeType: row.mime_type,
           isShortcut: Boolean(row.is_linked_from_edge),
+          targetType: row.target_type || null,
+          targetEntityId: row.target_id || null,
         })),
         total: rows.length,
         breadcrumbs,
@@ -3302,6 +3544,169 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+
+    if (url.pathname === '/api/interviews/cloud/document' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) {
+        sendJson(req, res, 401, { error: 'Unauthorized' });
+        return;
+      }
+      const nodeId = String(url.searchParams.get('nodeId') || '').trim();
+      if (!nodeId) {
+        sendJson(req, res, 400, { error: 'nodeId is required' });
+        return;
+      }
+      const node = await getCloudNodeById(nodeId, user.id);
+      if (!node || node.type !== 'file') {
+        sendJson(req, res, 404, { error: 'Document not found' });
+        return;
+      }
+
+      const [contextRows] = await pool.query(
+        `SELECT s.id AS interview_id, s.project_id, s.campaign_id
+         FROM cloud_nodes d
+         LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
+         LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
+         LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
+         WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
+        [nodeId, user.id],
+      );
+      const context = contextRows[0] || {};
+      const parsed = readInterviewDocumentForNode(node);
+      sendJson(req, res, 200, {
+        data: {
+          node_id: node.id,
+          name: node.name,
+          mime_type: node.mime_type,
+          size: node.size,
+          interview_id: context.interview_id || null,
+          project_id: context.project_id || node.project_id,
+          campaign_id: context.campaign_id || null,
+          format: parsed.format,
+          warning: parsed.warning || null,
+          text: parsed.text || '',
+        },
+      });
+      return;
+    }
+
+    if (url.pathname === '/api/interviews/fragments' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const documentNodeId = String(url.searchParams.get('documentNodeId') || '').trim();
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+
+      if (documentNodeId) {
+        const [rows] = await pool.query(
+          `SELECT * FROM interview_semantic_fragments
+           WHERE user_id = ? AND document_node_id = ?
+           ORDER BY created_at DESC`,
+          [user.id, documentNodeId],
+        );
+        sendJson(req, res, 200, { data: rows });
+        return;
+      }
+
+      if (projectId) {
+        const [rows] = campaignId
+          ? await pool.query(
+            `SELECT * FROM interview_semantic_fragments
+             WHERE user_id = ? AND project_id = ? AND (campaign_id = ? OR campaign_id IS NULL)
+             ORDER BY created_at DESC`,
+            [user.id, projectId, campaignId],
+          )
+          : await pool.query(
+            `SELECT * FROM interview_semantic_fragments
+             WHERE user_id = ? AND project_id = ?
+             ORDER BY created_at DESC`,
+            [user.id, projectId],
+          );
+        sendJson(req, res, 200, { data: rows });
+        return;
+      }
+
+      return sendJson(req, res, 400, { error: 'documentNodeId o projectId son obligatorios' });
+    }
+
+    if (url.pathname === '/api/interviews/fragments' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const documentNodeId = String(body?.document_node_id || '').trim() || null;
+      const interviewSessionId = String(body?.interview_session_id || '').trim() || null;
+      const sourceType = String(body?.source_type || '').trim().toLowerCase();
+      const selectedText = String(body?.selected_text || '').trim();
+      if ((!documentNodeId && !interviewSessionId) || !['selection', 'manual'].includes(sourceType) || !selectedText) {
+        return sendJson(req, res, 400, { error: 'document_node_id o interview_session_id, source_type(selection|manual) y selected_text son obligatorios' });
+      }
+
+      let node = null;
+      let context = {};
+
+      if (documentNodeId) {
+        node = await getCloudNodeById(documentNodeId, user.id);
+        if (!node || node.type !== 'file') return sendJson(req, res, 404, { error: 'Document not found' });
+
+        const [contextRows] = await pool.query(
+          `SELECT s.id AS interview_id, s.project_id, s.campaign_id
+           FROM cloud_nodes d
+           LEFT JOIN cloud_nodes p1 ON p1.id = d.parent_id AND p1.user_id = d.user_id
+           LEFT JOIN cloud_nodes p2 ON p2.id = p1.parent_id AND p2.user_id = d.user_id
+           LEFT JOIN interview_sessions s ON s.id = p2.target_id AND p2.target_type = 'interview_session' AND s.user_id = d.user_id
+           WHERE d.id = ? AND d.user_id = ? LIMIT 1`,
+          [documentNodeId, user.id],
+        );
+        context = contextRows[0] || {};
+      }
+
+      if (interviewSessionId) {
+        const [sessionRows] = await pool.query(
+          'SELECT id AS interview_id, project_id, campaign_id FROM interview_sessions WHERE id = ? AND user_id = ? LIMIT 1',
+          [interviewSessionId, user.id],
+        );
+        const session = sessionRows[0];
+        if (!session) return sendJson(req, res, 404, { error: 'Interview session not found' });
+        context = { ...context, ...session };
+      }
+
+      const fragment = {
+        id: uuid(),
+        user_id: user.id,
+        project_id: context.project_id || node?.project_id,
+        campaign_id: context.campaign_id || null,
+        interview_session_id: interviewSessionId || context.interview_id || null,
+        document_node_id: documentNodeId,
+        source_type: sourceType,
+        selected_text: selectedText,
+        start_offset: Number.isFinite(Number(body?.start_offset)) ? Number(body.start_offset) : null,
+        end_offset: Number.isFinite(Number(body?.end_offset)) ? Number(body.end_offset) : null,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+      };
+
+      await pool.query(
+        `INSERT INTO interview_semantic_fragments
+         (id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          fragment.id,
+          fragment.user_id,
+          fragment.project_id,
+          fragment.campaign_id,
+          fragment.interview_session_id,
+          fragment.document_node_id,
+          fragment.source_type,
+          fragment.selected_text,
+          fragment.start_offset,
+          fragment.end_offset,
+          fragment.created_at,
+          fragment.updated_at,
+        ],
+      );
+      sendJson(req, res, 201, { data: fragment });
+      return;
+    }
 
     if (url.pathname === '/api/cloud/search' && req.method === 'GET') {
       const user = authFromRequest(req);
@@ -4039,6 +4444,65 @@ const server = http.createServer(async (req, res) => {
       );
       const [rows] = await pool.query('SELECT * FROM interview_sessions WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
       return sendJson(req, res, 200, { data: { ...rows[0], responses_json: safeParseJsonField(rows[0]?.responses_json, {}), form_snapshot_json: safeParseJsonField(rows[0]?.form_snapshot_json, null) } });
+    }
+
+
+    const campaignInterviewsCloudMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/cloud$/);
+    if (campaignInterviewsCloudMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const [projectId, campaignId] = [campaignInterviewsCloudMatch[1], campaignInterviewsCloudMatch[2]];
+      const campaign = await fetchOwnedCampaignById(campaignId, user.id);
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      const folders = await ensureInterviewCloudFolders(user.id, projectId, campaignId);
+      if (!folders) return sendJson(req, res, 404, { error: 'Interview cloud unavailable' });
+
+      const [audiences] = await pool.query(
+        `SELECT a.id, a.name,
+                COUNT(DISTINCT s.id) AS interviews_count
+         FROM audiences a
+         LEFT JOIN interview_sessions s ON s.audience_id = a.id AND s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
+         WHERE a.user_id = ? AND a.campaign_id = ?
+         GROUP BY a.id, a.name
+         ORDER BY a.name COLLATE NOCASE ASC`,
+        [user.id, projectId, campaignId, user.id, campaignId],
+      );
+
+      const [interviews] = await pool.query(
+        `SELECT s.id, s.status, s.created_at, s.updated_at, s.completed_at,
+                c.name AS client_name, c.contact AS client_contact,
+                a.id AS audience_id, a.name AS audience_name,
+                n.id AS cloud_node_id
+         FROM interview_sessions s
+         LEFT JOIN interview_clients c ON c.id = s.client_id
+         LEFT JOIN audiences a ON a.id = s.audience_id
+         LEFT JOIN cloud_nodes n ON n.user_id = s.user_id AND n.project_id = s.project_id AND n.canonical_key = ('interviews_cloud_session:' || s.campaign_id || ':' || s.id)
+         WHERE s.user_id = ? AND s.project_id = ? AND s.campaign_id = ?
+         ORDER BY COALESCE(s.completed_at, s.updated_at, s.created_at) DESC`,
+        [user.id, projectId, campaignId],
+      );
+
+      const [hypotheses] = await pool.query(
+        `SELECT h.id, h.title, h.type, h.status, h.audience_id, a.name AS audience_name,
+                n.id AS cloud_node_id
+         FROM interview_hypotheses h
+         LEFT JOIN audiences a ON a.id = h.audience_id
+         LEFT JOIN cloud_nodes n ON n.user_id = h.user_id AND n.project_id = h.project_id AND n.canonical_key = ('interviews_cloud_hypothesis:' || h.campaign_id || ':' || h.id)
+         WHERE h.user_id = ? AND h.project_id = ? AND h.campaign_id = ?
+         ORDER BY h.created_at DESC`,
+        [user.id, projectId, campaignId],
+      );
+
+      sendJson(req, res, 200, {
+        data: {
+          roots: folders,
+          audiences,
+          interviews,
+          hypotheses,
+        },
+      });
+      return;
     }
 
     const interviewSessionMatch = url.pathname.match(/^\/api\/interview-sessions\/([^/]+)$/);

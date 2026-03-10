@@ -57,4 +57,11 @@ export const interviewsModuleApi = {
   readSession: interviewsApi.readSession,
   updateSession: interviewsApi.updateSession,
   deleteSession: interviewsApi.deleteSession,
+
+  listCloudOverview: interviewsApi.listInterviewCloudOverview,
+  listCloudNodes: interviewsApi.listInterviewCloudNodes,
+  readCloudDocument: interviewsApi.readInterviewCloudDocument,
+  listDocumentFragments: interviewsApi.listInterviewDocumentFragments,
+  listProjectFragments: interviewsApi.listInterviewProjectFragments,
+  createDocumentFragment: interviewsApi.createInterviewDocumentFragment,
 };

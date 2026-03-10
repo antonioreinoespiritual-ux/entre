@@ -1,11 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
+import { Download, FileText, FolderOpen, Headphones } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 import { FormBuilder, createEmptyFormDraft } from '@/modules/interviews/components/FormBuilder';
 import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner';
 import { SemanticAnalysisLab } from '@/modules/interviews/components/SemanticAnalysisLab';
+import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
 import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewCenterData';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
@@ -13,6 +15,15 @@ import { getLeanProblemScore, getLeanScore, getLeanSolutionScore } from '@/modul
 
 
 const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
+
+
+const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const sessionStorageKey = 'mysql_backend_session';
+
+function token() {
+  try { return JSON.parse(localStorage.getItem(sessionStorageKey) || 'null')?.access_token || ''; } catch { return ''; }
+}
+
 
 const emptyClientProfile = {
   demographic: { age: '', gender: '', location: '', marital_status: '', education_level: '', employment_status: '', income_range: '' },
@@ -65,7 +76,7 @@ const blankClient = { name: '', contact: '', notes: '', audience_id: '', status:
 const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
 
 const InterviewCenterPage = () => {
-  const { projectId, campaignId } = useParams();
+  const { projectId, campaignId, nodeId } = useParams();
   const navigate = useNavigate();
   const { toast } = useToast();
   const center = useInterviewCenterData({ projectId, campaignId, toast });
@@ -78,6 +89,13 @@ const InterviewCenterPage = () => {
   const [hypDraft, setHypDraft] = useState(blankHypothesis);
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
+  const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
+  const [docReader, setDocReader] = useState({ loading: false, error: '', document: null, selectionText: '', selectionRange: null, manualText: '', fragments: [] });
+  const [semanticCloudFragments, setSemanticCloudFragments] = useState([]);
+  const [docSelectionMenu, setDocSelectionMenu] = useState({ open: false, x: 0, y: 0 });
+  const [manualFragmentModalOpen, setManualFragmentModalOpen] = useState(false);
+  const [readerViewMode, setReaderViewMode] = useState('document');
+  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
 
   const [formEditorOpen, setFormEditorOpen] = useState(false);
   const [formPreview, setFormPreview] = useState(false);
@@ -99,8 +117,20 @@ const InterviewCenterPage = () => {
   const autosaveSeqRef = useRef(0);
   const lastSavedRef = useRef('');
   const clientNotesTimerRef = useRef(null);
+  const fragmentsPanelRef = useRef(null);
 
   const formIsDirty = useMemo(() => JSON.stringify(formDraft) !== lastSavedRef.current, [formDraft]);
+
+  useEffect(() => {
+    if (!docSelectionMenu.open) return undefined;
+    const closeMenu = () => setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+    window.addEventListener('click', closeMenu);
+    window.addEventListener('scroll', closeMenu, true);
+    return () => {
+      window.removeEventListener('click', closeMenu);
+      window.removeEventListener('scroll', closeMenu, true);
+    };
+  }, [docSelectionMenu.open]);
 
   useEffect(() => {
     if (!formEditorOpen) return undefined;
@@ -315,6 +345,203 @@ const InterviewCenterPage = () => {
       setSaving(false);
     }
   };
+
+
+  const authHeader = useMemo(() => ({ Authorization: `Bearer ${token()}` }), []);
+
+  const loadInterviewCloudOverview = useCallback(async () => {
+    if (!projectId || !campaignId) return;
+    setCloudState((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const data = await interviewsModuleApi.listCloudOverview(projectId, campaignId);
+      const rootId = data?.roots?.cloudRoot?.id || '';
+      setCloudState((prev) => ({ ...prev, loading: false, error: '', overview: data, rootId, parentId: prev.parentId || rootId }));
+    } catch (error) {
+      setCloudState((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar cloud research' }));
+    }
+  }, [campaignId, projectId]);
+
+  const loadInterviewCloudFolder = useCallback(async (targetParentId) => {
+    if (!projectId || !targetParentId) return;
+    setCloudState((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const url = new URL(`${apiBaseUrl}/api/cloud/list`);
+      url.searchParams.set('projectId', projectId);
+      url.searchParams.set('parentId', targetParentId);
+      const response = await fetch(url.toString(), { headers: authHeader });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error || 'No se pudo listar carpeta');
+      setCloudState((prev) => ({ ...prev, loading: false, parentId: targetParentId, items: json.data || [], breadcrumbs: json.breadcrumbs || [] }));
+    } catch (error) {
+      setCloudState((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo listar carpeta' }));
+    }
+  }, [authHeader, projectId]);
+
+  const uploadInterviewCloudFiles = useCallback(async (event) => {
+    const files = [...(event.target.files || [])];
+    if (!files.length || !cloudState.parentId) return;
+    try {
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append('projectId', String(projectId));
+        fd.append('parentId', String(cloudState.parentId));
+        fd.append('file', file);
+        const response = await fetch(`${apiBaseUrl}/api/cloud/upload`, { method: 'POST', headers: authHeader, body: fd });
+        const json = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(json?.error || 'No se pudo subir archivo');
+      }
+      event.target.value = '';
+      await loadInterviewCloudFolder(cloudState.parentId);
+      toast({ title: 'Archivo subido', description: 'Se guardó evidencia en el cloud de entrevistas.' });
+    } catch (error) {
+      toast({ title: 'Error subiendo archivo', description: error.message, variant: 'destructive' });
+    }
+  }, [authHeader, cloudState.parentId, loadInterviewCloudFolder, projectId, toast]);
+
+  const loadDocumentFragments = useCallback(async (nodeId) => {
+    if (!nodeId) return;
+    try {
+      const fragments = await interviewsModuleApi.listDocumentFragments(nodeId);
+      setDocReader((prev) => ({ ...prev, fragments }));
+    } catch {
+      setDocReader((prev) => ({ ...prev, fragments: [] }));
+    }
+  }, []);
+
+  const loadSemanticCloudFragments = useCallback(async () => {
+    if (!projectId || !campaignId) return;
+    try {
+      const fragments = await interviewsModuleApi.listProjectFragments(projectId, campaignId);
+      setSemanticCloudFragments(fragments || []);
+    } catch {
+      setSemanticCloudFragments([]);
+    }
+  }, [campaignId, projectId]);
+
+  const openDocumentReader = useCallback(async (item) => {
+    setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+    setManualFragmentModalOpen(false);
+    setDocReader((prev) => ({ ...prev, loading: true, error: '', document: null, selectionText: '', selectionRange: null }));
+    try {
+      const document = await interviewsModuleApi.readCloudDocument(item.id);
+      setDocReader((prev) => ({ ...prev, loading: false, document, error: '' }));
+      await loadDocumentFragments(item.id);
+    } catch (error) {
+      setDocReader((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo abrir documento', document: null }));
+    }
+  }, [loadDocumentFragments]);
+
+  const captureSelection = useCallback(() => {
+    const selection = window.getSelection();
+    if (!selection || !selection.toString().trim()) return;
+    const text = selection.toString().trim();
+    const docText = String(docReader.document?.text || '');
+    const anchor = docText.indexOf(text);
+    const range = anchor >= 0 ? { start_offset: anchor, end_offset: anchor + text.length } : null;
+    setDocReader((prev) => ({ ...prev, selectionText: text, selectionRange: range }));
+  }, [docReader.document?.text]);
+
+  const openSelectionMenu = useCallback((event) => {
+    const selection = window.getSelection();
+    if (!selection || !selection.toString().trim()) return;
+    captureSelection();
+    event.preventDefault();
+    setDocSelectionMenu({ open: true, x: event.clientX, y: event.clientY });
+  }, [captureSelection]);
+
+  const createSelectionFragment = useCallback(async () => {
+    if (!docReader.document?.node_id || !docReader.selectionText) return;
+    const payload = {
+      document_node_id: docReader.document.node_id,
+      interview_session_id: docReader.document.interview_id || null,
+      selected_text: docReader.selectionText,
+      start_offset: docReader.selectionRange?.start_offset ?? null,
+      end_offset: docReader.selectionRange?.end_offset ?? null,
+      source_type: 'selection',
+    };
+    try {
+      await interviewsModuleApi.createDocumentFragment(payload);
+      setDocReader((prev) => ({ ...prev, selectionText: '', selectionRange: null }));
+      setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+      await loadDocumentFragments(docReader.document.node_id);
+      await loadSemanticCloudFragments();
+      toast({ title: 'Fragmento creado', description: 'Se guardó desde selección con trazabilidad.' });
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }, [docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
+
+  const createManualFragment = useCallback(async () => {
+    if (!docReader.document?.node_id || !docReader.manualText.trim()) return;
+    try {
+      await interviewsModuleApi.createDocumentFragment({
+        document_node_id: docReader.document.node_id,
+        interview_session_id: docReader.document.interview_id || null,
+        selected_text: docReader.manualText.trim(),
+        source_type: 'manual',
+      });
+      setDocReader((prev) => ({ ...prev, manualText: '' }));
+      setManualFragmentModalOpen(false);
+      await loadDocumentFragments(docReader.document.node_id);
+      await loadSemanticCloudFragments();
+      toast({ title: 'Fragmento manual creado' });
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }, [docReader.document, docReader.manualText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
+
+  useEffect(() => {
+    if (tab !== 'cloud') return;
+    loadInterviewCloudOverview();
+  }, [loadInterviewCloudOverview, tab]);
+
+  useEffect(() => {
+    if (tab !== 'cloud') return;
+    if (!cloudState.parentId) return;
+    loadInterviewCloudFolder(cloudState.parentId);
+  }, [cloudState.parentId, loadInterviewCloudFolder, tab]);
+
+  useEffect(() => {
+    if (!nodeId) return;
+    setTab('cloud');
+    openDocumentReader({ id: nodeId });
+  }, [nodeId, openDocumentReader]);
+
+  useEffect(() => {
+    if (tab !== 'cloud' || !nodeId) {
+      setToolbarCollapsed(false);
+      return;
+    }
+    const onScroll = () => setToolbarCollapsed(window.scrollY > 90);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [nodeId, tab]);
+
+  useEffect(() => {
+    if (tab !== 'semantic') return;
+    loadSemanticCloudFragments();
+  }, [loadSemanticCloudFragments, tab]);
+
+  const announcePendingTool = useCallback((label) => {
+    toast({ title: label, description: 'Herramienta preparada para próxima fase.' });
+  }, [toast]);
+
+  const createSemanticInterviewFragment = useCallback(async ({ interview_id, text, source = 'selection' }) => {
+    const trimmed = String(text || '').trim();
+    if (!interview_id || !trimmed) return;
+    try {
+      await interviewsModuleApi.createDocumentFragment({
+        interview_session_id: interview_id,
+        selected_text: trimmed,
+        source_type: source === 'manual' ? 'manual' : 'selection',
+      });
+      await loadSemanticCloudFragments();
+      toast({ title: 'Fragmento registrado', description: 'Se guardó en la entidad única de fragmentos.' });
+    } catch (error) {
+      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+    }
+  }, [loadSemanticCloudFragments, toast]);
 
   return (
     <>
@@ -608,16 +835,215 @@ const InterviewCenterPage = () => {
           </div>
         )}
 
+
+        {!center.loading && !center.error && tab === 'cloud' && (
+          <section className="space-y-4">
+            <div className={`rounded-2xl border bg-white p-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between ${nodeId ? "hidden" : ""}`}>
+              <div>
+                <h3 className="text-lg font-semibold text-slate-900">Cloud de investigación cualitativa</h3>
+                <p className="text-sm text-slate-600">Espacio documental independiente para audiencias, entrevistas, hipótesis y evidencia primaria.</p>
+              </div>
+              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border bg-indigo-600 text-white cursor-pointer text-sm">
+                Subir archivo
+                <input type="file" multiple className="hidden" onChange={uploadInterviewCloudFiles} />
+              </label>
+            </div>
+
+            <div className={`grid gap-3 md:grid-cols-3 ${nodeId ? "hidden" : ""}`}>
+              <div className="rounded-xl border bg-white p-3">
+                <p className="text-xs text-slate-500">Audiencias</p>
+                <p className="text-xl font-semibold">{cloudState.overview?.audiences?.length || 0}</p>
+              </div>
+              <div className="rounded-xl border bg-white p-3">
+                <p className="text-xs text-slate-500">Entrevistas</p>
+                <p className="text-xl font-semibold">{cloudState.overview?.interviews?.length || 0}</p>
+              </div>
+              <div className="rounded-xl border bg-white p-3">
+                <p className="text-xs text-slate-500">Hipótesis de entrevistas</p>
+                <p className="text-xl font-semibold">{cloudState.overview?.hypotheses?.length || 0}</p>
+              </div>
+            </div>
+
+            <div className={`rounded-2xl border bg-white p-4 space-y-3 ${nodeId ? "hidden" : ""}`}>
+              <div className="flex flex-wrap gap-2 text-sm text-slate-600">
+                {(cloudState.breadcrumbs || []).map((crumb, idx) => (
+                  <button key={crumb.id} className="hover:underline" onClick={() => loadInterviewCloudFolder(crumb.id)}>
+                    {idx ? ' / ' : ''}{crumb.name}
+                  </button>
+                ))}
+              </div>
+              {cloudState.error ? <p className="text-sm text-red-600">{cloudState.error}</p> : null}
+              {cloudState.loading ? <p className="text-sm text-slate-500">Cargando cloud...</p> : null}
+              <div className="space-y-2">
+                {(cloudState.items || []).map((item) => (
+                  <div key={item.id} className="flex items-center justify-between rounded-lg border p-3">
+                    <button
+                      className="flex items-center gap-2 text-left"
+                      onClick={() => {
+                        if (item.kind === 'file') {
+                          navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/cloud/${item.id}`);
+                          return;
+                        }
+                        loadInterviewCloudFolder(item.targetId || item.id);
+                      }}
+                    >
+                      {item.kind === 'folder' || item.kind === 'shortcut' ? <FolderOpen className="h-4 w-4 text-indigo-600" /> : <FileText className="h-4 w-4 text-slate-500" />}
+                      <span className="font-medium text-slate-800">{item.name}</span>
+                      {String(item.name || '').toLowerCase().includes('audio') ? <Headphones className="h-4 w-4 text-emerald-600" /> : null}
+                    </button>
+                    {item.kind === 'file' ? <a className="text-slate-500 hover:text-slate-900" href={`${apiBaseUrl}/api/cloud/download?nodeId=${encodeURIComponent(item.id)}`} target="_blank" rel="noreferrer"><Download className="h-4 w-4" /></a> : null}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {!nodeId ? (
+              <div className="space-y-4">
+                <div className="rounded-xl border bg-white p-3">
+                  <p className="text-sm text-slate-600">Selecciona un documento para abrirlo en una página dedicada del lector.</p>
+                </div>
+              </div>
+            ) : null}
+
+            {nodeId ? (
+              <div className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+                <div className="rounded-2xl border bg-[#f8fafc] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 className="font-semibold text-slate-900">Lector de documento</h4>
+                      <p className="text-xs text-slate-500">Lectura enriquecida para transcripción (.doc/.docx/txt) con extracción de fragmentos.</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {docReader.document?.warning ? <span className="text-xs text-amber-700">{docReader.document.warning}</span> : null}
+                    </div>
+                  </div>
+                  <Toolbar
+                    collapsed={toolbarCollapsed}
+                    onBackToCloud={() => {
+                      setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+                      navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews`);
+                    }}
+                    onDownloadDocument={() => {
+                      const node = docReader.document?.node_id;
+                      if (!node) return;
+                      window.open(`${apiBaseUrl}/api/cloud/download?nodeId=${encodeURIComponent(node)}`, '_blank', 'noopener,noreferrer');
+                    }}
+                    onCreateFragment={createSelectionFragment}
+                    onCreateManualFragment={() => setManualFragmentModalOpen(true)}
+                    onViewFragments={() => fragmentsPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                    onViewCodes={() => announcePendingTool('Ver códigos')}
+                    onLinkCode={() => announcePendingTool('Vincular código')}
+                    onViewClusters={() => announcePendingTool('Ver clusters')}
+                    onActivateAnalysis={() => announcePendingTool('Activar técnicas de análisis')}
+                    onCreateMemo={() => {
+                      setDocReader((prev) => ({ ...prev, manualText: prev.manualText || `Memo ${new Date().toLocaleString()}: ` }));
+                      setManualFragmentModalOpen(true);
+                    }}
+                    onToggleView={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
+                    canCreateFragment={Boolean(docReader.selectionText)}
+                    viewLabel={readerViewMode === 'focus' ? 'focus' : 'documento'}
+                  />
+                  {docReader.loading ? <p className="text-sm text-slate-500">Abriendo documento...</p> : null}
+                  {docReader.error ? <p className="text-sm text-red-600">{docReader.error}</p> : null}
+                  {docReader.document ? (
+                    <>
+                      <div
+                        className={`mx-auto min-h-[320px] ${readerViewMode === "focus" ? "max-w-4xl" : "max-w-3xl"} rounded-xl border bg-white ${readerViewMode === "focus" ? "px-16 py-12 text-[16px] leading-8" : "px-12 py-10 text-[15px] leading-7"} text-slate-800 shadow-sm whitespace-pre-wrap`}
+                        onMouseUp={captureSelection}
+                        onContextMenu={openSelectionMenu}
+                      >
+                        {docReader.document.text || 'No se pudo renderizar texto de este documento.'}
+                      </div>
+                      <div className="mt-3 rounded-lg border bg-white p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selección actual</p>
+                        <p className="mt-1 text-sm text-slate-700">{docReader.selectionText || 'Selecciona texto en el documento para crear fragmento.'}</p>
+                        <div className="mt-2 flex items-center gap-2">
+                          <Button className="bg-indigo-600 text-white" onClick={createSelectionFragment} disabled={!docReader.selectionText}>Crear fragmento</Button>
+                          {docReader.selectionRange ? <span className="text-xs text-slate-500">rango {docReader.selectionRange.start_offset}-{docReader.selectionRange.end_offset}</span> : null}
+                        </div>
+                      </div>
+                      {docSelectionMenu.open && docReader.selectionText ? (
+                        <div
+                          className="fixed z-50 w-56 rounded-xl border bg-white p-1 shadow-lg"
+                          style={{ left: docSelectionMenu.x, top: docSelectionMenu.y }}
+                        >
+                          <button
+                            className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
+                            onClick={() => {
+                              setDocReader((prev) => ({ ...prev, manualText: prev.selectionText || prev.manualText }));
+                              setManualFragmentModalOpen(true);
+                              setDocSelectionMenu((prev) => ({ ...prev, open: false }));
+                            }}
+                          >
+                            Guardar fragmento manual
+                          </button>
+                          <button
+                            className="w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-slate-100"
+                            onClick={createSelectionFragment}
+                          >
+                            Agregar fragmento textutal
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                </div>
+
+                <div ref={fragmentsPanelRef} className="rounded-2xl border bg-white p-4 space-y-3">
+                  <h4 className="font-semibold text-slate-900">Fragmentos del documento</h4>
+                  <div className="rounded-lg border p-3 space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Agregar fragmento manual</p>
+                    <p className="text-sm text-slate-600">Haz click derecho sobre una selección para elegir cómo crear el fragmento.</p>
+                    <Button className="bg-slate-900 text-white" onClick={() => setManualFragmentModalOpen(true)}>Abrir modal de fragmento manual</Button>
+                  </div>
+
+                  <div className="space-y-2 max-h-[420px] overflow-auto pr-1">
+                    {(docReader.fragments || []).map((fragment) => (
+                      <div key={fragment.id} className="rounded-lg border p-3">
+                        <p className="text-sm text-slate-800">{fragment.selected_text}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">{fragment.source_type} · {new Date(fragment.created_at).toLocaleString()} {fragment.start_offset != null ? `· ${fragment.start_offset}-${fragment.end_offset}` : ''}</p>
+                      </div>
+                    ))}
+                    {!docReader.fragments?.length ? <p className="text-sm text-slate-500">Aún no hay fragmentos para este documento.</p> : null}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </section>
+        )}
+
         {!center.loading && !center.error && tab === 'semantic' && (
           <SemanticAnalysisLab
             sessions={center.sessions}
             audiences={center.audiences}
             forms={center.forms}
             clients={center.clients}
+            persistedFragments={semanticCloudFragments}
             onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
+            onCreateFragment={createSemanticInterviewFragment}
           />
         )}
       </InterviewModuleShell>
+
+      <Modal
+        title="Agregar fragmento manual"
+        open={manualFragmentModalOpen}
+        onClose={() => setManualFragmentModalOpen(false)}
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-slate-600">Escribe una observación semántica o resumen manual para este documento.</p>
+          <textarea
+            className="w-full min-h-[160px] rounded-md border p-2 text-sm"
+            placeholder="Escribe una observación semántica o resumen manual..."
+            value={docReader.manualText}
+            onChange={(event) => setDocReader((prev) => ({ ...prev, manualText: event.target.value }))}
+          />
+          <div className="flex justify-end gap-2">
+            <Button className="bg-white border" onClick={() => setManualFragmentModalOpen(false)}>Cancelar</Button>
+            <Button className="bg-slate-900 text-white" onClick={createManualFragment} disabled={!docReader.manualText.trim()}>Guardar fragmento manual</Button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal title={clientDraft?.id ? 'Editar cliente' : 'Crear cliente'} open={clientModalOpen} onClose={() => { setClientModalOpen(false); setClientDraft(blankClient); }}>
         <div className="space-y-4">
