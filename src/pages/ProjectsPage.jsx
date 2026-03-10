@@ -18,6 +18,8 @@ const ProjectsPage = () => {
   const { signOut } = useAuth();
   const [editingProject, setEditingProject] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('integrations');
+  const [selectedIntegration, setSelectedIntegration] = useState('youtube');
   const [youtubeConfig, setYoutubeConfig] = useState({ loading: false, error: '', data: null, channelPreview: null });
   const [youtubeSettingsDraft, setYoutubeSettingsDraft] = useState({ api_key: '', client_id: '', client_secret: '', redirect_uri: '', scopes: '' });
 
@@ -50,6 +52,8 @@ const ProjectsPage = () => {
     const ytState = url.searchParams.get('youtube');
     if (ytState) {
       setSettingsOpen(true);
+      setSettingsTab('integrations');
+      setSelectedIntegration('youtube');
       const ytReason = url.searchParams.get('reason');
       if (ytState === 'error' && ytReason) {
         setYoutubeConfig((prev) => ({ ...prev, error: decodeURIComponent(ytReason) }));
@@ -60,6 +64,15 @@ const ProjectsPage = () => {
       window.history.replaceState({}, '', url.toString());
     }
   }, []);
+
+  const openSettings = async ({ tab = 'integrations', integration = 'youtube' } = {}) => {
+    setSettingsOpen(true);
+    setSettingsTab(tab);
+    setSelectedIntegration(integration);
+    if (tab === 'integrations' && integration === 'youtube') {
+      await loadYouTubeConfig();
+    }
+  };
 
   const loadYouTubeConfig = async () => {
     try {
@@ -177,7 +190,7 @@ const ProjectsPage = () => {
                   Cerrar sesión
                 </Button>
                 <Button
-                  onClick={() => { setSettingsOpen(true); loadYouTubeConfig(); }}
+                  onClick={() => { openSettings({ tab: 'integrations', integration: 'youtube' }); }}
                   className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-100"
                 >
                   <Settings className="w-4 h-4 mr-2" />
@@ -281,77 +294,129 @@ const ProjectsPage = () => {
 
         {settingsOpen ? (
           <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-            <div className="w-full max-w-3xl bg-white rounded-2xl border shadow-2xl p-5 space-y-4">
+            <div className="w-full max-w-5xl bg-white rounded-2xl border shadow-2xl p-5 space-y-4">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-xs text-slate-500">Panel de configuración</p>
-                  <h3 className="text-xl font-semibold text-slate-900 inline-flex items-center gap-2"><Puzzle className="h-5 w-5 text-indigo-600" /> Integraciones</h3>
+                  <h3 className="text-xl font-semibold text-slate-900 inline-flex items-center gap-2"><Puzzle className="h-5 w-5 text-indigo-600" /> Configuraciones</h3>
                 </div>
                 <Button className="bg-white border" onClick={() => setSettingsOpen(false)}>Cerrar</Button>
               </div>
 
-              <div className="rounded-xl border p-4 bg-slate-50 space-y-3">
-                <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <div>
-                    <h4 className="font-semibold text-slate-900 inline-flex items-center gap-2"><Youtube className="h-5 w-5 text-red-600" /> YouTube Data API</h4>
-                    <p className="text-xs text-slate-600">Conexión oficial con OAuth 2.0 y API key para lecturas públicas.</p>
-                  </div>
-                  <div className="text-xs text-slate-600">
-                    Estado: {youtubeConfig.data?.connected ? 'Conectado' : 'No conectado'}
-                  </div>
-                </div>
+              <div className="rounded-xl border bg-slate-50 overflow-hidden">
+                <div className="grid md:grid-cols-[220px_1fr] min-h-[520px]">
+                  <aside className="border-r bg-white p-3 space-y-2">
+                    <button type="button" className={`w-full text-left px-3 py-2 rounded-lg text-sm ${settingsTab === 'general' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'hover:bg-slate-50 text-slate-700 border border-transparent'}`} onClick={() => setSettingsTab('general')}>
+                      General
+                    </button>
+                    <button type="button" className={`w-full text-left px-3 py-2 rounded-lg text-sm inline-flex items-center gap-2 ${settingsTab === 'integrations' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'hover:bg-slate-50 text-slate-700 border border-transparent'}`} onClick={() => setSettingsTab('integrations')}>
+                      <Puzzle className="h-4 w-4" /> Integraciones
+                    </button>
+                  </aside>
 
-                {youtubeConfig.loading ? <p className="text-sm text-slate-500">Cargando configuración...</p> : null}
-                {youtubeConfig.error ? <p className="text-sm text-rose-600">{youtubeConfig.error}</p> : null}
-
-                <div className="grid md:grid-cols-2 gap-3">
-                  <label className="rounded-lg border bg-white p-3 text-sm">
-                    <p className="text-xs text-slate-500">API key (lecturas públicas)</p>
-                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.api_key} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, api_key: e.target.value }))} placeholder="AIza..." />
-                  </label>
-                  <label className="rounded-lg border bg-white p-3 text-sm">
-                    <p className="text-xs text-slate-500">OAuth Client ID</p>
-                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.client_id} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, client_id: e.target.value }))} placeholder="xxxxx.apps.googleusercontent.com" />
-                  </label>
-                  <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
-                    <p className="text-xs text-slate-500">OAuth Client Secret</p>
-                    <input className="mt-1 w-full rounded border px-2 py-1.5" type="password" value={youtubeSettingsDraft.client_secret} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, client_secret: e.target.value }))} placeholder="GOCSPX-..." />
-                  </label>
-                  <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
-                    <p className="text-xs text-slate-500">Redirect URI</p>
-                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.redirect_uri} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: e.target.value }))} placeholder="https://tu-app.com/api/youtube/auth/callback" />
-                    <p className="mt-2 text-xs text-slate-500">Recomendado local: <button type="button" className="text-indigo-600 hover:underline" onClick={() => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: suggestedLocalRedirectUri }))}>{suggestedLocalRedirectUri}</button></p>
-                    {redirectUriLooksPrivateIp ? (
-                      <p className="mt-1 text-xs text-rose-600">Google OAuth bloquea IPs privadas (ej. 192.168.x.x). Usa <span className="font-semibold">localhost</span> o un dominio HTTPS público registrado en Google Cloud Console.</p>
+                  <div className="p-4 md:p-5 space-y-4">
+                    {settingsTab === 'general' ? (
+                      <div className="rounded-lg border bg-white p-4">
+                        <h4 className="text-base font-semibold text-slate-900">General</h4>
+                        <p className="mt-1 text-sm text-slate-600">Esta sección está lista para futuras preferencias globales del proyecto. Usa la pestaña <span className="font-medium">Integraciones</span> para gestionar conexiones externas.</p>
+                      </div>
                     ) : null}
-                    {youtubeConfig.data?.redirectUri && youtubeConfig.data?.configuredRedirectUri && youtubeConfig.data.redirectUri !== youtubeConfig.data.configuredRedirectUri ? (
-                      <p className="mt-1 text-xs text-amber-700">URI OAuth efectivo en backend: <span className="font-mono">{youtubeConfig.data.redirectUri}</span></p>
+
+                    {settingsTab === 'integrations' ? (
+                      <>
+                        <div>
+                          <h4 className="text-base font-semibold text-slate-900">Integraciones</h4>
+                          <p className="text-sm text-slate-600">Conecta servicios externos y gestiona credenciales de forma centralizada.</p>
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <button
+                            type="button"
+                            className={`rounded-xl border bg-white p-4 text-left transition ${selectedIntegration === 'youtube' ? 'border-indigo-300 ring-2 ring-indigo-100' : 'hover:border-slate-300'}`}
+                            onClick={async () => {
+                              setSelectedIntegration('youtube');
+                              await loadYouTubeConfig();
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="font-semibold text-slate-900 inline-flex items-center gap-2"><Youtube className="h-5 w-5 text-red-600" /> YouTube</p>
+                                <p className="mt-1 text-xs text-slate-600">API oficial para canal, videos, playlists y comentarios.</p>
+                              </div>
+                              <span className="text-[11px] rounded-full px-2 py-1 bg-slate-100 text-slate-700">{youtubeConfig.data?.connected ? 'Conectado' : 'Disponible'}</span>
+                            </div>
+                          </button>
+                        </div>
+
+                        {selectedIntegration === 'youtube' ? (
+                          <div className="rounded-xl border p-4 bg-white space-y-3">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div>
+                                <h4 className="font-semibold text-slate-900 inline-flex items-center gap-2"><Youtube className="h-5 w-5 text-red-600" /> YouTube Data API</h4>
+                                <p className="text-xs text-slate-600">Conexión oficial con OAuth 2.0 y API key para lecturas públicas.</p>
+                              </div>
+                              <div className="text-xs text-slate-600">
+                                Estado: {youtubeConfig.data?.connected ? 'Conectado' : 'No conectado'}
+                              </div>
+                            </div>
+
+                            {youtubeConfig.loading ? <p className="text-sm text-slate-500">Cargando configuración...</p> : null}
+                            {youtubeConfig.error ? <p className="text-sm text-rose-600">{youtubeConfig.error}</p> : null}
+
+                            <div className="grid md:grid-cols-2 gap-3">
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">API key (lecturas públicas)</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.api_key} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, api_key: e.target.value }))} placeholder="AIza..." />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">OAuth Client ID</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.client_id} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, client_id: e.target.value }))} placeholder="xxxxx.apps.googleusercontent.com" />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                                <p className="text-xs text-slate-500">OAuth Client Secret</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" type="password" value={youtubeSettingsDraft.client_secret} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, client_secret: e.target.value }))} placeholder="GOCSPX-..." />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                                <p className="text-xs text-slate-500">Redirect URI</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.redirect_uri} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: e.target.value }))} placeholder="https://tu-app.com/api/youtube/auth/callback" />
+                                <p className="mt-2 text-xs text-slate-500">Recomendado local: <button type="button" className="text-indigo-600 hover:underline" onClick={() => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: suggestedLocalRedirectUri }))}>{suggestedLocalRedirectUri}</button></p>
+                                {redirectUriLooksPrivateIp ? (
+                                  <p className="mt-1 text-xs text-rose-600">Google OAuth bloquea IPs privadas (ej. 192.168.x.x). Usa <span className="font-semibold">localhost</span> o un dominio HTTPS público registrado en Google Cloud Console.</p>
+                                ) : null}
+                                {youtubeConfig.data?.redirectUri && youtubeConfig.data?.configuredRedirectUri && youtubeConfig.data.redirectUri !== youtubeConfig.data.configuredRedirectUri ? (
+                                  <p className="mt-1 text-xs text-amber-700">URI OAuth efectivo en backend: <span className="font-mono">{youtubeConfig.data.redirectUri}</span></p>
+                                ) : null}
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                                <p className="text-xs text-slate-500">Scopes (separados por coma)</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.scopes} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, scopes: e.target.value }))} placeholder="https://www.googleapis.com/auth/youtube.readonly, https://www.googleapis.com/auth/youtube.force-ssl" />
+                              </label>
+                              <div className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                                <p className="text-xs text-slate-500">Canal conectado</p>
+                                <p className="font-medium text-slate-800">{youtubeConfig.data?.channel?.title || '—'}</p>
+                                <p className="text-xs text-slate-500">{youtubeConfig.data?.channel?.id || 'Sin canal vinculado'}</p>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap gap-2">
+                              <Button className="bg-indigo-600 text-white" onClick={saveYouTubeSettings}>Guardar configuración</Button>
+                              <Button className="bg-indigo-600 text-white" onClick={connectYouTube}><Link2 className="w-4 h-4 mr-2" />Conectar YouTube</Button>
+                              <Button className="bg-white border text-slate-700" onClick={previewChannel}><Youtube className="w-4 h-4 mr-2" />Probar canal</Button>
+                              <Button className="bg-white border text-rose-700" onClick={disconnectYouTube}><Unlink className="w-4 h-4 mr-2" />Desconectar</Button>
+                            </div>
+
+                            {youtubeConfig.channelPreview ? (
+                              <div className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="font-medium text-slate-800">Vista previa del canal</p>
+                                <p className="text-xs text-slate-500">{youtubeConfig.channelPreview.title} · videos: {youtubeConfig.channelPreview.videoCount} · subs: {youtubeConfig.channelPreview.subscriberCount}</p>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </>
                     ) : null}
-                  </label>
-                  <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
-                    <p className="text-xs text-slate-500">Scopes (separados por coma)</p>
-                    <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.scopes} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, scopes: e.target.value }))} placeholder="https://www.googleapis.com/auth/youtube.readonly, https://www.googleapis.com/auth/youtube.force-ssl" />
-                  </label>
-                  <div className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
-                    <p className="text-xs text-slate-500">Canal conectado</p>
-                    <p className="font-medium text-slate-800">{youtubeConfig.data?.channel?.title || '—'}</p>
-                    <p className="text-xs text-slate-500">{youtubeConfig.data?.channel?.id || 'Sin canal vinculado'}</p>
                   </div>
                 </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <Button className="bg-indigo-600 text-white" onClick={saveYouTubeSettings}>Guardar configuración</Button>
-                  <Button className="bg-indigo-600 text-white" onClick={connectYouTube}><Link2 className="w-4 h-4 mr-2" />Conectar YouTube</Button>
-                  <Button className="bg-white border text-slate-700" onClick={previewChannel}><Youtube className="w-4 h-4 mr-2" />Probar canal</Button>
-                  <Button className="bg-white border text-rose-700" onClick={disconnectYouTube}><Unlink className="w-4 h-4 mr-2" />Desconectar</Button>
-                </div>
-
-                {youtubeConfig.channelPreview ? (
-                  <div className="rounded-lg border bg-white p-3 text-sm">
-                    <p className="font-medium text-slate-800">Vista previa del canal</p>
-                    <p className="text-xs text-slate-500">{youtubeConfig.channelPreview.title} · videos: {youtubeConfig.channelPreview.videoCount} · subs: {youtubeConfig.channelPreview.subscriberCount}</p>
-                  </div>
-                ) : null}
               </div>
             </div>
           </div>
