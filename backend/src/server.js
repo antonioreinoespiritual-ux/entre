@@ -386,6 +386,7 @@ const schemaSql = [
     campaign_id TEXT NOT NULL,
     source TEXT NOT NULL,
     source_job TEXT NOT NULL,
+    input_id TEXT,
     source_query_json TEXT,
     status TEXT NOT NULL DEFAULT 'running',
     comments_count INTEGER DEFAULT 0,
@@ -395,11 +396,29 @@ const schemaSql = [
     completed_at TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_runs_campaign ON comment_ingestion_runs(user_id, project_id, campaign_id, created_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_ingestion_inputs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    name TEXT,
+    config_json TEXT NOT NULL,
+    linked_run_id TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (linked_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_inputs_campaign ON comment_ingestion_inputs(user_id, project_id, campaign_id, created_at DESC)',
   `CREATE TABLE IF NOT EXISTS comment_dataset_comments (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -420,6 +439,7 @@ const schemaSql = [
     reply_count INTEGER DEFAULT 0,
     source_job TEXT,
     source_run_id TEXT,
+    source_input_id TEXT,
     source_query_json TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -429,6 +449,7 @@ const schemaSql = [
     FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
     FOREIGN KEY (hypothesis_id) REFERENCES interview_hypotheses(id) ON DELETE SET NULL,
     FOREIGN KEY (source_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
     UNIQUE(user_id, project_id, campaign_id, source, source_comment_id)
   )`,
   'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, published_at DESC, created_at DESC)',
@@ -493,6 +514,7 @@ const ENTITY_ID_PREFIX = {
   interview_session: 'int_',
   hypothesis_video_link: 'hvid_',
   comment_ingestion_run: 'crun_',
+  comment_ingestion_input: 'cinp_',
   comment_record: 'com_',
 };
 
@@ -1907,6 +1929,24 @@ async function ensureVideoHierarchyMigration() {
   for (const [columnName, columnType] of optionalInterviewHypothesisColumns) {
     if (!(await hasColumn('interview_hypotheses', columnName))) {
       await pool.query(`ALTER TABLE interview_hypotheses ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
+  const optionalCommentIngestionRunColumns = [
+    ['input_id', 'TEXT'],
+  ];
+  for (const [columnName, columnType] of optionalCommentIngestionRunColumns) {
+    if (await tableExists('comment_ingestion_runs') && !(await hasColumn('comment_ingestion_runs', columnName))) {
+      await pool.query(`ALTER TABLE comment_ingestion_runs ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
+  const optionalCommentDatasetColumns = [
+    ['source_input_id', 'TEXT'],
+  ];
+  for (const [columnName, columnType] of optionalCommentDatasetColumns) {
+    if (await tableExists('comment_dataset_comments') && !(await hasColumn('comment_dataset_comments', columnName))) {
+      await pool.query(`ALTER TABLE comment_dataset_comments ADD COLUMN ${columnName} ${columnType}`);
     }
   }
 
@@ -4142,6 +4182,102 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (url.pathname === '/api/comment-base/inputs' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const sourceVideoId = parseYouTubeVideoId(body.video_url || body.video_id || '');
+      const sourceChannelId = String(body.channel_id || '').trim();
+      let normalizedInput = {
+        video_url: String(body.video_url || '').trim(),
+        video_id: sourceVideoId,
+        channel_id: sourceChannelId,
+        keyword: String(body.keyword || '').trim(),
+        max_comments: Math.min(1000, Math.max(1, Number(body.max_comments) || 100)),
+        include_replies: Boolean(body.include_replies),
+        order: ['relevance', 'time'].includes(String(body.order || '').trim()) ? String(body.order || '').trim() : 'time',
+      };
+
+      normalizedInput = {
+        video_url: String(normalizedInput.video_url || '').trim(),
+        video_id: parseYouTubeVideoId(normalizedInput.video_id || normalizedInput.video_url || ''),
+        channel_id: String(normalizedInput.channel_id || '').trim(),
+        keyword: String(normalizedInput.keyword || '').trim(),
+        max_comments: Math.min(1000, Math.max(1, Number(normalizedInput.max_comments) || 100)),
+        include_replies: Boolean(normalizedInput.include_replies),
+        order: ['relevance', 'time'].includes(String(normalizedInput.order || '').trim()) ? String(normalizedInput.order || '').trim() : 'time',
+      };
+
+      if (!normalizedInput.video_id && !normalizedInput.channel_id) {
+        return sendJson(req, res, 400, { error: 'video_url/video_id or channel_id is required' });
+      }
+
+      const inputId = buildEntityId('comment_ingestion_input');
+      const createdAt = nowIso();
+      await pool.query(
+        `INSERT INTO comment_ingestion_inputs
+          (id, user_id, project_id, campaign_id, source, name, config_json, linked_run_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          inputId,
+          user.id,
+          projectId,
+          campaignId,
+          'youtube',
+          String(body.name || normalizedInput.video_url || normalizedInput.video_id || normalizedInput.channel_id || 'YouTube input').trim(),
+          JSON.stringify(normalizedInput),
+          null,
+          createdAt,
+          createdAt,
+        ],
+      );
+
+      return sendJson(req, res, 200, {
+        data: {
+          id: inputId,
+          source: 'youtube',
+          name: String(body.name || '').trim() || 'YouTube input',
+          config: normalizedInput,
+          created_at: createdAt,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/inputs' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_ingestion_inputs
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+         ORDER BY created_at DESC LIMIT 100`,
+        [user.id, projectId, campaignId],
+      );
+      const items = rows.map((row) => ({
+        ...row,
+        config: (() => {
+          try { return JSON.parse(row.config_json || '{}'); } catch { return {}; }
+        })(),
+      }));
+      return sendJson(req, res, 200, { data: { items } });
+    }
+
     if (url.pathname === '/api/comment-base/ingest' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
@@ -4162,28 +4298,75 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
 
-      const sourceVideoId = parseYouTubeVideoId(body.video_url || body.video_id || '');
-      const sourceChannelId = String(body.channel_id || '').trim();
-      if (!sourceVideoId && !sourceChannelId) {
+      const requestedInputId = String(body.input_id || '').trim();
+      let inputId = requestedInputId;
+      let normalizedInput = null;
+
+      if (requestedInputId) {
+        const [inputRows] = await pool.query(
+          `SELECT * FROM comment_ingestion_inputs
+           WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+          [requestedInputId, user.id, projectId, campaignId],
+        );
+        const savedInput = inputRows[0] || null;
+        if (!savedInput) return sendJson(req, res, 404, { error: 'Input not found' });
+        try {
+          normalizedInput = JSON.parse(savedInput.config_json || '{}');
+        } catch {
+          normalizedInput = {};
+        }
+      } else {
+        normalizedInput = {
+          video_url: String(body.video_url || '').trim(),
+          video_id: parseYouTubeVideoId(body.video_url || body.video_id || ''),
+          channel_id: String(body.channel_id || '').trim(),
+          keyword: String(body.keyword || '').trim(),
+          max_comments: Math.min(1000, Math.max(1, Number(body.max_comments) || 100)),
+          include_replies: Boolean(body.include_replies),
+          order: ['relevance', 'time'].includes(String(body.order || '').trim()) ? String(body.order || '').trim() : 'time',
+        };
+      }
+
+      normalizedInput = {
+        video_url: String(normalizedInput.video_url || '').trim(),
+        video_id: parseYouTubeVideoId(normalizedInput.video_id || normalizedInput.video_url || ''),
+        channel_id: String(normalizedInput.channel_id || '').trim(),
+        keyword: String(normalizedInput.keyword || '').trim(),
+        max_comments: Math.min(1000, Math.max(1, Number(normalizedInput.max_comments) || 100)),
+        include_replies: Boolean(normalizedInput.include_replies),
+        order: ['relevance', 'time'].includes(String(normalizedInput.order || '').trim()) ? String(normalizedInput.order || '').trim() : 'time',
+      };
+      if (!normalizedInput.video_id && !normalizedInput.channel_id) {
         return sendJson(req, res, 400, { error: 'video_url/video_id or channel_id is required' });
       }
 
-      const normalizedInput = {
-        video_url: String(body.video_url || '').trim(),
-        video_id: sourceVideoId,
-        channel_id: sourceChannelId,
-        keyword: String(body.keyword || '').trim(),
-        max_comments: Math.min(1000, Math.max(1, Number(body.max_comments) || 100)),
-        include_replies: Boolean(body.include_replies),
-        order: ['relevance', 'time'].includes(String(body.order || '').trim()) ? String(body.order || '').trim() : 'time',
-      };
+      if (!inputId) {
+        inputId = buildEntityId('comment_ingestion_input');
+        await pool.query(
+          `INSERT INTO comment_ingestion_inputs
+            (id, user_id, project_id, campaign_id, source, name, config_json, linked_run_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            inputId,
+            user.id,
+            projectId,
+            campaignId,
+            'youtube',
+            String(body.name || normalizedInput.video_url || normalizedInput.video_id || normalizedInput.channel_id || 'YouTube input').trim(),
+            JSON.stringify(normalizedInput),
+            null,
+            nowIso(),
+            nowIso(),
+          ],
+        );
+      }
 
       const runId = buildEntityId('comment_ingestion_run');
       const startedAt = nowIso();
       await pool.query(
         `INSERT INTO comment_ingestion_runs
-          (id, user_id, project_id, campaign_id, source, source_job, source_query_json, status, started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, user_id, project_id, campaign_id, source, source_job, input_id, source_query_json, status, started_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           runId,
           user.id,
@@ -4191,6 +4374,7 @@ const server = http.createServer(async (req, res) => {
           campaignId,
           'youtube',
           'youtube_comments_ingestion',
+          inputId,
           JSON.stringify(normalizedInput),
           'running',
           startedAt,
@@ -4217,8 +4401,8 @@ const server = http.createServer(async (req, res) => {
             order: normalizedInput.order,
             textFormat: 'plainText',
           };
-          if (sourceVideoId) params.videoId = sourceVideoId;
-          if (!sourceVideoId && sourceChannelId) params.allThreadsRelatedToChannelId = sourceChannelId;
+          if (normalizedInput.video_id) params.videoId = normalizedInput.video_id;
+          if (!normalizedInput.video_id && normalizedInput.channel_id) params.allThreadsRelatedToChannelId = normalizedInput.channel_id;
           if (pageToken) params.pageToken = pageToken;
 
           const response = await listYouTubeCommentThreads({ config, auth, params });
@@ -4229,8 +4413,8 @@ const server = http.createServer(async (req, res) => {
               source: 'youtube',
               source_comment_id: thread.topLevelCommentId || thread.id,
               parent_comment_id: null,
-              video_id: thread.videoId || sourceVideoId || '',
-              channel_id: thread.channelId || sourceChannelId || '',
+              video_id: thread.videoId || normalizedInput.video_id || '',
+              channel_id: thread.channelId || normalizedInput.channel_id || '',
               author_name: thread.authorDisplayName || '',
               author_channel_id: thread.authorChannelId || '',
               text: thread.textOriginal || thread.textDisplay || '',
@@ -4246,8 +4430,8 @@ const server = http.createServer(async (req, res) => {
                   source: 'youtube',
                   source_comment_id: reply.id,
                   parent_comment_id: reply.parentId || baseComment.source_comment_id,
-                  video_id: thread.videoId || sourceVideoId || '',
-                  channel_id: thread.channelId || sourceChannelId || '',
+                  video_id: thread.videoId || normalizedInput.video_id || '',
+                  channel_id: thread.channelId || normalizedInput.channel_id || '',
                   author_name: reply.authorDisplayName || '',
                   author_channel_id: reply.authorChannelId || '',
                   text: reply.textOriginal || reply.textDisplay || '',
@@ -4275,8 +4459,8 @@ const server = http.createServer(async (req, res) => {
             `INSERT INTO comment_dataset_comments
               (id, user_id, project_id, campaign_id, audience_id, hypothesis_id, source, source_comment_id, parent_comment_id,
                video_id, channel_id, author_name, author_channel_id, text, published_at, like_count, reply_count,
-               source_job, source_run_id, source_query_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               source_job, source_run_id, source_input_id, source_query_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(user_id, project_id, campaign_id, source, source_comment_id) DO UPDATE SET
                parent_comment_id = excluded.parent_comment_id,
                video_id = excluded.video_id,
@@ -4289,6 +4473,7 @@ const server = http.createServer(async (req, res) => {
                reply_count = excluded.reply_count,
                source_job = excluded.source_job,
                source_run_id = excluded.source_run_id,
+               source_input_id = excluded.source_input_id,
                source_query_json = excluded.source_query_json,
                updated_at = excluded.updated_at`,
             [
@@ -4311,6 +4496,7 @@ const server = http.createServer(async (req, res) => {
               row.reply_count,
               'youtube_comments_ingestion',
               runId,
+              inputId,
               JSON.stringify(normalizedInput),
               nowIso(),
               nowIso(),
@@ -4324,6 +4510,11 @@ const server = http.createServer(async (req, res) => {
            SET status = ?, comments_count = ?, imported_count = ?, completed_at = ?, updated_at = ?
            WHERE id = ?`,
           ['succeeded', slicedRows.length, importedCount, nowIso(), nowIso(), runId],
+        );
+
+        await pool.query(
+          `UPDATE comment_ingestion_inputs SET linked_run_id = ?, updated_at = ? WHERE id = ?`,
+          [runId, nowIso(), inputId],
         );
 
         return sendJson(req, res, 200, {
@@ -4340,6 +4531,10 @@ const server = http.createServer(async (req, res) => {
            SET status = ?, error_message = ?, completed_at = ?, updated_at = ?
            WHERE id = ?`,
           ['failed', String(error?.message || 'Ingestion failed'), nowIso(), nowIso(), runId],
+        );
+        await pool.query(
+          `UPDATE comment_ingestion_inputs SET linked_run_id = ?, updated_at = ? WHERE id = ?`,
+          [runId, nowIso(), inputId],
         );
         return sendJson(req, res, 500, { error: String(error?.message || 'Ingestion failed') });
       }
@@ -4390,12 +4585,47 @@ const server = http.createServer(async (req, res) => {
       if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
 
       const [rows] = await pool.query(
-        `SELECT * FROM comment_ingestion_runs
-         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
-         ORDER BY created_at DESC LIMIT 30`,
+        `SELECT r.*, i.name AS input_name, i.config_json AS input_config_json
+         FROM comment_ingestion_runs r
+         LEFT JOIN comment_ingestion_inputs i ON i.id = r.input_id
+         WHERE r.user_id = ? AND r.project_id = ? AND r.campaign_id = ?
+         ORDER BY r.created_at DESC LIMIT 30`,
         [user.id, projectId, campaignId],
       );
-      return sendJson(req, res, 200, { data: { items: rows } });
+      const items = rows.map((row) => ({
+        ...row,
+        input_config: (() => {
+          try { return JSON.parse(row.input_config_json || '{}'); } catch { return {}; }
+        })(),
+      }));
+      return sendJson(req, res, 200, { data: { items } });
+    }
+
+    const deleteRunMatch = url.pathname.match(/^\/api\/comment-base\/runs\/([^/]+)$/);
+    if (deleteRunMatch && req.method === 'DELETE') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const runId = String(deleteRunMatch[1] || '').trim();
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!runId || !projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'run id, projectId and campaignId are required' });
+      }
+
+      const [runRows] = await pool.query(
+        `SELECT * FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+        [runId, user.id, projectId, campaignId],
+      );
+      const run = runRows[0] || null;
+      if (!run) return sendJson(req, res, 404, { error: 'Run not found' });
+
+      await pool.query('DELETE FROM comment_dataset_comments WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND source_run_id = ?', [user.id, projectId, campaignId, runId]);
+      if (run.input_id) {
+        await pool.query('DELETE FROM comment_ingestion_inputs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ?', [run.input_id, user.id, projectId, campaignId]);
+      }
+      await pool.query('DELETE FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ?', [runId, user.id, projectId, campaignId]);
+
+      return sendJson(req, res, 200, { data: { deleted_run_id: runId, deleted_input_id: run.input_id || null } });
     }
 
     if ((url.pathname === '/api/cloud/tree' || url.pathname === '/api/cloud/list') && req.method === 'GET') {

@@ -24,7 +24,10 @@ async function request(path, options = {}) {
 }
 
 export const commentsIngestionApi = {
+  saveInput: (payload) => request('/api/comment-base/inputs', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || {}),
+  listInputs: ({ projectId, campaignId }) => request(`/api/comment-base/inputs?${new URLSearchParams({ projectId, campaignId }).toString()}`).then((r) => r.data || { items: [] }),
   runIngestion: (payload) => request('/api/comment-base/ingest', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || {}),
   listTable: ({ projectId, campaignId, limit = 100, offset = 0, q = '' }) => request(`/api/comment-base/table?${new URLSearchParams({ projectId, campaignId, limit: String(limit), offset: String(offset), q }).toString()}`).then((r) => r.data || { items: [], total: 0 }),
   listRuns: ({ projectId, campaignId }) => request(`/api/comment-base/runs?${new URLSearchParams({ projectId, campaignId }).toString()}`).then((r) => r.data || { items: [] }),
+  deleteRun: ({ runId, projectId, campaignId }) => request(`/api/comment-base/runs/${encodeURIComponent(runId)}?${new URLSearchParams({ projectId, campaignId }).toString()}`, { method: 'DELETE' }).then((r) => r.data || {}),
 };

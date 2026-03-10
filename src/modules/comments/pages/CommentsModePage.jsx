@@ -66,6 +66,8 @@ const CommentsModePage = () => {
   const [ingestionDraft, setIngestionDraft] = useState(defaultIngestionDraft);
   const [ingestionBusy, setIngestionBusy] = useState(false);
   const [ingestionError, setIngestionError] = useState('');
+  const [ingestionInputs, setIngestionInputs] = useState([]);
+  const [ingestionRuns, setIngestionRuns] = useState([]);
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
 
   const [store, setStore] = useState(() => {
@@ -75,12 +77,10 @@ const CommentsModePage = () => {
         comments: Array.isArray(parsed.comments) ? parsed.comments : [],
         fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
         codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-        youtube_inputs: Array.isArray(parsed.youtube_inputs) ? parsed.youtube_inputs : [],
-        youtube_runs: Array.isArray(parsed.youtube_runs) ? parsed.youtube_runs : [],
         youtube_datasets: Array.isArray(parsed.youtube_datasets) ? parsed.youtube_datasets : [],
       };
     } catch {
-      return { comments: [], fragments: [], codes: [], youtube_inputs: [], youtube_runs: [], youtube_datasets: [] };
+      return { comments: [], fragments: [], codes: [], youtube_datasets: [] };
     }
   });
 
@@ -92,8 +92,6 @@ const CommentsModePage = () => {
   const comments = store.comments || [];
   const fragments = store.fragments || [];
   const codes = store.codes || [];
-  const youtubeInputs = store.youtube_inputs || [];
-  const youtubeRuns = store.youtube_runs || [];
 
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
 
@@ -134,14 +132,34 @@ const CommentsModePage = () => {
     persist({ ...store, fragments: nextFragments });
   };
 
-  const saveIngestionInput = () => {
-    const normalized = {
-      ...ingestionDraft,
-      id: `yt_input_${Date.now()}`,
-      name: ingestionDraft.videoUrl?.trim() || ingestionDraft.videoId?.trim() || ingestionDraft.channelId?.trim() || `input_${youtubeInputs.length + 1}`,
-      created_at: new Date().toISOString(),
-    };
-    persist({ ...store, youtube_inputs: [normalized, ...youtubeInputs] });
+  const loadInputs = async () => {
+    try {
+      const data = await commentsIngestionApi.listInputs({ projectId, campaignId });
+      setIngestionInputs(Array.isArray(data.items) ? data.items : []);
+    } catch (error) {
+      setIngestionError(error.message || 'No se pudieron cargar inputs guardados.');
+    }
+  };
+
+  const saveIngestionInput = async () => {
+    setIngestionError('');
+    try {
+      const saved = await commentsIngestionApi.saveInput({
+        project_id: projectId,
+        campaign_id: campaignId,
+        name: ingestionDraft.videoUrl?.trim() || ingestionDraft.videoId?.trim() || ingestionDraft.channelId?.trim() || `input_${ingestionInputs.length + 1}`,
+        video_url: ingestionDraft.videoUrl,
+        video_id: ingestionDraft.videoId,
+        channel_id: ingestionDraft.channelId,
+        keyword: ingestionDraft.keyword,
+        max_comments: ingestionDraft.maxComments,
+        include_replies: ingestionDraft.includeReplies,
+        order: ingestionDraft.order,
+      });
+      setIngestionInputs((prev) => [saved, ...prev.filter((row) => row.id !== saved.id)]);
+    } catch (error) {
+      setIngestionError(error.message || 'No se pudo guardar input.');
+    }
   };
 
   const loadCommentsTable = async ({ offset = commentsTable.offset, q = commentsTable.q } = {}) => {
@@ -170,17 +188,30 @@ const CommentsModePage = () => {
   const loadRuns = async () => {
     try {
       const data = await commentsIngestionApi.listRuns({ projectId, campaignId });
-      const normalizedRuns = Array.isArray(data.items) ? data.items : [];
-      persist({ ...store, youtube_runs: normalizedRuns });
+      setIngestionRuns(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
       setIngestionError(error.message || 'No se pudo cargar historial de runs.');
+    }
+  };
+
+  const deleteRun = async (runId) => {
+    if (!runId) return;
+    if (!window.confirm('¿Eliminar este run? También se eliminarán su input asociado y sus comentarios de la base total.')) return;
+    try {
+      await commentsIngestionApi.deleteRun({ runId, projectId, campaignId });
+      await Promise.all([loadRuns(), loadInputs(), loadCommentsTable({ offset: 0, q: commentsTable.q })]);
+    } catch (error) {
+      setIngestionError(error.message || 'No se pudo eliminar el run.');
     }
   };
 
   useEffect(() => {
     if (tab !== 'comments') return;
     if (commentsSubtab === 'table') loadCommentsTable({ offset: 0, q: commentsTable.q });
-    if (commentsSubtab === 'ingestion') loadRuns();
+    if (commentsSubtab === 'ingestion') {
+      loadRuns();
+      loadInputs();
+    }
   }, [tab, commentsSubtab]);
 
   const runYouTubeIngestion = async () => {
@@ -211,6 +242,7 @@ const CommentsModePage = () => {
         order: ingestionDraft.order || 'time',
       });
       await loadRuns();
+      await loadInputs();
       await loadCommentsTable({ offset: 0, q: commentsTable.q });
       setCommentsSubtab('table');
     } catch (error) {
@@ -320,9 +352,18 @@ const CommentsModePage = () => {
                   <div className="rounded-lg border bg-white p-3">
                     <p className="text-xs font-semibold text-slate-700">Inputs guardados</p>
                     <div className="mt-2 space-y-1.5 max-h-40 overflow-auto">
-                      {youtubeInputs.length === 0 ? <p className="text-xs text-slate-500">Sin configuraciones guardadas.</p> : youtubeInputs.map((input) => (
-                        <button key={input.id} className="w-full rounded border px-2 py-1 text-left text-xs hover:bg-slate-50" onClick={() => setIngestionDraft((prev) => ({ ...prev, ...input }))}>
-                          {input.name}
+                      {ingestionInputs.length === 0 ? <p className="text-xs text-slate-500">Sin configuraciones guardadas.</p> : ingestionInputs.map((input) => (
+                        <button key={input.id} className="w-full rounded border px-2 py-1 text-left text-xs hover:bg-slate-50" onClick={() => setIngestionDraft((prev) => ({
+                          ...prev,
+                          videoUrl: input?.config?.video_url || '',
+                          videoId: input?.config?.video_id || '',
+                          channelId: input?.config?.channel_id || '',
+                          keyword: input?.config?.keyword || '',
+                          maxComments: input?.config?.max_comments ?? 100,
+                          includeReplies: Boolean(input?.config?.include_replies),
+                          order: input?.config?.order || 'time',
+                        }))}>
+                          {input.name || 'Input'}
                         </button>
                       ))}
                     </div>
@@ -330,10 +371,13 @@ const CommentsModePage = () => {
                   <div className="rounded-lg border bg-white p-3">
                     <p className="text-xs font-semibold text-slate-700">Runs recientes</p>
                     <div className="mt-2 space-y-1.5 max-h-40 overflow-auto">
-                      {youtubeRuns.length === 0 ? <p className="text-xs text-slate-500">Sin ejecuciones.</p> : youtubeRuns.slice(0, 8).map((run) => (
+                      {ingestionRuns.length === 0 ? <p className="text-xs text-slate-500">Sin ejecuciones.</p> : ingestionRuns.slice(0, 8).map((run) => (
                         <div key={run.id} className="rounded border px-2 py-1 text-xs">
-                          <p className="font-medium text-slate-700">{run.status === 'succeeded' ? '✅' : '❌'} {new Date(run.created_at).toLocaleString()}</p>
-                          <p className="text-slate-500">Dataset: {run.dataset_id || '—'} · Importados: {run.imported_count || 0}</p>
+                          <p className="font-medium text-slate-700">{run.status === 'succeeded' ? '✅' : run.status === 'running' ? '⏳' : '❌'} {new Date(run.created_at).toLocaleString()}</p>
+                          <p className="text-slate-500">Input: {run.input_name || run.input_id || '—'} · Importados: {run.imported_count || 0}</p>
+                          <div className="mt-1 flex justify-end">
+                            <button type="button" className="text-[11px] text-rose-600 hover:underline" onClick={() => deleteRun(run.id)}>Eliminar run</button>
+                          </div>
                         </div>
                       ))}
                     </div>
