@@ -2317,6 +2317,57 @@ function validateYouTubeRedirectUri(value = '') {
   return { ok: true };
 }
 
+function inferRequestOrigin(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || String(req.headers.host || '').trim();
+  if (!host) return '';
+  const protocol = forwardedProto || 'http';
+  return `${protocol}://${host}`;
+}
+
+function buildDefaultYouTubeRedirectUri(req) {
+  const origin = inferRequestOrigin(req).replace(/\/$/, '');
+  if (!origin) return '';
+  return `${origin}/api/youtube/auth/callback`;
+}
+
+function resolveYouTubeRedirectUri(config, req) {
+  const defaultRedirectUri = buildDefaultYouTubeRedirectUri(req);
+  const configured = String(config?.redirectUri || '').trim();
+  if (!configured) return defaultRedirectUri;
+
+  let parsed = null;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    return configured;
+  }
+
+  const frontendBase = String(config?.frontendBaseUrl || '').trim();
+  const frontendOrigin = (() => {
+    try {
+      return frontendBase ? new URL(frontendBase).origin : '';
+    } catch {
+      return '';
+    }
+  })();
+
+  const pointsToFrontendRoot = frontendOrigin && parsed.origin === frontendOrigin && parsed.pathname === '/';
+  if (pointsToFrontendRoot && defaultRedirectUri) {
+    return defaultRedirectUri;
+  }
+
+  return configured;
+}
+
+function withResolvedYouTubeRedirectUri(config, req) {
+  return {
+    ...config,
+    redirectUri: resolveYouTubeRedirectUri(config, req),
+  };
+}
+
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
   const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
@@ -3759,13 +3810,15 @@ const server = http.createServer(async (req, res) => {
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
 
       const { config, integration } = await getYouTubeConfigForUser(user.id);
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
       const connection = await getYouTubeConnectionByUserId(user.id);
       return sendJson(req, res, 200, {
         data: {
-          oauthConfigured: isYouTubeOAuthConfigured(config),
-          apiKeyConfigured: isYouTubeApiKeyConfigured(config),
-          redirectUri: config.redirectUri || null,
-          scopes: config.scopes,
+          oauthConfigured: isYouTubeOAuthConfigured(runtimeConfig),
+          apiKeyConfigured: isYouTubeApiKeyConfigured(runtimeConfig),
+          redirectUri: runtimeConfig.redirectUri || null,
+          configuredRedirectUri: config.redirectUri || null,
+          scopes: runtimeConfig.scopes,
           connected: Boolean(connection),
           hasCustomConfig: Boolean(integration),
           integration: integration ? {
@@ -3818,12 +3871,14 @@ const server = http.createServer(async (req, res) => {
       );
 
       const { config, integration } = await getYouTubeConfigForUser(user.id);
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
       return sendJson(req, res, 200, {
         data: {
-          oauthConfigured: isYouTubeOAuthConfigured(config),
-          apiKeyConfigured: isYouTubeApiKeyConfigured(config),
-          redirectUri: config.redirectUri || null,
-          scopes: config.scopes,
+          oauthConfigured: isYouTubeOAuthConfigured(runtimeConfig),
+          apiKeyConfigured: isYouTubeApiKeyConfigured(runtimeConfig),
+          redirectUri: runtimeConfig.redirectUri || null,
+          configuredRedirectUri: config.redirectUri || null,
+          scopes: runtimeConfig.scopes,
           hasCustomConfig: Boolean(integration),
           integration: integration ? {
             api_key: integration.api_key || '',
@@ -3840,11 +3895,12 @@ const server = http.createServer(async (req, res) => {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const { config } = await getYouTubeConfigForUser(user.id);
-      if (!isYouTubeOAuthConfigured(config)) {
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
+      if (!isYouTubeOAuthConfigured(runtimeConfig)) {
         return sendJson(req, res, 400, { error: 'YouTube OAuth is not configured on backend' });
       }
 
-      const redirectCheck = validateYouTubeRedirectUri(config.redirectUri);
+      const redirectCheck = validateYouTubeRedirectUri(runtimeConfig.redirectUri);
       if (!redirectCheck.ok) {
         return sendJson(req, res, 400, { error: redirectCheck.reason, code: 'invalid_redirect_uri' });
       }
@@ -3862,7 +3918,7 @@ const server = http.createServer(async (req, res) => {
 
       return sendJson(req, res, 200, {
         data: {
-          authUrl: buildYouTubeConsentUrl({ state: stateToken, config }),
+          authUrl: buildYouTubeConsentUrl({ state: stateToken, config: runtimeConfig }),
         },
       });
     }
@@ -3900,18 +3956,19 @@ const server = http.createServer(async (req, res) => {
       }
 
       const { config } = await getYouTubeConfigForUser(state.user_id);
-      const tokenPayload = await exchangeYouTubeCodeForTokens({ code, config });
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
+      const tokenPayload = await exchangeYouTubeCodeForTokens({ code, config: runtimeConfig });
       const accessToken = tokenPayload.access_token || '';
       const refreshToken = tokenPayload.refresh_token || '';
       const expiresAt = computeFutureIso(tokenPayload.expires_in || 3600);
-      const scope = tokenPayload.scope || config.scopes.join(' ');
+      const scope = tokenPayload.scope || runtimeConfig.scopes.join(' ');
       const tokenType = tokenPayload.token_type || 'Bearer';
 
       let channelId = '';
       let channelTitle = '';
       if (accessToken) {
         const channelResp = await listYouTubeChannels({
-          config,
+          config: runtimeConfig,
           auth: { accessToken, apiKey: '' },
           params: { mine: 'true', maxResults: 1, fields: 'items(id,snippet(title))' },
         });
@@ -3952,7 +4009,7 @@ const server = http.createServer(async (req, res) => {
 
       await pool.query('UPDATE youtube_oauth_states SET consumed_at = ? WHERE id = ?', [nowIso(), state.id]);
 
-      const frontend = config.frontendBaseUrl.replace(/\/$/, '');
+      const frontend = runtimeConfig.frontendBaseUrl.replace(/\/$/, '');
       const destination = new URL(normalizeFrontendPath(state.redirect_path || '/projects'), frontend);
       destination.searchParams.set('youtube', 'connected');
       res.writeHead(302, { Location: destination.toString() });

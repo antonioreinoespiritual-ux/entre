@@ -70,7 +70,7 @@ const ProjectsPage = () => {
         api_key: data?.integration?.api_key || '',
         client_id: data?.integration?.client_id || '',
         client_secret: data?.integration?.client_secret || '',
-        redirect_uri: data?.integration?.redirect_uri || data?.redirectUri || '',
+        redirect_uri: data?.integration?.redirect_uri || data?.configuredRedirectUri || data?.redirectUri || '',
         scopes: data?.integration?.scopes || (Array.isArray(data?.scopes) ? data.scopes.join(', ') : ''),
       });
     } catch (error) {
@@ -323,6 +323,9 @@ const ProjectsPage = () => {
                     <p className="mt-2 text-xs text-slate-500">Recomendado local: <button type="button" className="text-indigo-600 hover:underline" onClick={() => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: suggestedLocalRedirectUri }))}>{suggestedLocalRedirectUri}</button></p>
                     {redirectUriLooksPrivateIp ? (
                       <p className="mt-1 text-xs text-rose-600">Google OAuth bloquea IPs privadas (ej. 192.168.x.x). Usa <span className="font-semibold">localhost</span> o un dominio HTTPS público registrado en Google Cloud Console.</p>
+                    ) : null}
+                    {youtubeConfig.data?.redirectUri && youtubeConfig.data?.configuredRedirectUri && youtubeConfig.data.redirectUri !== youtubeConfig.data.configuredRedirectUri ? (
+                      <p className="mt-1 text-xs text-amber-700">URI OAuth efectivo en backend: <span className="font-mono">{youtubeConfig.data.redirectUri}</span></p>
                     ) : null}
                   </label>
                   <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
