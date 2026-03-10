@@ -21,6 +21,26 @@ const ProjectsPage = () => {
   const [youtubeConfig, setYoutubeConfig] = useState({ loading: false, error: '', data: null, channelPreview: null });
   const [youtubeSettingsDraft, setYoutubeSettingsDraft] = useState({ api_key: '', client_id: '', client_secret: '', redirect_uri: '', scopes: '' });
 
+  const suggestedLocalRedirectUri = `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}`.replace(/\/$/, '') + '/api/youtube/auth/callback';
+
+  const isPrivateIpv4Host = (hostname = '') => {
+    const parts = String(hostname || '').split('.').map((part) => Number(part));
+    if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+    if (parts[0] === 10 || parts[0] === 127) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    return false;
+  };
+
+  const redirectUriLooksPrivateIp = (() => {
+    try {
+      const parsed = new URL(youtubeSettingsDraft.redirect_uri || '');
+      return isPrivateIpv4Host(parsed.hostname) && parsed.hostname !== '127.0.0.1';
+    } catch {
+      return false;
+    }
+  })();
+
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
@@ -30,6 +50,10 @@ const ProjectsPage = () => {
     const ytState = url.searchParams.get('youtube');
     if (ytState) {
       setSettingsOpen(true);
+      const ytReason = url.searchParams.get('reason');
+      if (ytState === 'error' && ytReason) {
+        setYoutubeConfig((prev) => ({ ...prev, error: decodeURIComponent(ytReason) }));
+      }
       loadYouTubeConfig();
       url.searchParams.delete('youtube');
       url.searchParams.delete('reason');
@@ -296,6 +320,10 @@ const ProjectsPage = () => {
                   <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
                     <p className="text-xs text-slate-500">Redirect URI</p>
                     <input className="mt-1 w-full rounded border px-2 py-1.5" value={youtubeSettingsDraft.redirect_uri} onChange={(e) => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: e.target.value }))} placeholder="https://tu-app.com/api/youtube/auth/callback" />
+                    <p className="mt-2 text-xs text-slate-500">Recomendado local: <button type="button" className="text-indigo-600 hover:underline" onClick={() => setYoutubeSettingsDraft((prev) => ({ ...prev, redirect_uri: suggestedLocalRedirectUri }))}>{suggestedLocalRedirectUri}</button></p>
+                    {redirectUriLooksPrivateIp ? (
+                      <p className="mt-1 text-xs text-rose-600">Google OAuth bloquea IPs privadas (ej. 192.168.x.x). Usa <span className="font-semibold">localhost</span> o un dominio HTTPS público registrado en Google Cloud Console.</p>
+                    ) : null}
                   </label>
                   <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
                     <p className="text-xs text-slate-500">Scopes (separados por coma)</p>

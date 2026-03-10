@@ -2272,6 +2272,51 @@ function normalizeFrontendPath(rawPath = '/projects') {
   return pathValue;
 }
 
+function isPrivateIpv4Host(hostname = '') {
+  const parts = String(hostname || '').split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  if (parts[0] === 10) return true;
+  if (parts[0] === 127) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
+function validateYouTubeRedirectUri(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return { ok: false, reason: 'Debes configurar redirect_uri para OAuth de YouTube.' };
+  }
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: 'redirect_uri no es una URL válida.' };
+  }
+
+  const protocol = parsed.protocol.toLowerCase();
+  if (!['http:', 'https:'].includes(protocol)) {
+    return { ok: false, reason: 'redirect_uri debe usar http o https.' };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (isPrivateIpv4Host(host) && host !== '127.0.0.1') {
+    return {
+      ok: false,
+      reason: 'Google OAuth bloquea redirect_uri con IP privada (ej. 192.168.x.x). Usa localhost o un dominio HTTPS público registrado en Google Cloud Console.',
+    };
+  }
+
+  if (protocol === 'http:' && host !== 'localhost' && host !== '127.0.0.1') {
+    return { ok: false, reason: 'Con http solo se permite localhost/127.0.0.1 para OAuth.' };
+  }
+
+  return { ok: true };
+}
+
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
   const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
@@ -3750,6 +3795,14 @@ const server = http.createServer(async (req, res) => {
       const redirectUri = String(body.redirect_uri || '').trim();
       const scopes = String(body.scopes || '').trim();
 
+      const oauthAttempted = Boolean(clientId || clientSecret || redirectUri);
+      if (oauthAttempted) {
+        const redirectCheck = validateYouTubeRedirectUri(redirectUri);
+        if (!redirectCheck.ok) {
+          return sendJson(req, res, 400, { error: redirectCheck.reason, code: 'invalid_redirect_uri' });
+        }
+      }
+
       const id = buildEntityId('youtube_integration');
       await pool.query(
         `INSERT INTO youtube_integrations (id, user_id, api_key, client_id, client_secret, redirect_uri, scopes, created_at, updated_at)
@@ -3789,6 +3842,11 @@ const server = http.createServer(async (req, res) => {
       const { config } = await getYouTubeConfigForUser(user.id);
       if (!isYouTubeOAuthConfigured(config)) {
         return sendJson(req, res, 400, { error: 'YouTube OAuth is not configured on backend' });
+      }
+
+      const redirectCheck = validateYouTubeRedirectUri(config.redirectUri);
+      if (!redirectCheck.ok) {
+        return sendJson(req, res, 400, { error: redirectCheck.reason, code: 'invalid_redirect_uri' });
       }
 
       const body = await readBody(req);
