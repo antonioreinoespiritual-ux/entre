@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { ArrowLeft, MessageSquareText, Tags, Network, Scissors } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { youtubeApi } from '@/services/youtubeApi';
+import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 
 const defaultCodeDraft = { name: '', slug: '', parent_slug: '' };
 const defaultIngestionDraft = {
@@ -60,11 +60,13 @@ const CommentsModePage = () => {
   const storageKey = `comments-mode:${projectId}:${campaignId}`;
 
   const [tab, setTab] = useState('comments');
+  const [commentsSubtab, setCommentsSubtab] = useState('ingestion');
   const [commentText, setCommentText] = useState('');
   const [codeDraft, setCodeDraft] = useState(defaultCodeDraft);
   const [ingestionDraft, setIngestionDraft] = useState(defaultIngestionDraft);
   const [ingestionBusy, setIngestionBusy] = useState(false);
   const [ingestionError, setIngestionError] = useState('');
+  const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
 
   const [store, setStore] = useState(() => {
     try {
@@ -92,7 +94,6 @@ const CommentsModePage = () => {
   const codes = store.codes || [];
   const youtubeInputs = store.youtube_inputs || [];
   const youtubeRuns = store.youtube_runs || [];
-  const youtubeDatasets = store.youtube_datasets || [];
 
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
 
@@ -143,6 +144,45 @@ const CommentsModePage = () => {
     persist({ ...store, youtube_inputs: [normalized, ...youtubeInputs] });
   };
 
+  const loadCommentsTable = async ({ offset = commentsTable.offset, q = commentsTable.q } = {}) => {
+    try {
+      setCommentsTable((prev) => ({ ...prev, loading: true, error: '' }));
+      const data = await commentsIngestionApi.listTable({
+        projectId,
+        campaignId,
+        limit: commentsTable.limit,
+        offset,
+        q,
+      });
+      setCommentsTable((prev) => ({
+        ...prev,
+        loading: false,
+        items: Array.isArray(data.items) ? data.items : [],
+        total: Number(data.total || 0),
+        offset,
+        q,
+      }));
+    } catch (error) {
+      setCommentsTable((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar la tabla de comentarios.' }));
+    }
+  };
+
+  const loadRuns = async () => {
+    try {
+      const data = await commentsIngestionApi.listRuns({ projectId, campaignId });
+      const normalizedRuns = Array.isArray(data.items) ? data.items : [];
+      persist({ ...store, youtube_runs: normalizedRuns });
+    } catch (error) {
+      setIngestionError(error.message || 'No se pudo cargar historial de runs.');
+    }
+  };
+
+  useEffect(() => {
+    if (tab !== 'comments') return;
+    if (commentsSubtab === 'table') loadCommentsTable({ offset: 0, q: commentsTable.q });
+    if (commentsSubtab === 'ingestion') loadRuns();
+  }, [tab, commentsSubtab]);
+
   const runYouTubeIngestion = async () => {
     setIngestionError('');
     const inferredVideoId = parseYouTubeVideoId(ingestionDraft.videoUrl) || parseYouTubeVideoId(ingestionDraft.videoId);
@@ -156,143 +196,24 @@ const CommentsModePage = () => {
     const maxComments = Math.min(1000, Math.max(1, Number(ingestionDraft.maxComments) || 100));
     const includeReplies = Boolean(ingestionDraft.includeReplies);
     const keyword = ingestionDraft.keyword.trim().toLowerCase();
-    const runId = `yt_run_${Date.now()}`;
-    const startedAt = new Date().toISOString();
     setIngestionBusy(true);
 
     try {
-      let pageToken = '';
-      let collected = [];
-      const pageSize = Math.min(100, maxComments);
-
-      while (collected.length < maxComments) {
-        const query = {
-          maxResults: String(pageSize),
-          order: ingestionDraft.order || 'time',
-          textFormat: 'plainText',
-        };
-        if (sourceVideoId) query.videoId = sourceVideoId;
-        if (!sourceVideoId && sourceChannelId) query.allThreadsRelatedToChannelId = sourceChannelId;
-        if (pageToken) query.pageToken = pageToken;
-
-        const response = await youtubeApi.listCommentThreads(query);
-        const items = Array.isArray(response?.items) ? response.items : [];
-        const rows = [];
-        items.forEach((thread) => {
-          rows.push({
-            id: `yt_top_${thread.topLevelCommentId || thread.id}`,
-            source_type: 'youtube_comment_thread',
-            source_id: thread.topLevelCommentId || thread.id,
-            thread_id: thread.id,
-            video_id: thread.videoId || sourceVideoId || '',
-            channel_id: thread.channelId || sourceChannelId || '',
-            text: thread.textOriginal || thread.textDisplay || '',
-            author: thread.authorDisplayName || '',
-            like_count: Number(thread.likeCount || 0),
-            published_at: thread.publishedAt || null,
-            created_at: new Date().toISOString(),
-          });
-
-          if (includeReplies && Array.isArray(thread.replies)) {
-            thread.replies.forEach((reply) => {
-              rows.push({
-                id: `yt_reply_${reply.id}`,
-                source_type: 'youtube_comment_reply',
-                source_id: reply.id,
-                parent_id: reply.parentId || thread.topLevelCommentId || '',
-                thread_id: thread.id,
-                video_id: thread.videoId || sourceVideoId || '',
-                channel_id: reply.authorChannelId || sourceChannelId || '',
-                text: reply.textOriginal || reply.textDisplay || '',
-                author: reply.authorDisplayName || '',
-                like_count: Number(reply.likeCount || 0),
-                published_at: reply.publishedAt || null,
-                created_at: new Date().toISOString(),
-              });
-            });
-          }
-        });
-
-        const filtered = keyword
-          ? rows.filter((row) => row.text.toLowerCase().includes(keyword))
-          : rows;
-
-        collected = [...collected, ...filtered];
-        if (!response?.nextPageToken) break;
-        pageToken = response.nextPageToken;
-      }
-
-      const datasetItems = collected.slice(0, maxComments);
-      const datasetId = `yt_dataset_${Date.now()}`;
-      const dataset = {
-        id: datasetId,
-        run_id: runId,
-        source: 'youtube',
-        created_at: new Date().toISOString(),
-        item_count: datasetItems.length,
-        items: datasetItems,
-      };
-
-      const importedComments = datasetItems.map((item) => ({
-        id: `c_${item.id}`,
-        text: item.text,
-        created_at: item.published_at || item.created_at,
-        source: 'youtube',
-        source_id: item.source_id,
-        dataset_id: datasetId,
-      }));
-
-      const seen = new Set(comments.map((comment) => `${comment.source || 'manual'}:${comment.source_id || comment.id}`));
-      const dedupedImported = importedComments.filter((comment) => {
-        const key = `${comment.source}:${comment.source_id}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
+      await commentsIngestionApi.runIngestion({
+        project_id: projectId,
+        campaign_id: campaignId,
+        video_url: ingestionDraft.videoUrl,
+        video_id: sourceVideoId,
+        channel_id: sourceChannelId,
+        keyword,
+        max_comments: maxComments,
+        include_replies: includeReplies,
+        order: ingestionDraft.order || 'time',
       });
-
-      const importedFragments = dedupedImported.map((comment) => ({
-        id: `f_${comment.id}`,
-        comment_id: comment.id,
-        excerpt: comment.text.length > 180 ? `${comment.text.slice(0, 180)}…` : comment.text,
-        code_slugs: [],
-        created_at: comment.created_at,
-      }));
-
-      const run = {
-        id: runId,
-        status: 'succeeded',
-        source: 'youtube',
-        created_at: startedAt,
-        finished_at: new Date().toISOString(),
-        input: {
-          ...ingestionDraft,
-          videoId: sourceVideoId,
-          channelId: sourceChannelId,
-          maxComments,
-          includeReplies,
-        },
-        dataset_id: datasetId,
-        imported_count: dedupedImported.length,
-      };
-
-      persist({
-        ...store,
-        comments: [...dedupedImported, ...comments],
-        fragments: [...importedFragments, ...fragments],
-        youtube_runs: [run, ...youtubeRuns],
-        youtube_datasets: [dataset, ...youtubeDatasets],
-      });
+      await loadRuns();
+      await loadCommentsTable({ offset: 0, q: commentsTable.q });
+      setCommentsSubtab('table');
     } catch (error) {
-      const failedRun = {
-        id: runId,
-        status: 'failed',
-        source: 'youtube',
-        created_at: startedAt,
-        finished_at: new Date().toISOString(),
-        input: ingestionDraft,
-        error: error.message || 'No se pudo completar la ingesta.',
-      };
-      persist({ ...store, youtube_runs: [failedRun, ...youtubeRuns] });
       setIngestionError(error.message || 'No se pudo completar la ingesta.');
     } finally {
       setIngestionBusy(false);
@@ -361,6 +282,13 @@ const CommentsModePage = () => {
           {tab === 'comments' && (
             <div className="rounded-xl border bg-white p-4 space-y-3">
               <h2 className="font-semibold text-slate-900">Base de comentarios</h2>
+              <div className="inline-flex rounded-lg border bg-slate-50 p-1">
+                <button type="button" className={`rounded-md px-3 py-1.5 text-xs ${commentsSubtab === 'ingestion' ? 'bg-white text-indigo-700 border' : 'text-slate-600'}`} onClick={() => setCommentsSubtab('ingestion')}>Ingesta</button>
+                <button type="button" className={`rounded-md px-3 py-1.5 text-xs ${commentsSubtab === 'table' ? 'bg-white text-indigo-700 border' : 'text-slate-600'}`} onClick={() => setCommentsSubtab('table')}>Tabla de comentarios</button>
+              </div>
+
+              {commentsSubtab === 'ingestion' ? (
+              <>
 
               <div className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-3 space-y-3">
                 <div>
@@ -413,16 +341,71 @@ const CommentsModePage = () => {
                 </div>
               </div>
 
-              <textarea className="w-full rounded-lg border p-3 text-sm" rows={4} placeholder="Pega o escribe un comentario" value={commentText} onChange={(e) => setCommentText(e.target.value)} />
+              <textarea className="w-full rounded-lg border p-3 text-sm" rows={4} placeholder="Pega o escribe un comentario" value={commentText} onChange={(e) => setCommentText((e.target.value))} />
               <div className="flex justify-end"><Button className="bg-indigo-600 text-white" onClick={addComment}>Agregar comentario</Button></div>
+              </>
+              ) : null}
+
+              {commentsSubtab === 'table' ? (
+                <div className="rounded-lg border bg-white overflow-hidden">
+                  <div className="p-3 border-b flex flex-wrap items-center gap-2 justify-between">
+                    <input className="rounded border px-2 py-1.5 text-sm w-full max-w-sm" placeholder="Buscar texto / autor / id" value={commentsTable.q} onChange={(e) => setCommentsTable((prev) => ({ ...prev, q: e.target.value }))} />
+                    <Button className="bg-white border text-slate-700" onClick={() => loadCommentsTable({ offset: 0, q: commentsTable.q })}>Buscar</Button>
+                  </div>
+                  {commentsTable.error ? <p className="px-3 py-2 text-xs text-rose-600">{commentsTable.error}</p> : null}
+                  <div className="overflow-auto">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-slate-50 text-slate-600 text-xs">
+                        <tr>
+                          <th className="px-3 py-2 text-left">Fuente</th>
+                          <th className="px-3 py-2 text-left">Comentario</th>
+                          <th className="px-3 py-2 text-left">Autor</th>
+                          <th className="px-3 py-2 text-left">Video</th>
+                          <th className="px-3 py-2 text-left">Likes</th>
+                          <th className="px-3 py-2 text-left">Fecha</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {commentsTable.loading ? (
+                          <tr><td className="px-3 py-3 text-slate-500" colSpan={6}>Cargando comentarios...</td></tr>
+                        ) : commentsTable.items.length === 0 ? (
+                          <tr><td className="px-3 py-3 text-slate-500" colSpan={6}>Sin registros en tabla.</td></tr>
+                        ) : commentsTable.items.map((row) => (
+                          <tr key={row.id} className="border-t align-top">
+                            <td className="px-3 py-2">{row.source}</td>
+                            <td className="px-3 py-2 text-slate-800 max-w-[520px]">
+                              <p className="line-clamp-3">{row.text}</p>
+                              <p className="text-[11px] text-slate-500 mt-1">{row.source_comment_id}</p>
+                            </td>
+                            <td className="px-3 py-2">{row.author_name || '—'}</td>
+                            <td className="px-3 py-2 text-xs text-slate-600">{row.video_id || '—'}</td>
+                            <td className="px-3 py-2">{row.like_count || 0}</td>
+                            <td className="px-3 py-2 text-xs text-slate-600">{row.published_at ? new Date(row.published_at).toLocaleString() : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="p-3 border-t flex items-center justify-between text-xs text-slate-600">
+                    <span>Total: {commentsTable.total}</span>
+                    <div className="flex gap-2">
+                      <Button className="bg-white border" disabled={commentsTable.offset <= 0} onClick={() => loadCommentsTable({ offset: Math.max(0, commentsTable.offset - commentsTable.limit), q: commentsTable.q })}>Anterior</Button>
+                      <Button className="bg-white border" disabled={commentsTable.offset + commentsTable.limit >= commentsTable.total} onClick={() => loadCommentsTable({ offset: commentsTable.offset + commentsTable.limit, q: commentsTable.q })}>Siguiente</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {commentsSubtab === 'ingestion' ? (
               <div className="space-y-2">
-                {comments.length === 0 ? <p className="text-sm text-slate-500">Sin comentarios cargados.</p> : comments.map((comment) => (
+                {comments.length === 0 ? <p className="text-sm text-slate-500">Sin comentarios manuales cargados.</p> : comments.map((comment) => (
                   <div key={comment.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
                     <p className="text-slate-800">{comment.text}</p>
                     <p className="mt-1 text-xs text-slate-500">{new Date(comment.created_at).toLocaleString()} {comment.source ? `· ${comment.source}` : ''}</p>
                   </div>
                 ))}
               </div>
+              ) : null}
             </div>
           )}
 

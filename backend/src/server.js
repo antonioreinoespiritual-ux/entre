@@ -379,6 +379,60 @@ const schemaSql = [
     FOREIGN KEY (document_node_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_interview_semantic_fragments_document ON interview_semantic_fragments(document_node_id, created_at)',
+  `CREATE TABLE IF NOT EXISTS comment_ingestion_runs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_job TEXT NOT NULL,
+    source_query_json TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    comments_count INTEGER DEFAULT 0,
+    imported_count INTEGER DEFAULT 0,
+    error_message TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_runs_campaign ON comment_ingestion_runs(user_id, project_id, campaign_id, created_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_dataset_comments (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    audience_id TEXT,
+    hypothesis_id TEXT,
+    source TEXT NOT NULL,
+    source_comment_id TEXT NOT NULL,
+    parent_comment_id TEXT,
+    video_id TEXT,
+    channel_id TEXT,
+    author_name TEXT,
+    author_channel_id TEXT,
+    text TEXT NOT NULL,
+    published_at TEXT,
+    like_count INTEGER DEFAULT 0,
+    reply_count INTEGER DEFAULT 0,
+    source_job TEXT,
+    source_run_id TEXT,
+    source_query_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+    FOREIGN KEY (hypothesis_id) REFERENCES interview_hypotheses(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL,
+    UNIQUE(user_id, project_id, campaign_id, source, source_comment_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, published_at DESC, created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)',
   `CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -438,6 +492,8 @@ const ENTITY_ID_PREFIX = {
   interview_form: 'form_',
   interview_session: 'int_',
   hypothesis_video_link: 'hvid_',
+  comment_ingestion_run: 'crun_',
+  comment_record: 'com_',
 };
 
 function buildEntityId(entityType, fallbackPrefix = 'id_') {
@@ -2368,6 +2424,22 @@ function withResolvedYouTubeRedirectUri(config, req) {
   };
 }
 
+function parseYouTubeVideoId(rawValue = '') {
+  const input = String(rawValue || '').trim();
+  if (!input) return '';
+  if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+  try {
+    const parsed = new URL(input);
+    if (parsed.hostname.includes('youtu.be')) return String(parsed.pathname || '').replace('/', '').slice(0, 11);
+    const searchVideoId = String(parsed.searchParams.get('v') || '').trim();
+    if (searchVideoId) return searchVideoId.slice(0, 11);
+    const embedMatch = parsed.pathname.match(/\/embed\/([a-zA-Z0-9_-]{11})/);
+    return embedMatch?.[1] || '';
+  } catch {
+    return '';
+  }
+}
+
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
   const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
@@ -4068,6 +4140,262 @@ const server = http.createServer(async (req, res) => {
           source: auth.accessToken ? 'oauth' : 'api_key',
         },
       });
+    }
+
+    if (url.pathname === '/api/comment-base/ingest' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query(
+        'SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1',
+        [campaignId, user.id],
+      );
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const sourceVideoId = parseYouTubeVideoId(body.video_url || body.video_id || '');
+      const sourceChannelId = String(body.channel_id || '').trim();
+      if (!sourceVideoId && !sourceChannelId) {
+        return sendJson(req, res, 400, { error: 'video_url/video_id or channel_id is required' });
+      }
+
+      const normalizedInput = {
+        video_url: String(body.video_url || '').trim(),
+        video_id: sourceVideoId,
+        channel_id: sourceChannelId,
+        keyword: String(body.keyword || '').trim(),
+        max_comments: Math.min(1000, Math.max(1, Number(body.max_comments) || 100)),
+        include_replies: Boolean(body.include_replies),
+        order: ['relevance', 'time'].includes(String(body.order || '').trim()) ? String(body.order || '').trim() : 'time',
+      };
+
+      const runId = buildEntityId('comment_ingestion_run');
+      const startedAt = nowIso();
+      await pool.query(
+        `INSERT INTO comment_ingestion_runs
+          (id, user_id, project_id, campaign_id, source, source_job, source_query_json, status, started_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          runId,
+          user.id,
+          projectId,
+          campaignId,
+          'youtube',
+          'youtube_comments_ingestion',
+          JSON.stringify(normalizedInput),
+          'running',
+          startedAt,
+          startedAt,
+          startedAt,
+        ],
+      );
+
+      try {
+        const { config } = await getYouTubeConfigForUser(user.id);
+        const auth = await getYouTubeAuthForUser(user.id, config);
+        if (!auth.accessToken && !auth.apiKey) {
+          throw new Error('YouTube integration is not configured. Configure API key and/or OAuth first.');
+        }
+
+        const keyword = normalizedInput.keyword.toLowerCase();
+        const rows = [];
+        let pageToken = '';
+        const pageSize = Math.min(100, normalizedInput.max_comments);
+
+        while (rows.length < normalizedInput.max_comments) {
+          const params = {
+            maxResults: String(pageSize),
+            order: normalizedInput.order,
+            textFormat: 'plainText',
+          };
+          if (sourceVideoId) params.videoId = sourceVideoId;
+          if (!sourceVideoId && sourceChannelId) params.allThreadsRelatedToChannelId = sourceChannelId;
+          if (pageToken) params.pageToken = pageToken;
+
+          const response = await listYouTubeCommentThreads({ config, auth, params });
+          const items = Array.isArray(response?.data?.items) ? response.data.items : [];
+
+          items.forEach((thread) => {
+            const baseComment = {
+              source: 'youtube',
+              source_comment_id: thread.topLevelCommentId || thread.id,
+              parent_comment_id: null,
+              video_id: thread.videoId || sourceVideoId || '',
+              channel_id: thread.channelId || sourceChannelId || '',
+              author_name: thread.authorDisplayName || '',
+              author_channel_id: thread.authorChannelId || '',
+              text: thread.textOriginal || thread.textDisplay || '',
+              published_at: thread.publishedAt || null,
+              like_count: Number(thread.likeCount || 0),
+              reply_count: Number(thread.replyCount || 0),
+            };
+            if (!keyword || baseComment.text.toLowerCase().includes(keyword)) rows.push(baseComment);
+
+            if (normalizedInput.include_replies && Array.isArray(thread.replies)) {
+              thread.replies.forEach((reply) => {
+                const replyRow = {
+                  source: 'youtube',
+                  source_comment_id: reply.id,
+                  parent_comment_id: reply.parentId || baseComment.source_comment_id,
+                  video_id: thread.videoId || sourceVideoId || '',
+                  channel_id: thread.channelId || sourceChannelId || '',
+                  author_name: reply.authorDisplayName || '',
+                  author_channel_id: reply.authorChannelId || '',
+                  text: reply.textOriginal || reply.textDisplay || '',
+                  published_at: reply.publishedAt || null,
+                  like_count: Number(reply.likeCount || 0),
+                  reply_count: 0,
+                };
+                if (!keyword || replyRow.text.toLowerCase().includes(keyword)) rows.push(replyRow);
+              });
+            }
+          });
+
+          const nextToken = response?.data?.nextPageToken || '';
+          if (!nextToken) break;
+          pageToken = nextToken;
+        }
+
+        const slicedRows = rows.slice(0, normalizedInput.max_comments);
+        const audienceId = String(body.audience_id || '').trim() || null;
+        const hypothesisId = String(body.hypothesis_id || '').trim() || null;
+        let importedCount = 0;
+        for (const row of slicedRows) {
+          const id = buildEntityId('comment_record');
+          await pool.query(
+            `INSERT INTO comment_dataset_comments
+              (id, user_id, project_id, campaign_id, audience_id, hypothesis_id, source, source_comment_id, parent_comment_id,
+               video_id, channel_id, author_name, author_channel_id, text, published_at, like_count, reply_count,
+               source_job, source_run_id, source_query_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(user_id, project_id, campaign_id, source, source_comment_id) DO UPDATE SET
+               parent_comment_id = excluded.parent_comment_id,
+               video_id = excluded.video_id,
+               channel_id = excluded.channel_id,
+               author_name = excluded.author_name,
+               author_channel_id = excluded.author_channel_id,
+               text = excluded.text,
+               published_at = excluded.published_at,
+               like_count = excluded.like_count,
+               reply_count = excluded.reply_count,
+               source_job = excluded.source_job,
+               source_run_id = excluded.source_run_id,
+               source_query_json = excluded.source_query_json,
+               updated_at = excluded.updated_at`,
+            [
+              id,
+              user.id,
+              projectId,
+              campaignId,
+              audienceId,
+              hypothesisId,
+              row.source,
+              row.source_comment_id,
+              row.parent_comment_id,
+              row.video_id,
+              row.channel_id,
+              row.author_name,
+              row.author_channel_id,
+              row.text,
+              row.published_at,
+              row.like_count,
+              row.reply_count,
+              'youtube_comments_ingestion',
+              runId,
+              JSON.stringify(normalizedInput),
+              nowIso(),
+              nowIso(),
+            ],
+          );
+          importedCount += 1;
+        }
+
+        await pool.query(
+          `UPDATE comment_ingestion_runs
+           SET status = ?, comments_count = ?, imported_count = ?, completed_at = ?, updated_at = ?
+           WHERE id = ?`,
+          ['succeeded', slicedRows.length, importedCount, nowIso(), nowIso(), runId],
+        );
+
+        return sendJson(req, res, 200, {
+          data: {
+            run_id: runId,
+            status: 'succeeded',
+            comments_count: slicedRows.length,
+            imported_count: importedCount,
+          },
+        });
+      } catch (error) {
+        await pool.query(
+          `UPDATE comment_ingestion_runs
+           SET status = ?, error_message = ?, completed_at = ?, updated_at = ?
+           WHERE id = ?`,
+          ['failed', String(error?.message || 'Ingestion failed'), nowIso(), nowIso(), runId],
+        );
+        return sendJson(req, res, 500, { error: String(error?.message || 'Ingestion failed') });
+      }
+    }
+
+    if (url.pathname === '/api/comment-base/table' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 100)));
+      const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+      const q = String(url.searchParams.get('q') || '').trim();
+
+      const where = ['user_id = ?', 'project_id = ?', 'campaign_id = ?'];
+      const values = [user.id, projectId, campaignId];
+      if (q) {
+        where.push('(text LIKE ? OR author_name LIKE ? OR source_comment_id LIKE ?)');
+        values.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_dataset_comments WHERE ${where.join(' AND ')}
+         ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC LIMIT ? OFFSET ?`,
+        [...values, limit, offset],
+      );
+      const [countRows] = await pool.query(
+        `SELECT COUNT(*) AS total FROM comment_dataset_comments WHERE ${where.join(' AND ')}`,
+        values,
+      );
+      return sendJson(req, res, 200, {
+        data: {
+          items: rows,
+          total: Number(countRows?.[0]?.total || 0),
+          limit,
+          offset,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/runs' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_ingestion_runs
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+         ORDER BY created_at DESC LIMIT 30`,
+        [user.id, projectId, campaignId],
+      );
+      return sendJson(req, res, 200, { data: { items: rows } });
     }
 
     if ((url.pathname === '/api/cloud/tree' || url.pathname === '/api/cloud/list') && req.method === 'GET') {
