@@ -8,6 +8,9 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createPool, validateDbEnv } from './config/db.js';
 import { loadBackendEnv } from './config/env.js';
+import { getYouTubeConfig, isYouTubeApiKeyConfigured, isYouTubeOAuthConfigured } from './youtube/config.js';
+import { buildYouTubeConsentUrl, exchangeYouTubeCodeForTokens, refreshYouTubeAccessToken, revokeYouTubeToken } from './youtube/auth.js';
+import { listYouTubeChannels, listYouTubeVideos, listYouTubePlaylists, listYouTubeCommentThreads, listYouTubeComments } from './youtube/services.js';
 
 
 const envSource = loadBackendEnv();
@@ -48,6 +51,32 @@ const schemaSql = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS youtube_connections (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    youtube_channel_id TEXT,
+    youtube_channel_title TEXT,
+    access_token TEXT,
+    refresh_token TEXT,
+    scope TEXT,
+    token_type TEXT,
+    expires_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_youtube_connections_user ON youtube_connections(user_id)',
+  `CREATE TABLE IF NOT EXISTS youtube_oauth_states (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    state_token TEXT NOT NULL UNIQUE,
+    redirect_path TEXT,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_youtube_oauth_states_user ON youtube_oauth_states(user_id)',
   `CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -2181,6 +2210,70 @@ function buildHypothesisValidationSummary({ result, interviewsCount, passCount, 
   return 'Señal débil: resultados iniciales aún no alcanzan umbrales robustos.';
 }
 
+
+function computeFutureIso(seconds = 0) {
+  const base = Date.now() + Math.max(0, Number(seconds) || 0) * 1000;
+  return new Date(base).toISOString();
+}
+
+async function getYouTubeConnectionByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM youtube_connections WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+function normalizeFrontendPath(rawPath = '/projects') {
+  const pathValue = String(rawPath || '/projects').trim() || '/projects';
+  if (!pathValue.startsWith('/')) return '/projects';
+  if (pathValue.startsWith('//')) return '/projects';
+  return pathValue;
+}
+
+async function ensureYouTubeAccessToken(connection, config) {
+  if (!connection) return null;
+  const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
+  if (connection.access_token && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now() + 15000) {
+    return { ...connection, access_token: connection.access_token };
+  }
+  if (!connection.refresh_token) {
+    return { ...connection, access_token: connection.access_token || '' };
+  }
+
+  const refreshed = await refreshYouTubeAccessToken({ refreshToken: connection.refresh_token, config });
+  const nextAccessToken = refreshed.access_token || connection.access_token;
+  const nextExpiresAt = computeFutureIso(refreshed.expires_in || 3600);
+  const nextScope = refreshed.scope || connection.scope || '';
+  const nextTokenType = refreshed.token_type || connection.token_type || 'Bearer';
+
+  await pool.query(
+    `UPDATE youtube_connections
+     SET access_token = ?, scope = ?, token_type = ?, expires_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [nextAccessToken, nextScope, nextTokenType, nextExpiresAt, nowIso(), connection.id],
+  );
+
+  return {
+    ...connection,
+    access_token: nextAccessToken,
+    scope: nextScope,
+    token_type: nextTokenType,
+    expires_at: nextExpiresAt,
+  };
+}
+
+async function getYouTubeAuthForUser(userId, config) {
+  const connection = await getYouTubeConnectionByUserId(userId);
+  if (!connection) {
+    if (isYouTubeApiKeyConfigured(config)) return { apiKey: config.apiKey, connection: null };
+    return { apiKey: '', connection: null };
+  }
+  const withAccess = await ensureYouTubeAccessToken(connection, config);
+  return {
+    accessToken: withAccess?.access_token || '',
+    apiKey: isYouTubeApiKeyConfigured(config) ? config.apiKey : '',
+    connection: withAccess,
+  };
+}
+
 function normalizeBulkUpdateFields(fields) {
   const normalizedFields = {};
   const invalidKeys = [];
@@ -3570,6 +3663,198 @@ const server = http.createServer(async (req, res) => {
       sessions.delete(token);
       sendJson(req, res, 200, { ok: true });
       return;
+    }
+
+    if (url.pathname === '/api/youtube/config' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const config = getYouTubeConfig();
+      const connection = await getYouTubeConnectionByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          oauthConfigured: isYouTubeOAuthConfigured(config),
+          apiKeyConfigured: isYouTubeApiKeyConfigured(config),
+          redirectUri: config.redirectUri || null,
+          scopes: config.scopes,
+          connected: Boolean(connection),
+          channel: connection ? {
+            id: connection.youtube_channel_id || '',
+            title: connection.youtube_channel_title || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/youtube/auth/start' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const config = getYouTubeConfig();
+      if (!isYouTubeOAuthConfigured(config)) {
+        return sendJson(req, res, 400, { error: 'YouTube OAuth is not configured on backend' });
+      }
+
+      const body = await readBody(req);
+      const stateToken = crypto.randomUUID();
+      const stateId = buildEntityId('youtube_oauth_state');
+      const redirectPath = normalizeFrontendPath(body.redirect_path || '/projects');
+
+      await pool.query(
+        `INSERT INTO youtube_oauth_states (id, user_id, state_token, redirect_path, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [stateId, user.id, stateToken, redirectPath, computeFutureIso(10 * 60)],
+      );
+
+      return sendJson(req, res, 200, {
+        data: {
+          authUrl: buildYouTubeConsentUrl({ state: stateToken, config }),
+        },
+      });
+    }
+
+    if (url.pathname === '/api/youtube/auth/callback' && req.method === 'GET') {
+      const config = getYouTubeConfig();
+      const stateToken = String(url.searchParams.get('state') || '').trim();
+      const code = String(url.searchParams.get('code') || '').trim();
+      const errorParam = String(url.searchParams.get('error') || '').trim();
+
+      const redirectWithStatus = (status, message = '') => {
+        const frontend = config.frontendBaseUrl.replace(/\/$/, '');
+        const destination = new URL('/projects', frontend);
+        destination.searchParams.set('youtube', status);
+        if (message) destination.searchParams.set('reason', message);
+        res.writeHead(302, { Location: destination.toString() });
+        res.end();
+      };
+
+      if (!stateToken) return redirectWithStatus('error', 'missing_state');
+      if (errorParam) return redirectWithStatus('error', errorParam);
+      if (!code) return redirectWithStatus('error', 'missing_code');
+
+      const [stateRows] = await pool.query(
+        `SELECT * FROM youtube_oauth_states
+         WHERE state_token = ? AND consumed_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+        [stateToken],
+      );
+      const state = stateRows[0] || null;
+      if (!state) return redirectWithStatus('error', 'invalid_state');
+      if (new Date(state.expires_at).getTime() < Date.now()) {
+        await pool.query('UPDATE youtube_oauth_states SET consumed_at = ? WHERE id = ?', [nowIso(), state.id]);
+        return redirectWithStatus('error', 'expired_state');
+      }
+
+      const tokenPayload = await exchangeYouTubeCodeForTokens({ code, config });
+      const accessToken = tokenPayload.access_token || '';
+      const refreshToken = tokenPayload.refresh_token || '';
+      const expiresAt = computeFutureIso(tokenPayload.expires_in || 3600);
+      const scope = tokenPayload.scope || config.scopes.join(' ');
+      const tokenType = tokenPayload.token_type || 'Bearer';
+
+      let channelId = '';
+      let channelTitle = '';
+      if (accessToken) {
+        const channelResp = await listYouTubeChannels({
+          config,
+          auth: { accessToken, apiKey: '' },
+          params: { mine: 'true', maxResults: 1, fields: 'items(id,snippet(title))' },
+        });
+        const me = channelResp?.data?.items?.[0];
+        channelId = me?.id || '';
+        channelTitle = me?.title || '';
+      }
+
+      const connectionId = buildEntityId('youtube_connection');
+      await pool.query(
+        `INSERT INTO youtube_connections (
+          id, user_id, youtube_channel_id, youtube_channel_title, access_token, refresh_token,
+          scope, token_type, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          youtube_channel_id = excluded.youtube_channel_id,
+          youtube_channel_title = excluded.youtube_channel_title,
+          access_token = excluded.access_token,
+          refresh_token = CASE WHEN excluded.refresh_token = '' THEN youtube_connections.refresh_token ELSE excluded.refresh_token END,
+          scope = excluded.scope,
+          token_type = excluded.token_type,
+          expires_at = excluded.expires_at,
+          updated_at = excluded.updated_at`,
+        [
+          connectionId,
+          state.user_id,
+          channelId,
+          channelTitle,
+          accessToken,
+          refreshToken,
+          scope,
+          tokenType,
+          expiresAt,
+          nowIso(),
+          nowIso(),
+        ],
+      );
+
+      await pool.query('UPDATE youtube_oauth_states SET consumed_at = ? WHERE id = ?', [nowIso(), state.id]);
+
+      const frontend = config.frontendBaseUrl.replace(/\/$/, '');
+      const destination = new URL(normalizeFrontendPath(state.redirect_path || '/projects'), frontend);
+      destination.searchParams.set('youtube', 'connected');
+      res.writeHead(302, { Location: destination.toString() });
+      res.end();
+      return;
+    }
+
+    if (url.pathname === '/api/youtube/auth/disconnect' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const config = getYouTubeConfig();
+      const connection = await getYouTubeConnectionByUserId(user.id);
+      if (connection?.refresh_token) {
+        try {
+          await revokeYouTubeToken({ token: connection.refresh_token, config });
+        } catch {
+          // noop
+        }
+      }
+      if (connection?.access_token) {
+        try {
+          await revokeYouTubeToken({ token: connection.access_token, config });
+        } catch {
+          // noop
+        }
+      }
+      await pool.query('DELETE FROM youtube_connections WHERE user_id = ?', [user.id]);
+      return sendJson(req, res, 200, { ok: true });
+    }
+
+    const youtubeResourceMatch = url.pathname.match(/^\/api\/youtube\/(channels|videos|playlists|comment-threads|comments)$/);
+    if (youtubeResourceMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const resource = youtubeResourceMatch[1];
+      const config = getYouTubeConfig();
+      const auth = await getYouTubeAuthForUser(user.id, config);
+
+      if (!auth.accessToken && !auth.apiKey) {
+        return sendJson(req, res, 400, { error: 'YouTube integration is not configured. Configure API key and/or OAuth first.' });
+      }
+
+      const params = Object.fromEntries(url.searchParams.entries());
+      let response;
+      if (resource === 'channels') response = await listYouTubeChannels({ config, auth, params });
+      if (resource === 'videos') response = await listYouTubeVideos({ config, auth, params });
+      if (resource === 'playlists') response = await listYouTubePlaylists({ config, auth, params });
+      if (resource === 'comment-threads') response = await listYouTubeCommentThreads({ config, auth, params });
+      if (resource === 'comments') response = await listYouTubeComments({ config, auth, params });
+
+      return sendJson(req, res, 200, {
+        data: response?.data || { items: [] },
+        meta: {
+          etag: response?.etag || null,
+          source: auth.accessToken ? 'oauth' : 'api_key',
+        },
+      });
     }
 
     if ((url.pathname === '/api/cloud/tree' || url.pathname === '/api/cloud/list') && req.method === 'GET') {

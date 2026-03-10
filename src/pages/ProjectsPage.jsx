@@ -3,12 +3,13 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { Plus, FolderOpen, Trash2, Edit, Eye, LogOut } from 'lucide-react';
+import { Plus, FolderOpen, Trash2, Edit, Eye, LogOut, Settings, Puzzle, Youtube, Link2, Unlink } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useProjects } from '@/contexts/ProjectContext';
 import ProjectForm from '@/components/ProjectForm';
 import { useAuth } from '@/contexts/SupabaseAuthContext';
 import BulkVideoUpdateModal from '@/components/BulkVideoUpdateModal';
+import { youtubeApi } from '@/services/youtubeApi';
 
 const ProjectsPage = () => {
   const navigate = useNavigate();
@@ -16,10 +17,64 @@ const ProjectsPage = () => {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const { signOut } = useAuth();
   const [editingProject, setEditingProject] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [youtubeConfig, setYoutubeConfig] = useState({ loading: false, error: '', data: null, channelPreview: null });
 
   useEffect(() => {
     fetchProjects();
   }, [fetchProjects]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const ytState = url.searchParams.get('youtube');
+    if (ytState) {
+      setSettingsOpen(true);
+      loadYouTubeConfig();
+      url.searchParams.delete('youtube');
+      url.searchParams.delete('reason');
+      window.history.replaceState({}, '', url.toString());
+    }
+  }, []);
+
+  const loadYouTubeConfig = async () => {
+    try {
+      setYoutubeConfig((prev) => ({ ...prev, loading: true, error: '' }));
+      const data = await youtubeApi.getConfig();
+      setYoutubeConfig((prev) => ({ ...prev, loading: false, data }));
+    } catch (error) {
+      setYoutubeConfig((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar configuración de YouTube' }));
+    }
+  };
+
+  const connectYouTube = async () => {
+    try {
+      const data = await youtubeApi.startOAuth('/projects');
+      if (data?.authUrl) {
+        window.location.href = data.authUrl;
+      }
+    } catch (error) {
+      setYoutubeConfig((prev) => ({ ...prev, error: error.message || 'No se pudo iniciar OAuth de YouTube' }));
+    }
+  };
+
+  const disconnectYouTube = async () => {
+    try {
+      await youtubeApi.disconnect();
+      await loadYouTubeConfig();
+      setYoutubeConfig((prev) => ({ ...prev, channelPreview: null }));
+    } catch (error) {
+      setYoutubeConfig((prev) => ({ ...prev, error: error.message || 'No se pudo desconectar YouTube' }));
+    }
+  };
+
+  const previewChannel = async () => {
+    try {
+      const data = await youtubeApi.listChannels({ mine: 'true', maxResults: '1', fields: 'items(id,title,subscriberCount,videoCount)' });
+      setYoutubeConfig((prev) => ({ ...prev, channelPreview: data.items?.[0] || null, error: '' }));
+    } catch (error) {
+      setYoutubeConfig((prev) => ({ ...prev, error: error.message || 'No se pudo consultar canal de YouTube' }));
+    }
+  };
 
   const handleEdit = (project) => {
     setEditingProject(project);
@@ -76,6 +131,13 @@ const ProjectsPage = () => {
                 >
                   <LogOut className="w-4 h-4 mr-2" />
                   Cerrar sesión
+                </Button>
+                <Button
+                  onClick={() => { setSettingsOpen(true); loadYouTubeConfig(); }}
+                  className="bg-white text-gray-700 border border-gray-200 hover:bg-gray-100"
+                >
+                  <Settings className="w-4 h-4 mr-2" />
+                  Configuración
                 </Button>
                 <BulkVideoUpdateModal triggerClassName="bg-slate-900 text-cyan-300 border border-cyan-600 hover:bg-slate-800" />
                 <Button
@@ -171,6 +233,69 @@ const ProjectsPage = () => {
             </div>
           )}
         </div>
+
+
+        {settingsOpen ? (
+          <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+            <div className="w-full max-w-3xl bg-white rounded-2xl border shadow-2xl p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-slate-500">Panel de configuración</p>
+                  <h3 className="text-xl font-semibold text-slate-900 inline-flex items-center gap-2"><Puzzle className="h-5 w-5 text-indigo-600" /> Integraciones</h3>
+                </div>
+                <Button className="bg-white border" onClick={() => setSettingsOpen(false)}>Cerrar</Button>
+              </div>
+
+              <div className="rounded-xl border p-4 bg-slate-50 space-y-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h4 className="font-semibold text-slate-900 inline-flex items-center gap-2"><Youtube className="h-5 w-5 text-red-600" /> YouTube Data API</h4>
+                    <p className="text-xs text-slate-600">Conexión oficial con OAuth 2.0 y API key para lecturas públicas.</p>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    Estado: {youtubeConfig.data?.connected ? 'Conectado' : 'No conectado'}
+                  </div>
+                </div>
+
+                {youtubeConfig.loading ? <p className="text-sm text-slate-500">Cargando configuración...</p> : null}
+                {youtubeConfig.error ? <p className="text-sm text-rose-600">{youtubeConfig.error}</p> : null}
+
+                {youtubeConfig.data ? (
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div className="rounded-lg border bg-white p-3 text-sm">
+                      <p className="text-xs text-slate-500">OAuth backend</p>
+                      <p className="font-medium text-slate-800">{youtubeConfig.data.oauthConfigured ? 'Configurado' : 'No configurado'}</p>
+                      <p className="mt-1 text-xs text-slate-500">Redirect URI: {youtubeConfig.data.redirectUri || '—'}</p>
+                    </div>
+                    <div className="rounded-lg border bg-white p-3 text-sm">
+                      <p className="text-xs text-slate-500">API key backend</p>
+                      <p className="font-medium text-slate-800">{youtubeConfig.data.apiKeyConfigured ? 'Configurada' : 'No configurada'}</p>
+                      <p className="mt-1 text-xs text-slate-500">Scopes: {(youtubeConfig.data.scopes || []).join(', ') || '—'}</p>
+                    </div>
+                    <div className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                      <p className="text-xs text-slate-500">Canal conectado</p>
+                      <p className="font-medium text-slate-800">{youtubeConfig.data.channel?.title || '—'}</p>
+                      <p className="text-xs text-slate-500">{youtubeConfig.data.channel?.id || 'Sin canal vinculado'}</p>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button className="bg-indigo-600 text-white" onClick={connectYouTube}><Link2 className="w-4 h-4 mr-2" />Conectar YouTube</Button>
+                  <Button className="bg-white border text-slate-700" onClick={previewChannel}><Youtube className="w-4 h-4 mr-2" />Probar canal</Button>
+                  <Button className="bg-white border text-rose-700" onClick={disconnectYouTube}><Unlink className="w-4 h-4 mr-2" />Desconectar</Button>
+                </div>
+
+                {youtubeConfig.channelPreview ? (
+                  <div className="rounded-lg border bg-white p-3 text-sm">
+                    <p className="font-medium text-slate-800">Vista previa del canal</p>
+                    <p className="text-xs text-slate-500">{youtubeConfig.channelPreview.title} · videos: {youtubeConfig.channelPreview.videoCount} · subs: {youtubeConfig.channelPreview.subscriberCount}</p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <ProjectForm
           isOpen={isFormOpen}
