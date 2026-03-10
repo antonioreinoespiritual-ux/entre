@@ -32,4 +32,6 @@ export const youtubeApi = {
   saveSettings: (payload) => request('/api/youtube/settings', { method: 'PUT', body: JSON.stringify(payload) }).then((r) => r.data || {}),
   disconnect: () => request('/api/youtube/auth/disconnect', { method: 'POST' }),
   listChannels: (query = {}) => request(`/api/youtube/channels?${new URLSearchParams(query).toString()}`).then((r) => r.data || { items: [] }),
+  listCommentThreads: (query = {}) => request(`/api/youtube/comment-threads?${new URLSearchParams(query).toString()}`).then((r) => r.data || { items: [] }),
+  listComments: (query = {}) => request(`/api/youtube/comments?${new URLSearchParams(query).toString()}`).then((r) => r.data || { items: [] }),
 };

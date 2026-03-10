@@ -44,8 +44,10 @@ export function mapYouTubePlaylist(item = {}) {
 
 export function mapYouTubeCommentThread(item = {}) {
   const top = item?.snippet?.topLevelComment?.snippet || {};
+  const replyItems = Array.isArray(item?.replies?.comments) ? item.replies.comments : [];
   return {
     id: item.id || '',
+    topLevelCommentId: item?.snippet?.topLevelComment?.id || '',
     videoId: item?.snippet?.videoId || '',
     channelId: top.channelId || '',
     authorDisplayName: top.authorDisplayName || '',
@@ -56,6 +58,7 @@ export function mapYouTubeCommentThread(item = {}) {
     publishedAt: top.publishedAt || null,
     updatedAt: top.updatedAt || null,
     replyCount: Number(item?.snippet?.totalReplyCount || 0),
+    replies: replyItems.map(mapYouTubeComment),
   };
 }
 
