@@ -2480,6 +2480,200 @@ function parseYouTubeVideoId(rawValue = '') {
   }
 }
 
+
+function normalizeYouTubeIngestionInput(rawInput = {}) {
+  const normalized = {
+    video_url: String(rawInput.video_url || '').trim(),
+    video_id: parseYouTubeVideoId(rawInput.video_id || rawInput.video_url || ''),
+    channel_id: String(rawInput.channel_id || '').trim(),
+    video_search_query: String(rawInput.video_search_query || '').trim(),
+    keyword: String(rawInput.keyword || '').trim(),
+    videos_limit: rawInput.videos_limit == null || rawInput.videos_limit === '' ? null : Math.min(50, Math.max(1, Number(rawInput.videos_limit) || 1)),
+    comments_per_video: Math.min(500, Math.max(1, Number(rawInput.comments_per_video) || Number(rawInput.max_comments) || 100)),
+    max_comments: Math.min(5000, Math.max(1, Number(rawInput.max_comments) || Number(rawInput.comments_per_video) || 100)),
+    include_replies: Boolean(rawInput.include_replies),
+    order: ['relevance', 'time'].includes(String(rawInput.order || '').trim()) ? String(rawInput.order || '').trim() : 'time',
+  };
+
+  if (!Number.isFinite(Number(normalized.comments_per_video)) || Number(normalized.comments_per_video) <= 0) {
+    throw new Error('comments_per_video is required and must be greater than 0');
+  }
+
+  let inputType = 'none';
+  if (normalized.video_id) inputType = 'video';
+  else if (normalized.video_search_query) inputType = 'search';
+  else if (normalized.keyword) inputType = 'keyword';
+  else throw new Error('You must provide video_url/video_id, video_search_query or keyword');
+
+  return {
+    ...normalized,
+    input_type: inputType,
+    source_query: inputType === 'search' ? normalized.video_search_query : (inputType === 'keyword' ? normalized.keyword : ''),
+  };
+}
+
+async function resolveVideosFromInput({ normalizedInput, config, auth }) {
+  if (normalizedInput.input_type === 'video') {
+    return [{ videoId: normalizedInput.video_id, title: '', channel: '', publishedAt: null, queryContext: null }];
+  }
+
+  const querySeed = normalizedInput.input_type === 'search' ? normalizedInput.video_search_query : normalizedInput.keyword;
+  const queryTerms = Array.from(new Set(
+    String(querySeed || '')
+      .split(/[\n,;]+/g)
+      .map((q) => q.trim())
+      .filter(Boolean),
+  ));
+  const maxVideosPerQuery = normalizedInput.videos_limit == null ? 10 : normalizedInput.videos_limit;
+  const searchOrder = normalizedInput.order === 'time' ? 'date' : 'relevance';
+
+  const resolved = [];
+  const seen = new Set();
+
+  for (const queryTerm of queryTerms) {
+    let pageToken = '';
+    let collected = 0;
+    while (collected < maxVideosPerQuery) {
+      const searchResponse = await searchYouTubeVideos({
+        config,
+        auth,
+        params: {
+          q: queryTerm,
+          type: 'video',
+          maxResults: String(Math.min(50, maxVideosPerQuery - collected)),
+          order: searchOrder,
+          pageToken: pageToken || undefined,
+          safeSearch: 'none',
+          channelId: normalizedInput.channel_id || undefined,
+        },
+      });
+
+      const items = Array.isArray(searchResponse?.data?.items) ? searchResponse.data.items : [];
+      for (const item of items) {
+        const videoId = String(item?.id || '').trim();
+        if (!videoId || seen.has(videoId)) continue;
+        resolved.push({
+          videoId,
+          title: String(item?.title || '').trim(),
+          channel: String(item?.channelTitle || '').trim(),
+          publishedAt: item?.publishedAt || null,
+          queryContext: queryTerm,
+        });
+        seen.add(videoId);
+        collected += 1;
+      }
+
+      const nextToken = searchResponse?.data?.nextPageToken || '';
+      if (!nextToken) break;
+      pageToken = nextToken;
+    }
+  }
+
+  return resolved;
+}
+
+async function ingestCommentsFromResolvedVideos({ resolvedVideos, normalizedInput, config, auth }) {
+  const skippableReasons = new Set(['commentsDisabled', 'notFound', 'videoNotFound', 'processingFailure']);
+  const rows = [];
+  const stats = { videos_resolved: resolvedVideos.length, videos_processed: 0, videos_skipped: 0 };
+
+  for (const video of resolvedVideos) {
+    try {
+      let pageToken = '';
+      const videoRows = [];
+      const pageSize = Math.min(100, normalizedInput.comments_per_video);
+
+      while (videoRows.length < normalizedInput.comments_per_video) {
+        let response;
+        try {
+          response = await listYouTubeCommentThreads({
+            config,
+            auth,
+            params: {
+              videoId: video.videoId,
+              maxResults: String(pageSize),
+              order: normalizedInput.order,
+              textFormat: 'plainText',
+              pageToken: pageToken || undefined,
+            },
+          });
+        } catch (pageError) {
+          const reason = String(pageError?.reason || '').trim();
+          const status = Number(pageError?.statusCode || 0);
+          const canRetryWithApiKey = Boolean(auth?.apiKey) && Boolean(auth?.accessToken) && (reason === 'forbidden' || status === 403);
+          if (!canRetryWithApiKey) throw pageError;
+          response = await listYouTubeCommentThreads({
+            config,
+            auth: { apiKey: auth.apiKey, accessToken: null },
+            params: {
+              videoId: video.videoId,
+              maxResults: String(pageSize),
+              order: normalizedInput.order,
+              textFormat: 'plainText',
+              pageToken: pageToken || undefined,
+            },
+          });
+        }
+
+        const items = Array.isArray(response?.data?.items) ? response.data.items : [];
+        items.forEach((thread) => {
+          videoRows.push({
+            source: 'youtube',
+            source_comment_id: thread.topLevelCommentId || thread.id,
+            parent_comment_id: null,
+            video_id: thread.videoId || video.videoId,
+            channel_id: thread.channelId || normalizedInput.channel_id || '',
+            author_name: thread.authorDisplayName || '',
+            author_channel_id: thread.authorChannelId || '',
+            text: thread.textOriginal || thread.textDisplay || '',
+            published_at: thread.publishedAt || null,
+            like_count: Number(thread.likeCount || 0),
+            reply_count: Number(thread.replyCount || 0),
+            source_query: video.queryContext || normalizedInput.source_query || '',
+          });
+
+          if (normalizedInput.include_replies && Array.isArray(thread.replies) && videoRows.length < normalizedInput.comments_per_video) {
+            thread.replies.forEach((reply) => {
+              if (videoRows.length >= normalizedInput.comments_per_video) return;
+              videoRows.push({
+                source: 'youtube',
+                source_comment_id: reply.id,
+                parent_comment_id: reply.parentId || (thread.topLevelCommentId || thread.id),
+                video_id: thread.videoId || video.videoId,
+                channel_id: thread.channelId || normalizedInput.channel_id || '',
+                author_name: reply.authorDisplayName || '',
+                author_channel_id: reply.authorChannelId || '',
+                text: reply.textOriginal || reply.textDisplay || '',
+                published_at: reply.publishedAt || null,
+                like_count: Number(reply.likeCount || 0),
+                reply_count: 0,
+                source_query: video.queryContext || normalizedInput.source_query || '',
+              });
+            });
+          }
+        });
+
+        const nextToken = response?.data?.nextPageToken || '';
+        if (!nextToken) break;
+        pageToken = nextToken;
+      }
+
+      rows.push(...videoRows.slice(0, normalizedInput.comments_per_video));
+      stats.videos_processed += 1;
+    } catch (videoError) {
+      const reason = String(videoError?.reason || '').trim();
+      const status = Number(videoError?.statusCode || 0);
+      const message = String(videoError?.message || '').toLowerCase();
+      const isPrivateForbidden = reason === 'forbidden' && (message.includes('private') || message.includes('permission'));
+      const isSkippable = skippableReasons.has(reason) || status === 404 || isPrivateForbidden;
+      if (!isSkippable) throw videoError;
+      stats.videos_skipped += 1;
+    }
+  }
+
+  return { rows, stats };
+}
+
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
   const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
@@ -4199,40 +4393,11 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
 
-      const sourceVideoId = parseYouTubeVideoId(body.video_url || body.video_id || '');
-      const sourceChannelId = String(body.channel_id || '').trim();
-      const commentsPerVideo = Number(body.comments_per_video);
-      let normalizedInput = {
-        video_url: String(body.video_url || '').trim(),
-        video_id: sourceVideoId,
-        channel_id: sourceChannelId,
-        video_search_query: String(body.video_search_query || '').trim(),
-        videos_limit: body.videos_limit === '' || body.videos_limit == null ? null : Number(body.videos_limit),
-        comments_per_video: Number.isFinite(commentsPerVideo) ? commentsPerVideo : Number(body.max_comments),
-        keyword: String(body.keyword || '').trim(),
-        max_comments: Math.min(1000, Math.max(1, Number(body.max_comments) || 100)),
-        include_replies: Boolean(body.include_replies),
-        order: ['relevance', 'time'].includes(String(body.order || '').trim()) ? String(body.order || '').trim() : 'time',
-      };
-
-      normalizedInput = {
-        video_url: String(normalizedInput.video_url || '').trim(),
-        video_id: parseYouTubeVideoId(normalizedInput.video_id || normalizedInput.video_url || ''),
-        channel_id: String(normalizedInput.channel_id || '').trim(),
-        video_search_query: String(normalizedInput.video_search_query || '').trim(),
-        videos_limit: normalizedInput.videos_limit == null || Number(normalizedInput.videos_limit) <= 0 ? null : Math.min(50, Number(normalizedInput.videos_limit)),
-        comments_per_video: Math.min(500, Math.max(1, Number(normalizedInput.comments_per_video) || Number(normalizedInput.max_comments) || 100)),
-        keyword: String(normalizedInput.keyword || '').trim(),
-        max_comments: Math.min(1000, Math.max(1, Number(normalizedInput.max_comments) || 100)),
-        include_replies: Boolean(normalizedInput.include_replies),
-        order: ['relevance', 'time'].includes(String(normalizedInput.order || '').trim()) ? String(normalizedInput.order || '').trim() : 'time',
-      };
-
-      if (!Number.isFinite(Number(normalizedInput.comments_per_video)) || Number(normalizedInput.comments_per_video) <= 0) {
-        return sendJson(req, res, 400, { error: 'comments_per_video is required and must be greater than 0' });
-      }
-      if (normalizedInput.videos_limit != null && Number(normalizedInput.videos_limit) <= 0) {
-        return sendJson(req, res, 400, { error: 'videos_limit must be greater than 0 when provided' });
+      let normalizedInput;
+      try {
+        normalizedInput = normalizeYouTubeIngestionInput(body);
+      } catch (error) {
+        return sendJson(req, res, 400, { error: String(error?.message || 'Invalid ingestion input') });
       }
 
       const inputId = buildEntityId('comment_ingestion_input');
@@ -4321,42 +4486,16 @@ const server = http.createServer(async (req, res) => {
         const savedInput = inputRows[0] || null;
         if (!savedInput) return sendJson(req, res, 404, { error: 'Input not found' });
         try {
-          normalizedInput = JSON.parse(savedInput.config_json || '{}');
-        } catch {
-          normalizedInput = {};
+          normalizedInput = normalizeYouTubeIngestionInput(JSON.parse(savedInput.config_json || '{}'));
+        } catch (error) {
+          return sendJson(req, res, 400, { error: String(error?.message || 'Invalid saved ingestion input') });
         }
       } else {
-        normalizedInput = {
-          video_url: String(body.video_url || '').trim(),
-          video_id: parseYouTubeVideoId(body.video_url || body.video_id || ''),
-          channel_id: String(body.channel_id || '').trim(),
-          video_search_query: String(body.video_search_query || '').trim(),
-          videos_limit: body.videos_limit === '' || body.videos_limit == null ? null : Number(body.videos_limit),
-          comments_per_video: Number(body.comments_per_video),
-          keyword: String(body.keyword || '').trim(),
-          max_comments: Math.min(1000, Math.max(1, Number(body.max_comments) || 100)),
-          include_replies: Boolean(body.include_replies),
-          order: ['relevance', 'time'].includes(String(body.order || '').trim()) ? String(body.order || '').trim() : 'time',
-        };
-      }
-
-      normalizedInput = {
-        video_url: String(normalizedInput.video_url || '').trim(),
-        video_id: parseYouTubeVideoId(normalizedInput.video_id || normalizedInput.video_url || ''),
-        channel_id: String(normalizedInput.channel_id || '').trim(),
-        video_search_query: String(normalizedInput.video_search_query || '').trim(),
-        videos_limit: normalizedInput.videos_limit == null || Number(normalizedInput.videos_limit) <= 0 ? null : Math.min(50, Number(normalizedInput.videos_limit)),
-        comments_per_video: Math.min(500, Math.max(1, Number(normalizedInput.comments_per_video) || Number(normalizedInput.max_comments) || 100)),
-        keyword: String(normalizedInput.keyword || '').trim(),
-        max_comments: Math.min(1000, Math.max(1, Number(normalizedInput.max_comments) || 100)),
-        include_replies: Boolean(normalizedInput.include_replies),
-        order: ['relevance', 'time'].includes(String(normalizedInput.order || '').trim()) ? String(normalizedInput.order || '').trim() : 'time',
-      };
-      if (!Number.isFinite(Number(normalizedInput.comments_per_video)) || Number(normalizedInput.comments_per_video) <= 0) {
-        return sendJson(req, res, 400, { error: 'comments_per_video is required and must be greater than 0' });
-      }
-      if (normalizedInput.videos_limit != null && Number(normalizedInput.videos_limit) <= 0) {
-        return sendJson(req, res, 400, { error: 'videos_limit must be greater than 0 when provided' });
+        try {
+          normalizedInput = normalizeYouTubeIngestionInput(body);
+        } catch (error) {
+          return sendJson(req, res, 400, { error: String(error?.message || 'Invalid ingestion input') });
+        }
       }
 
       if (!inputId) {
@@ -4409,192 +4548,12 @@ const server = http.createServer(async (req, res) => {
           throw new Error('YouTube integration is not configured. Configure API key and/or OAuth first.');
         }
 
-        const rawSearchQuery = String(normalizedInput.video_search_query || '').trim();
-        const rawKeywordQuery = String(normalizedInput.keyword || '').trim();
-        const queryTerms = Array.from(new Set(
-          [rawSearchQuery, rawKeywordQuery]
-            .flatMap((value) => String(value || '').split(/[\n,;]+/g))
-            .map((value) => value.trim())
-            .filter(Boolean),
-        ));
-        const searchOrder = normalizedInput.order === 'time' ? 'date' : 'relevance';
-        const commentsPerVideo = Math.min(500, Math.max(1, Number(normalizedInput.comments_per_video) || 100));
-        const rows = [];
-        const targetVideoIds = [];
-        const targetVideoIdSet = new Set();
+        const resolvedVideos = await resolveVideosFromInput({ normalizedInput, config, auth });
+        const { rows, stats } = await ingestCommentsFromResolvedVideos({ resolvedVideos, normalizedInput, config, auth });
+        const slicedRows = rows;
 
-        if (normalizedInput.video_id) {
-          targetVideoIds.push(normalizedInput.video_id);
-          targetVideoIdSet.add(normalizedInput.video_id);
-        } else if (queryTerms.length > 0) {
-          const maxVideosPerQuery = normalizedInput.videos_limit == null
-            ? 10
-            : Math.min(50, Math.max(1, Number(normalizedInput.videos_limit) || 10));
-
-          for (const queryTerm of queryTerms) {
-            let searchPageToken = '';
-            let collectedForQuery = 0;
-
-            while (collectedForQuery < maxVideosPerQuery) {
-              const searchResponse = await searchYouTubeVideos({
-                config,
-                auth,
-                params: {
-                  q: queryTerm,
-                  maxResults: String(Math.min(50, maxVideosPerQuery - collectedForQuery)),
-                  order: searchOrder,
-                  pageToken: searchPageToken || undefined,
-                  channelId: normalizedInput.channel_id || undefined,
-                  safeSearch: 'none',
-                },
-              });
-
-              const searchItems = Array.isArray(searchResponse?.data?.items) ? searchResponse.data.items : [];
-              searchItems.forEach((video) => {
-                const id = String(video?.id || '').trim();
-                if (!id || targetVideoIdSet.has(id)) return;
-                targetVideoIds.push(id);
-                targetVideoIdSet.add(id);
-                collectedForQuery += 1;
-              });
-
-              const nextToken = searchResponse?.data?.nextPageToken || '';
-              if (!nextToken) break;
-              searchPageToken = nextToken;
-            }
-          }
-        }
-
-        if (!targetVideoIds.length && normalizedInput.channel_id) {
-          const videosByChannel = await searchYouTubeVideos({
-            config,
-            auth,
-            params: {
-              channelId: normalizedInput.channel_id,
-              maxResults: String(Math.min(50, normalizedInput.videos_limit || 10)),
-              order: searchOrder,
-            },
-          });
-          const byChannel = (Array.isArray(videosByChannel?.data?.items) ? videosByChannel.data.items : [])
-            .map((video) => String(video?.id || '').trim())
-            .filter(Boolean);
-          byChannel.forEach((id) => {
-            if (!id || targetVideoIdSet.has(id)) return;
-            targetVideoIds.push(id);
-            targetVideoIdSet.add(id);
-          });
-        }
-
-        const limitedVideoIds = normalizedInput.videos_limit == null
-          ? targetVideoIds
-          : targetVideoIds.slice(0, Math.min(50, Math.max(1, Number(normalizedInput.videos_limit) || 1)));
-
-        const skippableVideoErrorReasons = new Set([
-          'commentsDisabled',
-          'notFound',
-          'videoNotFound',
-          'processingFailure',
-        ]);
-
-        for (const videoId of limitedVideoIds) {
-          try {
-            let pageToken = '';
-            const videoRows = [];
-            const pageSize = Math.min(100, commentsPerVideo);
-
-            while (videoRows.length < commentsPerVideo) {
-              let response;
-              try {
-                response = await listYouTubeCommentThreads({
-                  config,
-                  auth,
-                  params: {
-                    videoId,
-                    maxResults: String(pageSize),
-                    order: normalizedInput.order,
-                    textFormat: 'plainText',
-                    pageToken: pageToken || undefined,
-                  },
-                });
-              } catch (pageError) {
-                const reason = String(pageError?.reason || '').trim();
-                const status = Number(pageError?.statusCode || 0);
-                const canRetryWithApiKey = Boolean(auth?.apiKey) && Boolean(auth?.accessToken) && (reason === 'forbidden' || status === 403);
-                if (!canRetryWithApiKey) throw pageError;
-                response = await listYouTubeCommentThreads({
-                  config,
-                  auth: { apiKey: auth.apiKey, accessToken: null },
-                  params: {
-                    videoId,
-                    maxResults: String(pageSize),
-                    order: normalizedInput.order,
-                    textFormat: 'plainText',
-                    pageToken: pageToken || undefined,
-                  },
-                });
-              }
-              const items = Array.isArray(response?.data?.items) ? response.data.items : [];
-
-              items.forEach((thread) => {
-                const baseComment = {
-                  source: 'youtube',
-                  source_comment_id: thread.topLevelCommentId || thread.id,
-                  parent_comment_id: null,
-                  video_id: thread.videoId || videoId,
-                  channel_id: thread.channelId || normalizedInput.channel_id || '',
-                  author_name: thread.authorDisplayName || '',
-                  author_channel_id: thread.authorChannelId || '',
-                  text: thread.textOriginal || thread.textDisplay || '',
-                  published_at: thread.publishedAt || null,
-                  like_count: Number(thread.likeCount || 0),
-                  reply_count: Number(thread.replyCount || 0),
-                };
-                videoRows.push(baseComment);
-
-                if (normalizedInput.include_replies && Array.isArray(thread.replies) && videoRows.length < commentsPerVideo) {
-                  thread.replies.forEach((reply) => {
-                    if (videoRows.length >= commentsPerVideo) return;
-                    const replyRow = {
-                      source: 'youtube',
-                      source_comment_id: reply.id,
-                      parent_comment_id: reply.parentId || baseComment.source_comment_id,
-                      video_id: thread.videoId || videoId,
-                      channel_id: thread.channelId || normalizedInput.channel_id || '',
-                      author_name: reply.authorDisplayName || '',
-                      author_channel_id: reply.authorChannelId || '',
-                      text: reply.textOriginal || reply.textDisplay || '',
-                      published_at: reply.publishedAt || null,
-                      like_count: Number(reply.likeCount || 0),
-                      reply_count: 0,
-                    };
-                    videoRows.push(replyRow);
-                  });
-                }
-              });
-
-              const nextToken = response?.data?.nextPageToken || '';
-              if (!nextToken) break;
-              pageToken = nextToken;
-            }
-
-            rows.push(...videoRows.slice(0, commentsPerVideo));
-          } catch (videoError) {
-            const reason = String(videoError?.reason || '').trim();
-            const status = Number(videoError?.statusCode || 0);
-            const message = String(videoError?.message || '').toLowerCase();
-            const isPrivateForbidden = reason === 'forbidden' && (message.includes('private') || message.includes('permission'));
-            const isSkippable = skippableVideoErrorReasons.has(reason) || status === 404 || isPrivateForbidden;
-            if (isSkippable) continue;
-            throw videoError;
-          }
-        }
-
-        const discoveredVideosCount = Math.max(1, limitedVideoIds.length);
-        const maxCommentsFromInput = Number(normalizedInput.max_comments) || 0;
-        const expectedMultiVideoComments = commentsPerVideo * discoveredVideosCount;
-        const maxComments = Math.max(commentsPerVideo, expectedMultiVideoComments, maxCommentsFromInput);
-        const slicedRows = rows.slice(0, maxComments);
         const audienceId = String(body.audience_id || '').trim() || null;
+
         const hypothesisId = String(body.hypothesis_id || '').trim() || null;
         let importedCount = 0;
         for (const row of slicedRows) {
@@ -4653,7 +4612,26 @@ const server = http.createServer(async (req, res) => {
           `UPDATE comment_ingestion_runs
            SET status = ?, comments_count = ?, imported_count = ?, completed_at = ?, updated_at = ?
            WHERE id = ?`,
-          ['succeeded', slicedRows.length, importedCount, nowIso(), nowIso(), runId],
+          [
+            'succeeded',
+            slicedRows.length,
+            importedCount,
+            nowIso(),
+            nowIso(),
+            runId,
+          ],
+        );
+
+        await pool.query(
+          `UPDATE comment_ingestion_runs
+           SET error_message = ?, updated_at = ?
+           WHERE id = ?`,
+          [JSON.stringify({
+            input_type: normalizedInput.input_type,
+            videos_resolved: stats.videos_resolved,
+            videos_processed: stats.videos_processed,
+            videos_skipped: stats.videos_skipped,
+          }), nowIso(), runId],
         );
 
         await pool.query(
