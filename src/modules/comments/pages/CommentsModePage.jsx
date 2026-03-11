@@ -61,7 +61,6 @@ const CommentsModePage = () => {
 
   const [tab, setTab] = useState('comments');
   const [commentsSubtab, setCommentsSubtab] = useState('ingestion');
-  const [commentText, setCommentText] = useState('');
   const [codeDraft, setCodeDraft] = useState(defaultCodeDraft);
   const [ingestionDraft, setIngestionDraft] = useState(defaultIngestionDraft);
   const [ingestionBusy, setIngestionBusy] = useState(false);
@@ -94,22 +93,6 @@ const CommentsModePage = () => {
   const codes = store.codes || [];
 
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
-
-  const addComment = () => {
-    const text = commentText.trim();
-    if (!text) return;
-    const id = `c_${Date.now()}`;
-    const comment = { id, text, created_at: new Date().toISOString() };
-    const fragment = {
-      id: `f_${Date.now()}`,
-      comment_id: id,
-      excerpt: text.length > 180 ? `${text.slice(0, 180)}…` : text,
-      code_slugs: [],
-      created_at: new Date().toISOString(),
-    };
-    persist({ ...store, comments: [comment, ...comments], fragments: [fragment, ...fragments] });
-    setCommentText('');
-  };
 
   const addCode = () => {
     const name = codeDraft.name.trim();
@@ -207,6 +190,7 @@ const CommentsModePage = () => {
 
   useEffect(() => {
     if (tab !== 'comments') return;
+    loadCommentsTable({ offset: commentsTable.offset, q: commentsTable.q });
     if (commentsSubtab === 'table') loadCommentsTable({ offset: 0, q: commentsTable.q });
     if (commentsSubtab === 'ingestion') {
       loadRuns();
@@ -282,7 +266,7 @@ const CommentsModePage = () => {
           <div className="grid gap-3 md:grid-cols-4">
             <div className="rounded-xl border bg-white p-3">
               <p className="text-xs text-slate-500">Comentarios</p>
-              <p className="text-2xl font-semibold text-slate-900">{comments.length}</p>
+              <p className="text-2xl font-semibold text-slate-900">{commentsTable.total}</p>
             </div>
             <div className="rounded-xl border bg-white p-3">
               <p className="text-xs text-slate-500">Fragmentos</p>
@@ -385,8 +369,6 @@ const CommentsModePage = () => {
                 </div>
               </div>
 
-              <textarea className="w-full rounded-lg border p-3 text-sm" rows={4} placeholder="Pega o escribe un comentario" value={commentText} onChange={(e) => setCommentText((e.target.value))} />
-              <div className="flex justify-end"><Button className="bg-indigo-600 text-white" onClick={addComment}>Agregar comentario</Button></div>
               </>
               ) : null}
 
@@ -440,16 +422,6 @@ const CommentsModePage = () => {
                 </div>
               ) : null}
 
-              {commentsSubtab === 'ingestion' ? (
-              <div className="space-y-2">
-                {comments.length === 0 ? <p className="text-sm text-slate-500">Sin comentarios manuales cargados.</p> : comments.map((comment) => (
-                  <div key={comment.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <p className="text-slate-800">{comment.text}</p>
-                    <p className="mt-1 text-xs text-slate-500">{new Date(comment.created_at).toLocaleString()} {comment.source ? `· ${comment.source}` : ''}</p>
-                  </div>
-                ))}
-              </div>
-              ) : null}
             </div>
           )}
 
