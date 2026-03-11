@@ -4532,7 +4532,10 @@ const server = http.createServer(async (req, res) => {
           rows.push(...videoRows.slice(0, commentsPerVideo));
         }
 
-        const maxComments = Math.max(commentsPerVideo, Number(normalizedInput.max_comments) || commentsPerVideo);
+        const discoveredVideosCount = Math.max(1, limitedVideoIds.length);
+        const maxCommentsFromInput = Number(normalizedInput.max_comments) || 0;
+        const expectedMultiVideoComments = commentsPerVideo * discoveredVideosCount;
+        const maxComments = Math.max(commentsPerVideo, expectedMultiVideoComments, maxCommentsFromInput);
         const slicedRows = rows.slice(0, maxComments);
         const audienceId = String(body.audience_id || '').trim() || null;
         const hypothesisId = String(body.hypothesis_id || '').trim() || null;
