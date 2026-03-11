@@ -50,6 +50,28 @@ export async function listYouTubeVideos({ config, auth, params }) {
   };
 }
 
+export async function searchYouTubeVideos({ config, auth, params }) {
+  const response = await youtubeApiRequest({
+    baseUrl: config.apiBaseUrl,
+    path: '/search',
+    params: {
+      ...params,
+      part: params?.part || 'snippet',
+      type: params?.type || 'video',
+    },
+    accessToken: auth?.accessToken,
+    apiKey: auth?.apiKey,
+  });
+  return {
+    ...response,
+    data: {
+      nextPageToken: response?.data?.nextPageToken || null,
+      prevPageToken: response?.data?.prevPageToken || null,
+      items: (response?.data?.items || []).map(mapYouTubeVideo),
+    },
+  };
+}
+
 export async function listYouTubePlaylists({ config, auth, params }) {
   const response = await youtubeApiRequest({
     baseUrl: config.apiBaseUrl,

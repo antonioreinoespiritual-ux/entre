@@ -11,7 +11,9 @@ const defaultIngestionDraft = {
   videoId: '',
   channelId: '',
   keyword: '',
-  maxComments: 100,
+  videoSearchQuery: '',
+  videosLimit: '',
+  commentsPerVideo: 100,
   includeReplies: true,
   order: 'time',
 };
@@ -126,16 +128,39 @@ const CommentsModePage = () => {
 
   const saveIngestionInput = async () => {
     setIngestionError('');
+    const inferredVideoId = parseYouTubeVideoId(ingestionDraft.videoUrl) || parseYouTubeVideoId(ingestionDraft.videoId);
+    const sourceVideoId = inferredVideoId || ingestionDraft.videoId.trim();
+    const sourceChannelId = ingestionDraft.channelId.trim();
+    const videoSearchQuery = ingestionDraft.videoSearchQuery.trim();
+    const commentsPerVideo = Number(ingestionDraft.commentsPerVideo);
+    const videosLimit = ingestionDraft.videosLimit === '' ? null : Number(ingestionDraft.videosLimit);
+
+    if (!sourceVideoId && !sourceChannelId && !videoSearchQuery) {
+      setIngestionError('Debes configurar búsqueda de videos, video URL / video ID o channel ID para guardar input.');
+      return;
+    }
+    if (!Number.isFinite(commentsPerVideo) || commentsPerVideo <= 0) {
+      setIngestionError('Comentarios por video es obligatorio y debe ser mayor que 0.');
+      return;
+    }
+    if (videosLimit != null && (!Number.isFinite(videosLimit) || videosLimit <= 0)) {
+      setIngestionError('Cantidad de videos debe ser mayor que 0 cuando se informa.');
+      return;
+    }
+
     try {
       const saved = await commentsIngestionApi.saveInput({
         project_id: projectId,
         campaign_id: campaignId,
-        name: ingestionDraft.videoUrl?.trim() || ingestionDraft.videoId?.trim() || ingestionDraft.channelId?.trim() || `input_${ingestionInputs.length + 1}`,
+        name: ingestionDraft.videoUrl?.trim() || ingestionDraft.videoId?.trim() || ingestionDraft.channelId?.trim() || ingestionDraft.videoSearchQuery?.trim() || `input_${ingestionInputs.length + 1}`,
         video_url: ingestionDraft.videoUrl,
-        video_id: ingestionDraft.videoId,
-        channel_id: ingestionDraft.channelId,
+        video_id: sourceVideoId,
+        channel_id: sourceChannelId,
         keyword: ingestionDraft.keyword,
-        max_comments: ingestionDraft.maxComments,
+        video_search_query: videoSearchQuery,
+        videos_limit: videosLimit,
+        comments_per_video: commentsPerVideo,
+        max_comments: commentsPerVideo,
         include_replies: ingestionDraft.includeReplies,
         order: ingestionDraft.order,
       });
@@ -203,12 +228,25 @@ const CommentsModePage = () => {
     const inferredVideoId = parseYouTubeVideoId(ingestionDraft.videoUrl) || parseYouTubeVideoId(ingestionDraft.videoId);
     const sourceVideoId = inferredVideoId || ingestionDraft.videoId.trim();
     const sourceChannelId = ingestionDraft.channelId.trim();
-    if (!sourceVideoId && !sourceChannelId) {
-      setIngestionError('Debes configurar video URL / video ID o channel ID para ejecutar la ingesta.');
+    const videoSearchQuery = ingestionDraft.videoSearchQuery.trim();
+    if (!sourceVideoId && !sourceChannelId && !videoSearchQuery) {
+      setIngestionError('Debes configurar búsqueda de videos, video URL / video ID o channel ID para ejecutar la ingesta.');
       return;
     }
 
-    const maxComments = Math.min(1000, Math.max(1, Number(ingestionDraft.maxComments) || 100));
+    const commentsPerVideo = Number(ingestionDraft.commentsPerVideo);
+    if (!Number.isFinite(commentsPerVideo) || commentsPerVideo <= 0) {
+      setIngestionError('Comentarios por video es obligatorio y debe ser mayor que 0.');
+      return;
+    }
+
+    const videosLimit = ingestionDraft.videosLimit === '' ? null : Number(ingestionDraft.videosLimit);
+    if (videosLimit != null && (!Number.isFinite(videosLimit) || videosLimit <= 0)) {
+      setIngestionError('Cantidad de videos debe ser mayor que 0 cuando se informa.');
+      return;
+    }
+
+    const maxComments = Math.min(1000, Math.max(1, Number(commentsPerVideo) || 100));
     const includeReplies = Boolean(ingestionDraft.includeReplies);
     const keyword = ingestionDraft.keyword.trim().toLowerCase();
     setIngestionBusy(true);
@@ -220,6 +258,9 @@ const CommentsModePage = () => {
         video_url: ingestionDraft.videoUrl,
         video_id: sourceVideoId,
         channel_id: sourceChannelId,
+        video_search_query: videoSearchQuery,
+        videos_limit: videosLimit,
+        comments_per_video: commentsPerVideo,
         keyword,
         max_comments: maxComments,
         include_replies: includeReplies,
@@ -316,7 +357,9 @@ const CommentsModePage = () => {
                   <input className="rounded-lg border p-2 text-sm" placeholder="Video ID (opcional)" value={ingestionDraft.videoId} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, videoId: e.target.value }))} />
                   <input className="rounded-lg border p-2 text-sm" placeholder="Channel ID (opcional si no hay video)" value={ingestionDraft.channelId} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, channelId: e.target.value }))} />
                   <input className="rounded-lg border p-2 text-sm" placeholder="Palabra clave (filtro opcional)" value={ingestionDraft.keyword} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, keyword: e.target.value }))} />
-                  <input className="rounded-lg border p-2 text-sm" type="number" min={1} max={1000} placeholder="Máximo de comentarios" value={ingestionDraft.maxComments} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, maxComments: e.target.value }))} />
+                  <input className="rounded-lg border p-2 text-sm" placeholder="Búsqueda de videos en YouTube (opcional)" value={ingestionDraft.videoSearchQuery} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, videoSearchQuery: e.target.value }))} />
+                  <input className="rounded-lg border p-2 text-sm" type="number" min={1} max={50} placeholder="Cantidad de videos (opcional)" value={ingestionDraft.videosLimit} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, videosLimit: e.target.value }))} />
+                  <input className="rounded-lg border p-2 text-sm" type="number" min={1} max={500} placeholder="Comentarios por video (obligatorio)" value={ingestionDraft.commentsPerVideo} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, commentsPerVideo: e.target.value }))} required />
                   <select className="rounded-lg border p-2 text-sm" value={ingestionDraft.order} onChange={(e) => setIngestionDraft((prev) => ({ ...prev, order: e.target.value }))}>
                     <option value="time">Orden: más recientes (time)</option>
                     <option value="relevance">Orden: relevancia (relevance)</option>
@@ -343,7 +386,9 @@ const CommentsModePage = () => {
                           videoId: input?.config?.video_id || '',
                           channelId: input?.config?.channel_id || '',
                           keyword: input?.config?.keyword || '',
-                          maxComments: input?.config?.max_comments ?? 100,
+                          videoSearchQuery: input?.config?.video_search_query || '',
+                          videosLimit: input?.config?.videos_limit ?? '',
+                          commentsPerVideo: input?.config?.comments_per_video ?? input?.config?.max_comments ?? 100,
                           includeReplies: Boolean(input?.config?.include_replies),
                           order: input?.config?.order || 'time',
                         }))}>
