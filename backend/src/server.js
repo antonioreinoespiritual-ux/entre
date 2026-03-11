@@ -4417,7 +4417,6 @@ const server = http.createServer(async (req, res) => {
             .map((value) => value.trim())
             .filter(Boolean),
         ));
-        const commentFilterKeyword = rawSearchQuery && rawKeywordQuery ? rawKeywordQuery.toLowerCase() : '';
         const searchOrder = normalizedInput.order === 'time' ? 'date' : 'relevance';
         const commentsPerVideo = Math.min(500, Math.max(1, Number(normalizedInput.comments_per_video) || 100));
         const rows = [];
@@ -4532,7 +4531,7 @@ const server = http.createServer(async (req, res) => {
                   like_count: Number(thread.likeCount || 0),
                   reply_count: Number(thread.replyCount || 0),
                 };
-                if (!commentFilterKeyword || baseComment.text.toLowerCase().includes(commentFilterKeyword)) videoRows.push(baseComment);
+                videoRows.push(baseComment);
 
                 if (normalizedInput.include_replies && Array.isArray(thread.replies) && videoRows.length < commentsPerVideo) {
                   thread.replies.forEach((reply) => {
@@ -4550,7 +4549,7 @@ const server = http.createServer(async (req, res) => {
                       like_count: Number(reply.likeCount || 0),
                       reply_count: 0,
                     };
-                    if (!commentFilterKeyword || replyRow.text.toLowerCase().includes(commentFilterKeyword)) videoRows.push(replyRow);
+                    videoRows.push(replyRow);
                   });
                 }
               });
