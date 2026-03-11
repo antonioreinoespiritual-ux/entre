@@ -4491,7 +4491,6 @@ const server = http.createServer(async (req, res) => {
 
         const skippableVideoErrorReasons = new Set([
           'commentsDisabled',
-          'forbidden',
           'notFound',
           'videoNotFound',
           'processingFailure',
@@ -4504,17 +4503,36 @@ const server = http.createServer(async (req, res) => {
             const pageSize = Math.min(100, commentsPerVideo);
 
             while (videoRows.length < commentsPerVideo) {
-              const response = await listYouTubeCommentThreads({
-                config,
-                auth,
-                params: {
-                  videoId,
-                  maxResults: String(pageSize),
-                  order: normalizedInput.order,
-                  textFormat: 'plainText',
-                  pageToken: pageToken || undefined,
-                },
-              });
+              let response;
+              try {
+                response = await listYouTubeCommentThreads({
+                  config,
+                  auth,
+                  params: {
+                    videoId,
+                    maxResults: String(pageSize),
+                    order: normalizedInput.order,
+                    textFormat: 'plainText',
+                    pageToken: pageToken || undefined,
+                  },
+                });
+              } catch (pageError) {
+                const reason = String(pageError?.reason || '').trim();
+                const status = Number(pageError?.statusCode || 0);
+                const canRetryWithApiKey = Boolean(auth?.apiKey) && Boolean(auth?.accessToken) && (reason === 'forbidden' || status === 403);
+                if (!canRetryWithApiKey) throw pageError;
+                response = await listYouTubeCommentThreads({
+                  config,
+                  auth: { apiKey: auth.apiKey, accessToken: null },
+                  params: {
+                    videoId,
+                    maxResults: String(pageSize),
+                    order: normalizedInput.order,
+                    textFormat: 'plainText',
+                    pageToken: pageToken || undefined,
+                  },
+                });
+              }
               const items = Array.isArray(response?.data?.items) ? response.data.items : [];
 
               items.forEach((thread) => {
@@ -4563,7 +4581,9 @@ const server = http.createServer(async (req, res) => {
           } catch (videoError) {
             const reason = String(videoError?.reason || '').trim();
             const status = Number(videoError?.statusCode || 0);
-            const isSkippable = skippableVideoErrorReasons.has(reason) || status === 404;
+            const message = String(videoError?.message || '').toLowerCase();
+            const isPrivateForbidden = reason === 'forbidden' && (message.includes('private') || message.includes('permission'));
+            const isSkippable = skippableVideoErrorReasons.has(reason) || status === 404 || isPrivateForbidden;
             if (isSkippable) continue;
             throw videoError;
           }
