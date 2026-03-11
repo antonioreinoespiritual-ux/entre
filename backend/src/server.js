@@ -4468,68 +4468,84 @@ const server = http.createServer(async (req, res) => {
           ? targetVideoIds
           : targetVideoIds.slice(0, Math.min(50, Math.max(1, Number(normalizedInput.videos_limit) || 1)));
 
+        const skippableVideoErrorReasons = new Set([
+          'commentsDisabled',
+          'forbidden',
+          'notFound',
+          'videoNotFound',
+          'processingFailure',
+        ]);
+
         for (const videoId of limitedVideoIds) {
-          let pageToken = '';
-          const videoRows = [];
-          const pageSize = Math.min(100, commentsPerVideo);
+          try {
+            let pageToken = '';
+            const videoRows = [];
+            const pageSize = Math.min(100, commentsPerVideo);
 
-          while (videoRows.length < commentsPerVideo) {
-            const response = await listYouTubeCommentThreads({
-              config,
-              auth,
-              params: {
-                videoId,
-                maxResults: String(pageSize),
-                order: normalizedInput.order,
-                textFormat: 'plainText',
-                pageToken: pageToken || undefined,
-              },
-            });
-            const items = Array.isArray(response?.data?.items) ? response.data.items : [];
+            while (videoRows.length < commentsPerVideo) {
+              const response = await listYouTubeCommentThreads({
+                config,
+                auth,
+                params: {
+                  videoId,
+                  maxResults: String(pageSize),
+                  order: normalizedInput.order,
+                  textFormat: 'plainText',
+                  pageToken: pageToken || undefined,
+                },
+              });
+              const items = Array.isArray(response?.data?.items) ? response.data.items : [];
 
-            items.forEach((thread) => {
-              const baseComment = {
-                source: 'youtube',
-                source_comment_id: thread.topLevelCommentId || thread.id,
-                parent_comment_id: null,
-                video_id: thread.videoId || videoId,
-                channel_id: thread.channelId || normalizedInput.channel_id || '',
-                author_name: thread.authorDisplayName || '',
-                author_channel_id: thread.authorChannelId || '',
-                text: thread.textOriginal || thread.textDisplay || '',
-                published_at: thread.publishedAt || null,
-                like_count: Number(thread.likeCount || 0),
-                reply_count: Number(thread.replyCount || 0),
-              };
-              if (!commentFilterKeyword || baseComment.text.toLowerCase().includes(commentFilterKeyword)) videoRows.push(baseComment);
+              items.forEach((thread) => {
+                const baseComment = {
+                  source: 'youtube',
+                  source_comment_id: thread.topLevelCommentId || thread.id,
+                  parent_comment_id: null,
+                  video_id: thread.videoId || videoId,
+                  channel_id: thread.channelId || normalizedInput.channel_id || '',
+                  author_name: thread.authorDisplayName || '',
+                  author_channel_id: thread.authorChannelId || '',
+                  text: thread.textOriginal || thread.textDisplay || '',
+                  published_at: thread.publishedAt || null,
+                  like_count: Number(thread.likeCount || 0),
+                  reply_count: Number(thread.replyCount || 0),
+                };
+                if (!commentFilterKeyword || baseComment.text.toLowerCase().includes(commentFilterKeyword)) videoRows.push(baseComment);
 
-              if (normalizedInput.include_replies && Array.isArray(thread.replies) && videoRows.length < commentsPerVideo) {
-                thread.replies.forEach((reply) => {
-                  if (videoRows.length >= commentsPerVideo) return;
-                  const replyRow = {
-                    source: 'youtube',
-                    source_comment_id: reply.id,
-                    parent_comment_id: reply.parentId || baseComment.source_comment_id,
-                    video_id: thread.videoId || videoId,
-                    channel_id: thread.channelId || normalizedInput.channel_id || '',
-                    author_name: reply.authorDisplayName || '',
-                    author_channel_id: reply.authorChannelId || '',
-                    text: reply.textOriginal || reply.textDisplay || '',
-                    published_at: reply.publishedAt || null,
-                    like_count: Number(reply.likeCount || 0),
-                    reply_count: 0,
-                  };
-                  if (!commentFilterKeyword || replyRow.text.toLowerCase().includes(commentFilterKeyword)) videoRows.push(replyRow);
-                });
-              }
-            });
+                if (normalizedInput.include_replies && Array.isArray(thread.replies) && videoRows.length < commentsPerVideo) {
+                  thread.replies.forEach((reply) => {
+                    if (videoRows.length >= commentsPerVideo) return;
+                    const replyRow = {
+                      source: 'youtube',
+                      source_comment_id: reply.id,
+                      parent_comment_id: reply.parentId || baseComment.source_comment_id,
+                      video_id: thread.videoId || videoId,
+                      channel_id: thread.channelId || normalizedInput.channel_id || '',
+                      author_name: reply.authorDisplayName || '',
+                      author_channel_id: reply.authorChannelId || '',
+                      text: reply.textOriginal || reply.textDisplay || '',
+                      published_at: reply.publishedAt || null,
+                      like_count: Number(reply.likeCount || 0),
+                      reply_count: 0,
+                    };
+                    if (!commentFilterKeyword || replyRow.text.toLowerCase().includes(commentFilterKeyword)) videoRows.push(replyRow);
+                  });
+                }
+              });
 
-            const nextToken = response?.data?.nextPageToken || '';
-            if (!nextToken) break;
-            pageToken = nextToken;
+              const nextToken = response?.data?.nextPageToken || '';
+              if (!nextToken) break;
+              pageToken = nextToken;
+            }
+
+            rows.push(...videoRows.slice(0, commentsPerVideo));
+          } catch (videoError) {
+            const reason = String(videoError?.reason || '').trim();
+            const status = Number(videoError?.statusCode || 0);
+            const isSkippable = skippableVideoErrorReasons.has(reason) || status === 404;
+            if (isSkippable) continue;
+            throw videoError;
           }
-
-          rows.push(...videoRows.slice(0, commentsPerVideo));
         }
 
         const discoveredVideosCount = Math.max(1, limitedVideoIds.length);
