@@ -4406,43 +4406,60 @@ const server = http.createServer(async (req, res) => {
           throw new Error('YouTube integration is not configured. Configure API key and/or OAuth first.');
         }
 
-        const videoDiscoveryQuery = String(normalizedInput.video_search_query || normalizedInput.keyword || '').trim();
-        const commentFilterKeyword = normalizedInput.video_search_query ? String(normalizedInput.keyword || '').trim().toLowerCase() : '';
+        const rawSearchQuery = String(normalizedInput.video_search_query || '').trim();
+        const rawKeywordQuery = String(normalizedInput.keyword || '').trim();
+        const queryTerms = Array.from(new Set(
+          [rawSearchQuery, rawKeywordQuery]
+            .flatMap((value) => String(value || '').split(/[\n,;]+/g))
+            .map((value) => value.trim())
+            .filter(Boolean),
+        ));
+        const commentFilterKeyword = rawSearchQuery && rawKeywordQuery ? rawKeywordQuery.toLowerCase() : '';
         const searchOrder = normalizedInput.order === 'time' ? 'date' : 'relevance';
         const commentsPerVideo = Math.min(500, Math.max(1, Number(normalizedInput.comments_per_video) || 100));
         const rows = [];
         const targetVideoIds = [];
+        const targetVideoIdSet = new Set();
 
         if (normalizedInput.video_id) {
           targetVideoIds.push(normalizedInput.video_id);
-        } else if (videoDiscoveryQuery) {
-          let searchPageToken = '';
-          const maxVideos = normalizedInput.videos_limit == null
+          targetVideoIdSet.add(normalizedInput.video_id);
+        } else if (queryTerms.length > 0) {
+          const maxVideosPerQuery = normalizedInput.videos_limit == null
             ? 10
             : Math.min(50, Math.max(1, Number(normalizedInput.videos_limit) || 10));
 
-          while (targetVideoIds.length < maxVideos) {
-            const searchResponse = await searchYouTubeVideos({
-              config,
-              auth,
-              params: {
-                q: videoDiscoveryQuery,
-                maxResults: String(Math.min(50, maxVideos - targetVideoIds.length)),
-                order: searchOrder,
-                pageToken: searchPageToken || undefined,
-                channelId: normalizedInput.channel_id || undefined,
-              },
-            });
+          for (const queryTerm of queryTerms) {
+            let searchPageToken = '';
+            let collectedForQuery = 0;
 
-            const searchItems = Array.isArray(searchResponse?.data?.items) ? searchResponse.data.items : [];
-            searchItems.forEach((video) => {
-              const id = String(video?.id || '').trim();
-              if (id && !targetVideoIds.includes(id)) targetVideoIds.push(id);
-            });
+            while (collectedForQuery < maxVideosPerQuery) {
+              const searchResponse = await searchYouTubeVideos({
+                config,
+                auth,
+                params: {
+                  q: queryTerm,
+                  maxResults: String(Math.min(50, maxVideosPerQuery - collectedForQuery)),
+                  order: searchOrder,
+                  pageToken: searchPageToken || undefined,
+                  channelId: normalizedInput.channel_id || undefined,
+                  safeSearch: 'none',
+                },
+              });
 
-            const nextToken = searchResponse?.data?.nextPageToken || '';
-            if (!nextToken) break;
-            searchPageToken = nextToken;
+              const searchItems = Array.isArray(searchResponse?.data?.items) ? searchResponse.data.items : [];
+              searchItems.forEach((video) => {
+                const id = String(video?.id || '').trim();
+                if (!id || targetVideoIdSet.has(id)) return;
+                targetVideoIds.push(id);
+                targetVideoIdSet.add(id);
+                collectedForQuery += 1;
+              });
+
+              const nextToken = searchResponse?.data?.nextPageToken || '';
+              if (!nextToken) break;
+              searchPageToken = nextToken;
+            }
           }
         }
 
@@ -4460,7 +4477,9 @@ const server = http.createServer(async (req, res) => {
             .map((video) => String(video?.id || '').trim())
             .filter(Boolean);
           byChannel.forEach((id) => {
-            if (!targetVideoIds.includes(id)) targetVideoIds.push(id);
+            if (!id || targetVideoIdSet.has(id)) return;
+            targetVideoIds.push(id);
+            targetVideoIdSet.add(id);
           });
         }
 
