@@ -4234,9 +4234,6 @@ const server = http.createServer(async (req, res) => {
       if (normalizedInput.videos_limit != null && Number(normalizedInput.videos_limit) <= 0) {
         return sendJson(req, res, 400, { error: 'videos_limit must be greater than 0 when provided' });
       }
-      if (!normalizedInput.video_id && !normalizedInput.channel_id && !normalizedInput.video_search_query) {
-        return sendJson(req, res, 400, { error: 'video_search_query or video_url/video_id or channel_id is required' });
-      }
 
       const inputId = buildEntityId('comment_ingestion_input');
       const createdAt = nowIso();
@@ -4357,9 +4354,6 @@ const server = http.createServer(async (req, res) => {
       }
       if (normalizedInput.videos_limit != null && Number(normalizedInput.videos_limit) <= 0) {
         return sendJson(req, res, 400, { error: 'videos_limit must be greater than 0 when provided' });
-      }
-      if (!normalizedInput.video_id && !normalizedInput.channel_id && !normalizedInput.video_search_query) {
-        return sendJson(req, res, 400, { error: 'video_search_query or video_url/video_id or channel_id is required' });
       }
 
       if (!inputId) {

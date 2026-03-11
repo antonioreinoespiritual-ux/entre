@@ -135,10 +135,6 @@ const CommentsModePage = () => {
     const commentsPerVideo = Number(ingestionDraft.commentsPerVideo);
     const videosLimit = ingestionDraft.videosLimit === '' ? null : Number(ingestionDraft.videosLimit);
 
-    if (!sourceVideoId && !sourceChannelId && !videoSearchQuery) {
-      setIngestionError('Debes configurar búsqueda de videos, video URL / video ID o channel ID para guardar input.');
-      return;
-    }
     if (!Number.isFinite(commentsPerVideo) || commentsPerVideo <= 0) {
       setIngestionError('Comentarios por video es obligatorio y debe ser mayor que 0.');
       return;
@@ -229,10 +225,6 @@ const CommentsModePage = () => {
     const sourceVideoId = inferredVideoId || ingestionDraft.videoId.trim();
     const sourceChannelId = ingestionDraft.channelId.trim();
     const videoSearchQuery = ingestionDraft.videoSearchQuery.trim();
-    if (!sourceVideoId && !sourceChannelId && !videoSearchQuery) {
-      setIngestionError('Debes configurar búsqueda de videos, video URL / video ID o channel ID para ejecutar la ingesta.');
-      return;
-    }
 
     const commentsPerVideo = Number(ingestionDraft.commentsPerVideo);
     if (!Number.isFinite(commentsPerVideo) || commentsPerVideo <= 0) {
