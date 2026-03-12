@@ -75,6 +75,7 @@ const CommentsModePage = () => {
   const [readerSelectionText, setReaderSelectionText] = useState('');
   const [selectedReaderCommentId, setSelectedReaderCommentId] = useState('');
   const [fragmentTitleDrafts, setFragmentTitleDrafts] = useState({});
+  const [selectedFragmentIds, setSelectedFragmentIds] = useState([]);
 
   const [store, setStore] = useState(() => {
     try {
@@ -150,6 +151,31 @@ const CommentsModePage = () => {
   const saveFragmentTitle = (fragmentId) => {
     const draft = String(fragmentTitleDrafts[String(fragmentId)] || '').trim();
     updateFragment(fragmentId, { title: draft });
+  };
+
+  const toggleFragmentSelection = (fragmentId) => {
+    const id = String(fragmentId);
+    setSelectedFragmentIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
+  };
+
+  const deleteFragments = (fragmentIds = []) => {
+    const ids = Array.from(new Set((fragmentIds || []).map((item) => String(item)).filter(Boolean)));
+    if (!ids.length) return;
+    const nextFragments = fragments.filter((fragment) => !ids.includes(String(fragment.id)));
+    persist({ ...store, fragments: nextFragments });
+    setSelectedFragmentIds((prev) => prev.filter((id) => !ids.includes(String(id))));
+  };
+
+  const deleteSingleFragment = (fragmentId) => {
+    const id = String(fragmentId);
+    if (!window.confirm('¿Eliminar este fragmento?')) return;
+    deleteFragments([id]);
+  };
+
+  const deleteSelectedFragments = () => {
+    if (!selectedFragmentIds.length) return;
+    if (!window.confirm(`¿Eliminar ${selectedFragmentIds.length} fragmento(s) seleccionados?`)) return;
+    deleteFragments(selectedFragmentIds);
   };
 
   const evolveFragmentToCode = (fragment) => {
@@ -640,7 +666,12 @@ const CommentsModePage = () => {
             <div className="rounded-xl border bg-white p-4 space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="font-semibold text-slate-900">Fragmentos</h2>
-                <p className="text-xs text-slate-500">Edita título, vincula código o evoluciona a código.</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-slate-500">Edita título, vincula código, evoluciona a código o elimina fragmentos.</p>
+                  <Button className="bg-white border text-rose-700" disabled={!selectedFragmentIds.length} onClick={deleteSelectedFragments}>
+                    Eliminar seleccionados ({selectedFragmentIds.length})
+                  </Button>
+                </div>
               </div>
               {fragments.length === 0 ? <p className="text-sm text-slate-500">No hay fragmentos todavía.</p> : fragments.map((fragment) => (
                 <div key={fragment.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
@@ -670,6 +701,20 @@ const CommentsModePage = () => {
                     </select>
                     <Button className="bg-white border text-slate-700" onClick={() => saveFragmentTitle(fragment.id)}>Guardar</Button>
                     <Button className="bg-indigo-600 text-white" onClick={() => evolveFragmentToCode(fragment)}>Evolucionar a código</Button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={selectedFragmentIds.includes(String(fragment.id))}
+                        onChange={() => toggleFragmentSelection(fragment.id)}
+                      />
+                      Seleccionar para eliminación masiva
+                    </label>
+                    <Button className="bg-white border text-rose-700" onClick={() => deleteSingleFragment(fragment.id)}>
+                      Eliminar fragmento
+                    </Button>
                   </div>
 
                   <p className="text-sm text-slate-800">{fragment.excerpt}</p>
