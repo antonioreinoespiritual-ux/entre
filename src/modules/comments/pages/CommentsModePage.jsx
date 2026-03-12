@@ -1565,6 +1565,10 @@ const CommentsModePage = () => {
                         <div
                           style={{ left: codeMapContextMenu.x, top: codeMapContextMenu.y }}
                           className="absolute z-30 min-w-[210px] rounded-md border border-slate-200 bg-white p-1 shadow-lg"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
                           onClick={(event) => event.stopPropagation()}
                         >
                           <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
