@@ -225,6 +225,15 @@ const CommentsModePage = () => {
     deleteFragments(selectedFragmentIds);
   };
 
+  const deleteAllFragments = () => {
+    if (!fragments.length) return;
+    if (!window.confirm(`¿Eliminar todos los fragmentos (${fragments.length})? Esta acción no se puede deshacer.`)) return;
+    persist({ ...store, fragments: [] });
+    setSelectedFragmentIds([]);
+    setSelectedFragmentId('');
+    setFragmentMenuId('');
+  };
+
   const filteredFragments = useMemo(() => {
     const query = fragmentQuery.trim().toLowerCase();
     return fragments.filter((fragment) => {
@@ -730,6 +739,9 @@ const CommentsModePage = () => {
                   <p className="text-xs text-slate-500">Consola semántica de entidades para comentarios.</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
+                  <Button className="bg-white border text-rose-700" disabled={!fragments.length} onClick={deleteAllFragments}>
+                    Eliminar todo ({fragments.length})
+                  </Button>
                   <Button className="bg-white border text-rose-700" disabled={!selectedFragmentIds.length} onClick={deleteSelectedFragments}>
                     Eliminar seleccionados ({selectedFragmentIds.length})
                   </Button>
