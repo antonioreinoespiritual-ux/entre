@@ -1,12 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 
-const defaultCodeDraft = { name: '', slug: '', parent_slug: '' };
+const defaultCodeEditor = {
+  mode: 'create',
+  targetSlug: '',
+  name: '',
+  description: '',
+  parent_slug: '',
+  color: '#6366F1',
+  tags: '',
+};
 const defaultIngestionDraft = {
   videoUrl: '',
   videoId: '',
@@ -64,7 +72,6 @@ const CommentsModePage = () => {
 
   const [tab, setTab] = useState('comments');
   const [commentsSubtab, setCommentsSubtab] = useState('ingestion');
-  const [codeDraft, setCodeDraft] = useState(defaultCodeDraft);
   const [ingestionDraft, setIngestionDraft] = useState(defaultIngestionDraft);
   const [ingestionBusy, setIngestionBusy] = useState(false);
   const [ingestionError, setIngestionError] = useState('');
@@ -81,6 +88,17 @@ const CommentsModePage = () => {
   const [fragmentClientFilter, setFragmentClientFilter] = useState('');
   const [fragmentInterviewFilter, setFragmentInterviewFilter] = useState('');
   const [fragmentMenuId, setFragmentMenuId] = useState('');
+  const [codeQuery, setCodeQuery] = useState('');
+  const [codeHypothesisFilter, setCodeHypothesisFilter] = useState('');
+  const [codeClusterFilter, setCodeClusterFilter] = useState('');
+  const [codeClientFilter, setCodeClientFilter] = useState('');
+  const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
+  const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
+  const [codeMenuSlug, setCodeMenuSlug] = useState('');
+  const [codeEditor, setCodeEditor] = useState({
+    open: false,
+    ...defaultCodeEditor,
+  });
   const [fragmentEditor, setFragmentEditor] = useState({
     open: false,
     mode: 'edit',
@@ -122,17 +140,150 @@ const CommentsModePage = () => {
   const fragmentClientOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.client_id || '').trim()).filter(Boolean))), [fragments]);
   const fragmentInterviewOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.interview_id || '').trim()).filter(Boolean))), [fragments]);
 
-  const addCode = () => {
-    const name = codeDraft.name.trim();
-    const slug = slugify(codeDraft.slug || name);
-    if (!name || !slug) return;
-    if (codes.some((code) => code.slug === slug)) return;
-    persist({
-      ...store,
-      codes: [{ id: `code_${Date.now()}`, name, slug, parent_slug: codeDraft.parent_slug || null }, ...codes],
+  const codeUsageCount = useMemo(() => {
+    const usage = new Map();
+    fragments.forEach((fragment) => {
+      (fragment.code_slugs || []).forEach((slug) => usage.set(slug, (usage.get(slug) || 0) + 1));
     });
-    setCodeDraft(defaultCodeDraft);
+    return usage;
+  }, [fragments]);
+
+  const codeHypothesisOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.hypothesis_id || '').trim()).filter(Boolean))), [codes]);
+  const codeClusterOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.cluster_id || '').trim()).filter(Boolean))), [codes]);
+  const codeClientOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.client_id || '').trim()).filter(Boolean))), [codes]);
+
+  const openCodeEditor = (mode = 'create', code = null, parentSlug = '') => {
+    setCodeMenuSlug('');
+    if (mode === 'create') {
+      setCodeEditor({
+        open: true,
+        ...defaultCodeEditor,
+        mode,
+        parent_slug: parentSlug || '',
+      });
+      return;
+    }
+    if (!code) return;
+    setCodeEditor({
+      open: true,
+      mode: 'edit',
+      targetSlug: String(code.slug || ''),
+      name: String(code.name || ''),
+      description: String(code.description || ''),
+      parent_slug: String(code.parent_slug || ''),
+      color: String(code.color || '#6366F1'),
+      tags: Array.isArray(code.tags) ? code.tags.join(', ') : String(code.tags || ''),
+    });
   };
+
+  const closeCodeEditor = () => setCodeEditor((prev) => ({ ...prev, open: false }));
+
+  const saveCodeEditor = () => {
+    const name = String(codeEditor.name || '').trim();
+    if (!name) return;
+    const targetSlug = slugify(name).slice(0, 64) || `code-${Date.now()}`;
+    const tags = String(codeEditor.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+
+    if (codeEditor.mode === 'create') {
+      let nextSlug = targetSlug;
+      let suffix = 1;
+      while (codes.some((code) => code.slug === nextSlug)) {
+        suffix += 1;
+        nextSlug = `${targetSlug}-${suffix}`;
+      }
+
+      const nextCode = {
+        id: `code_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        name,
+        slug: nextSlug,
+        parent_slug: codeEditor.parent_slug || null,
+        description: String(codeEditor.description || '').trim(),
+        color: codeEditor.color || '#6366F1',
+        tags,
+        created_at: new Date().toISOString(),
+      };
+      persist({ ...store, codes: [nextCode, ...codes] });
+      setSelectedCodeSlug(nextSlug);
+      closeCodeEditor();
+      return;
+    }
+
+    const nextCodes = codes.map((code) => {
+      if (String(code.slug) !== String(codeEditor.targetSlug)) return code;
+      return {
+        ...code,
+        name,
+        description: String(codeEditor.description || '').trim(),
+        parent_slug: codeEditor.parent_slug || null,
+        color: codeEditor.color || '#6366F1',
+        tags,
+      };
+    });
+    persist({ ...store, codes: nextCodes });
+    setSelectedCodeSlug(codeEditor.targetSlug);
+    closeCodeEditor();
+  };
+
+  const toggleCodeCollapsed = (slug) => {
+    setCollapsedCodeSlugs((prev) => ({ ...prev, [slug]: !prev[slug] }));
+  };
+
+  const deleteCodeTree = (slug) => {
+    const target = String(slug || '');
+    if (!target) return;
+    const descendants = new Set([target]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      codes.forEach((code) => {
+        if (code.parent_slug && descendants.has(String(code.parent_slug)) && !descendants.has(String(code.slug))) {
+          descendants.add(String(code.slug));
+          changed = true;
+        }
+      });
+    }
+
+    const nextCodes = codes.filter((code) => !descendants.has(String(code.slug)));
+    const nextFragments = fragments.map((fragment) => ({
+      ...fragment,
+      code_slugs: (fragment.code_slugs || []).filter((item) => !descendants.has(String(item))),
+    }));
+    persist({ ...store, codes: nextCodes, fragments: nextFragments });
+    setSelectedCodeSlug('');
+    setCodeMenuSlug('');
+  };
+
+  const filteredCodes = useMemo(() => {
+    const query = codeQuery.trim().toLowerCase();
+    return codes.filter((code) => {
+      const name = String(code.name || '').toLowerCase();
+      const description = String(code.description || '').toLowerCase();
+      const tags = Array.isArray(code.tags) ? code.tags.join(' ').toLowerCase() : String(code.tags || '').toLowerCase();
+      const matchesQuery = !query || name.includes(query) || description.includes(query) || tags.includes(query);
+      const matchesHypothesis = !codeHypothesisFilter || String(code.hypothesis_id || '') === codeHypothesisFilter;
+      const matchesCluster = !codeClusterFilter || String(code.cluster_id || '') === codeClusterFilter;
+      const matchesClient = !codeClientFilter || String(code.client_id || '') === codeClientFilter;
+      return matchesQuery && matchesHypothesis && matchesCluster && matchesClient;
+    });
+  }, [codes, codeQuery, codeHypothesisFilter, codeClusterFilter, codeClientFilter]);
+
+  const codeTreeRoots = useMemo(() => {
+    const filteredSet = new Set(filteredCodes.map((code) => String(code.slug)));
+    const childrenByParent = new Map();
+    filteredCodes.forEach((code) => {
+      const parent = String(code.parent_slug || '');
+      if (!childrenByParent.has(parent)) childrenByParent.set(parent, []);
+      childrenByParent.get(parent).push(code);
+    });
+
+    const sortByName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
+    childrenByParent.forEach((list) => list.sort(sortByName));
+
+    const roots = filteredCodes.filter((code) => !code.parent_slug || !filteredSet.has(String(code.parent_slug)));
+    roots.sort(sortByName);
+
+    return { roots, childrenByParent };
+  }, [filteredCodes]);
 
   const updateFragment = (fragmentId, patch) => {
     const nextFragments = fragments.map((fragment) => {
@@ -469,6 +620,80 @@ const CommentsModePage = () => {
     { id: 'codes', label: 'Códigos', icon: Tags },
     { id: 'clusters', label: 'Clusters', icon: Network },
   ];
+
+  const renderCodeNode = (code, depth = 0) => {
+    const slug = String(code.slug || '');
+    const children = codeTreeRoots.childrenByParent.get(slug) || [];
+    const isCollapsed = Boolean(collapsedCodeSlugs[slug]);
+    const isSelected = selectedCodeSlug === slug;
+    const usageCount = Number(codeUsageCount.get(slug) || 0);
+
+    return (
+      <div key={slug} className="space-y-1">
+        <article
+          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''}`}
+          style={{ marginLeft: `${depth * 18}px` }}
+          onClick={() => setSelectedCodeSlug(slug)}
+        >
+          <div className="absolute left-0 top-0 h-full w-1 rounded-l-xl bg-transparent group-hover:bg-indigo-200" />
+          {isSelected ? <div className="absolute left-0 top-0 h-full w-1 rounded-l-xl bg-indigo-500" /> : null}
+
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                {children.length ? (
+                  <button type="button" className="rounded border bg-white p-0.5 text-slate-500 hover:text-slate-700" onClick={(e) => { e.stopPropagation(); toggleCodeCollapsed(slug); }}>
+                    {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+                  </button>
+                ) : <span className="inline-block w-5" />}
+                <h3 className={`truncate ${depth === 0 ? 'text-[15px]' : 'text-sm'} font-semibold text-slate-900`}>{code.name}</h3>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] ${usageCount > 10 ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>{usageCount} fragmentos</span>
+              </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                <span>Nivel {depth + 1}</span>
+                <span>·</span>
+                <span>{code.created_at ? new Date(code.created_at).toLocaleDateString() : 'Sin fecha'}</span>
+                {Array.isArray(code.tags) && code.tags.length ? <><span>·</span><span className="line-clamp-1">{code.tags.slice(0, 3).join(', ')}</span></> : null}
+              </div>
+            </div>
+
+            <div className="relative">
+              <button
+                type="button"
+                className="rounded-md border bg-white p-1.5 text-slate-500 opacity-0 transition group-hover:opacity-100 hover:text-slate-800"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCodeMenuSlug((prev) => (prev === slug ? '' : slug));
+                }}
+              >
+                <MoreHorizontal className="h-4 w-4" />
+              </button>
+              {codeMenuSlug === slug ? (
+                <div className="absolute right-0 top-9 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+                  <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Editar código</button>
+                  <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('create', null, slug)}>Crear subcódigo</button>
+                  <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Mover jerarquía</button>
+                  <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setTab('comments'); setCodeMenuSlug(''); }}>Ir a mapa de códigos</button>
+                  <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => {
+                    if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
+                    deleteCodeTree(slug);
+                  }}>Eliminar código</button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {children.slice(0, 4).map((child) => (
+              <span key={`${slug}_${child.slug}`} className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-600">{child.name}</span>
+            ))}
+          </div>
+        </article>
+
+        {!isCollapsed ? children.map((child) => renderCodeNode(child, depth + 1)) : null}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -894,25 +1119,64 @@ const CommentsModePage = () => {
           )}
 
           {tab === 'codes' && (
-            <div className="rounded-xl border bg-white p-4 space-y-3">
-              <h2 className="font-semibold text-slate-900">Códigos</h2>
-              <div className="grid gap-2 md:grid-cols-4">
-                <input className="rounded-lg border p-2 text-sm" placeholder="Nombre" value={codeDraft.name} onChange={(e) => setCodeDraft((prev) => ({ ...prev, name: e.target.value }))} />
-                <input className="rounded-lg border p-2 text-sm" placeholder="Slug (opcional)" value={codeDraft.slug} onChange={(e) => setCodeDraft((prev) => ({ ...prev, slug: e.target.value }))} />
-                <select className="rounded-lg border p-2 text-sm" value={codeDraft.parent_slug} onChange={(e) => setCodeDraft((prev) => ({ ...prev, parent_slug: e.target.value }))}>
-                  <option value="">Sin padre</option>
-                  {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+            <div className="rounded-xl border bg-slate-50 p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold text-slate-900">Lista de códigos</h2>
+                  <p className="text-xs text-slate-500">Panel de estructura semántica jerárquica.</p>
+                </div>
+                <Button className="bg-indigo-600 text-white" onClick={() => openCodeEditor('create')}>
+                  <Plus className="mr-1 h-4 w-4" /> Crear código
+                </Button>
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                <label className="relative block">
+                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar código o descripción" value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
+                </label>
+                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeHypothesisFilter} onChange={(e) => setCodeHypothesisFilter(e.target.value)}>
+                  <option value="">Filtrar por hipótesis</option>
+                  {codeHypothesisOptions.map((hypothesisId) => <option key={hypothesisId} value={hypothesisId}>{hypothesisId}</option>)}
                 </select>
-                <Button className="bg-indigo-600 text-white" onClick={addCode}>Crear código</Button>
+                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClusterFilter} onChange={(e) => setCodeClusterFilter(e.target.value)}>
+                  <option value="">Filtrar por cluster</option>
+                  {codeClusterOptions.map((clusterId) => <option key={clusterId} value={clusterId}>{clusterId}</option>)}
+                </select>
+                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClientFilter} onChange={(e) => setCodeClientFilter(e.target.value)}>
+                  <option value="">Filtrar por cliente</option>
+                  {codeClientOptions.map((clientId) => <option key={clientId} value={clientId}>{clientId}</option>)}
+                </select>
               </div>
+
               <div className="space-y-2">
-                {codes.length === 0 ? <p className="text-sm text-slate-500">No hay códigos todavía.</p> : codes.map((code) => (
-                  <div key={code.slug} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-                    <p className="font-medium text-slate-800">{code.name}</p>
-                    <p className="text-xs text-slate-500">slug: {code.slug} · padre: {code.parent_slug || '—'}</p>
-                  </div>
-                ))}
+                {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
               </div>
+
+              {codeEditor.open ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+                  <div className="w-full max-w-2xl rounded-xl border bg-white shadow-xl">
+                    <div className="border-b px-5 py-4">
+                      <h3 className="text-sm font-semibold text-slate-900">{codeEditor.mode === 'create' ? 'Crear código' : 'Editar código'}</h3>
+                      <p className="text-xs text-slate-500">Define nombre, jerarquía y metadatos semánticos.</p>
+                    </div>
+                    <div className="grid gap-3 px-5 py-4 md:grid-cols-2">
+                      <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Nombre del código" value={codeEditor.name} onChange={(e) => setCodeEditor((prev) => ({ ...prev, name: e.target.value }))} />
+                      <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Color semántico (#HEX)" value={codeEditor.color} onChange={(e) => setCodeEditor((prev) => ({ ...prev, color: e.target.value }))} />
+                      <select className="rounded-lg border px-3 py-2 text-sm" value={codeEditor.parent_slug} onChange={(e) => setCodeEditor((prev) => ({ ...prev, parent_slug: e.target.value }))}>
+                        <option value="">Sin padre</option>
+                        {codes.filter((code) => String(code.slug) !== String(codeEditor.targetSlug)).map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+                      </select>
+                      <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Tags (coma separada)" value={codeEditor.tags} onChange={(e) => setCodeEditor((prev) => ({ ...prev, tags: e.target.value }))} />
+                      <textarea className="md:col-span-2 h-28 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción opcional" value={codeEditor.description} onChange={(e) => setCodeEditor((prev) => ({ ...prev, description: e.target.value }))} />
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+                      <Button className="bg-white border text-slate-700" onClick={closeCodeEditor}>Cancelar</Button>
+                      <Button className="bg-indigo-600 text-white" onClick={saveCodeEditor}>Guardar</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           )}
 
