@@ -8067,11 +8067,45 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+const MAX_PORT_RETRIES = 10;
+
+function startServerWithPortRetry(initialPort) {
+  let attempts = 0;
+  let currentPort = Number(initialPort);
+
+  const tryListen = () => {
+    const onListening = () => {
+      server.off('error', onError);
+      if (attempts > 0) {
+        console.warn(`Port ${port} was busy. Backend started on fallback port ${currentPort}.`);
+      }
+      console.log(`SQLite backend running on port ${currentPort}`);
+    };
+
+    const onError = (error) => {
+      server.off('listening', onListening);
+      if (error?.code === 'EADDRINUSE' && attempts < MAX_PORT_RETRIES) {
+        attempts += 1;
+        currentPort += 1;
+        console.warn(`Port ${currentPort - 1} is already in use. Retrying on ${currentPort}...`);
+        setTimeout(tryListen, 50);
+        return;
+      }
+      console.error(`Failed to start backend on port ${currentPort}:`, error);
+      process.exit(1);
+    };
+
+    server.once('listening', onListening);
+    server.once('error', onError);
+    server.listen(currentPort);
+  };
+
+  tryListen();
+}
+
 runMigrations()
   .then(() => {
-    server.listen(port, () => {
-      console.log(`SQLite backend running on port ${port}`);
-    });
+    startServerWithPortRetry(port);
   })
   .catch((error) => {
     console.error('Failed to initialize backend:', error);
