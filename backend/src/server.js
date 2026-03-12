@@ -2480,6 +2480,16 @@ function parseYouTubeVideoId(rawValue = '') {
   }
 }
 
+function extractResolvedVideoId(item = null) {
+  if (!item) return '';
+  if (typeof item.videoId === 'string' && item.videoId.trim()) return item.videoId.trim();
+  if (typeof item.id === 'string' && item.id.trim()) return item.id.trim();
+  if (item.id && typeof item.id === 'object' && typeof item.id.videoId === 'string' && item.id.videoId.trim()) {
+    return item.id.videoId.trim();
+  }
+  return '';
+}
+
 
 function normalizeYouTubeIngestionInput(rawInput = {}) {
   const normalized = {
@@ -2554,7 +2564,7 @@ async function resolveVideosFromInput({ normalizedInput, config, auth }) {
 
       const items = Array.isArray(searchResponse?.data?.items) ? searchResponse.data.items : [];
       for (const item of items) {
-        const videoId = String(item?.id || item?.videoId || '').trim();
+        const videoId = extractResolvedVideoId(item);
         if (!videoId || seen.has(videoId)) continue;
         resolved.push({
           videoId,
@@ -4558,6 +4568,9 @@ const server = http.createServer(async (req, res) => {
 
         const resolvedVideos = await resolveVideosFromInput({ normalizedInput, config, auth });
         const { rows, stats } = await ingestCommentsFromResolvedVideos({ resolvedVideos, normalizedInput, config, auth });
+        if (!rows.length) {
+          throw new Error(`No se pudieron importar comentarios. Videos resueltos: ${stats.videos_resolved}, procesados: ${stats.videos_processed}, omitidos: ${stats.videos_skipped}.`);
+        }
         const slicedRows = rows;
 
         const audienceId = String(body.audience_id || '').trim() || null;
