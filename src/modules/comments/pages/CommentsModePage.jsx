@@ -14,6 +14,8 @@ const defaultCodeEditor = {
   parent_slug: '',
   color: '#6366F1',
   tags: '',
+  score_consistencia: 50,
+  score_intensidad: 50,
 };
 const defaultIngestionDraft = {
   videoUrl: '',
@@ -92,6 +94,7 @@ const CommentsModePage = () => {
   const [codeHypothesisFilter, setCodeHypothesisFilter] = useState('');
   const [codeClusterFilter, setCodeClusterFilter] = useState('');
   const [codeClientFilter, setCodeClientFilter] = useState('');
+  const [codeSortBy, setCodeSortBy] = useState('score_total_desc');
   const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
   const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
   const [codeMenuSlug, setCodeMenuSlug] = useState('');
@@ -158,6 +161,62 @@ const CommentsModePage = () => {
     return usage;
   }, [fragments]);
 
+  const codeScoreBySlug = useMemo(() => {
+    const fragmentCountBySlug = new Map();
+    const uniqueSourcesBySlug = new Map();
+
+    fragments.forEach((fragment) => {
+      const sourceKey = String(fragment.comment_id || fragment.source_comment_id || fragment.video_id || fragment.source_run_id || fragment.id || '').trim();
+      (fragment.code_slugs || []).forEach((slug) => {
+        const currentCount = Number(fragmentCountBySlug.get(slug) || 0);
+        fragmentCountBySlug.set(slug, currentCount + 1);
+        if (!uniqueSourcesBySlug.has(slug)) uniqueSourcesBySlug.set(slug, new Set());
+        if (sourceKey) uniqueSourcesBySlug.get(slug).add(sourceKey);
+      });
+    });
+
+    const maxFragments = Math.max(1, ...Array.from(fragmentCountBySlug.values(), (value) => Number(value || 0)));
+    const maxSources = Math.max(1, ...Array.from(uniqueSourcesBySlug.values(), (set) => Number(set?.size || 0)));
+
+    const result = new Map();
+    codes.forEach((code) => {
+      const slug = String(code.slug || '');
+      const fragmentCount = Number(fragmentCountBySlug.get(slug) || 0);
+      const uniqueSources = Number(uniqueSourcesBySlug.get(slug)?.size || 0);
+
+      const scoreFrecuencia = Math.round((fragmentCount / maxFragments) * 100);
+      const scoreDispersion = Math.round((uniqueSources / maxSources) * 100);
+      const scoreConsistencia = Math.max(0, Math.min(100, Number(code.score_consistencia ?? 50)));
+      const scoreIntensidad = Math.max(0, Math.min(100, Number(code.score_intensidad ?? 50)));
+
+      const scoreTotal = Math.round(
+        (0.35 * scoreFrecuencia)
+        + (0.30 * scoreDispersion)
+        + (0.20 * scoreConsistencia)
+        + (0.15 * scoreIntensidad),
+      );
+
+      result.set(slug, {
+        score_total: scoreTotal,
+        score_frecuencia: scoreFrecuencia,
+        score_dispersion: scoreDispersion,
+        score_consistencia: scoreConsistencia,
+        score_intensidad: scoreIntensidad,
+        fragment_count: fragmentCount,
+        unique_sources: uniqueSources,
+      });
+    });
+
+    return result;
+  }, [codes, fragments]);
+
+  const getScoreColorClass = (score = 0) => {
+    if (score >= 80) return 'bg-emerald-100 text-emerald-800 border-emerald-200';
+    if (score >= 60) return 'bg-blue-100 text-blue-800 border-blue-200';
+    if (score >= 40) return 'bg-amber-100 text-amber-800 border-amber-200';
+    return 'bg-slate-100 text-slate-700 border-slate-200';
+  };
+
   const codeHypothesisOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.hypothesis_id || '').trim()).filter(Boolean))), [codes]);
   const codeClusterOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.cluster_id || '').trim()).filter(Boolean))), [codes]);
   const codeClientOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.client_id || '').trim()).filter(Boolean))), [codes]);
@@ -183,6 +242,8 @@ const CommentsModePage = () => {
       parent_slug: String(code.parent_slug || ''),
       color: String(code.color || '#6366F1'),
       tags: Array.isArray(code.tags) ? code.tags.join(', ') : String(code.tags || ''),
+      score_consistencia: Math.max(0, Math.min(100, Number(code.score_consistencia ?? 50))),
+      score_intensidad: Math.max(0, Math.min(100, Number(code.score_intensidad ?? 50))),
     });
   };
 
@@ -193,6 +254,8 @@ const CommentsModePage = () => {
     if (!name) return;
     const targetSlug = slugify(name).slice(0, 64) || `code-${Date.now()}`;
     const tags = String(codeEditor.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+    const scoreConsistencia = Math.max(0, Math.min(100, Number(codeEditor.score_consistencia ?? 50)));
+    const scoreIntensidad = Math.max(0, Math.min(100, Number(codeEditor.score_intensidad ?? 50)));
 
     if (codeEditor.mode === 'create') {
       let nextSlug = targetSlug;
@@ -210,6 +273,8 @@ const CommentsModePage = () => {
         description: String(codeEditor.description || '').trim(),
         color: codeEditor.color || '#6366F1',
         tags,
+        score_consistencia: scoreConsistencia,
+        score_intensidad: scoreIntensidad,
         created_at: new Date().toISOString(),
       };
       persist({ ...store, codes: [nextCode, ...codes] });
@@ -227,6 +292,8 @@ const CommentsModePage = () => {
         parent_slug: codeEditor.parent_slug || null,
         color: codeEditor.color || '#6366F1',
         tags,
+        score_consistencia: scoreConsistencia,
+        score_intensidad: scoreIntensidad,
       };
     });
     persist({ ...store, codes: nextCodes });
@@ -302,13 +369,25 @@ const CommentsModePage = () => {
     });
 
     const sortByName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
-    childrenByParent.forEach((list) => list.sort(sortByName));
+    const sortByScoreMetric = (a, b, key) => {
+      const aScore = Number(codeScoreBySlug.get(String(a.slug))?.[key] || 0);
+      const bScore = Number(codeScoreBySlug.get(String(b.slug))?.[key] || 0);
+      if (bScore !== aScore) return bScore - aScore;
+      return sortByName(a, b);
+    };
+    const sortBy = (a, b) => {
+      if (codeSortBy === 'frecuencia_desc') return sortByScoreMetric(a, b, 'score_frecuencia');
+      if (codeSortBy === 'dispersion_desc') return sortByScoreMetric(a, b, 'score_dispersion');
+      if (codeSortBy === 'score_total_desc') return sortByScoreMetric(a, b, 'score_total');
+      return sortByName(a, b);
+    };
+    childrenByParent.forEach((list) => list.sort(sortBy));
 
     const roots = filteredCodes.filter((code) => !code.parent_slug || !filteredSet.has(String(code.parent_slug)));
-    roots.sort(sortByName);
+    roots.sort(sortBy);
 
     return { roots, childrenByParent };
-  }, [filteredCodes]);
+  }, [filteredCodes, codeSortBy, codeScoreBySlug]);
 
   const codeMapVisibleCodes = useMemo(() => {
     if (!codeHypothesisFilter) return codes;
@@ -322,10 +401,11 @@ const CommentsModePage = () => {
     return {
       ...code,
       fragmentCount: Number(codeUsageCount.get(String(code.slug)) || 0),
+      scoreTotal: Number(codeScoreBySlug.get(String(code.slug))?.score_total || 0),
       x: Number.isFinite(x) ? x : 120 + ((index % 4) * 260),
       y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 160),
     };
-  }), [codeMapVisibleCodes, codeMapLayoutBySlug, codeUsageCount]);
+  }), [codeMapVisibleCodes, codeMapLayoutBySlug, codeUsageCount, codeScoreBySlug]);
 
   const codeMapVisibleSlugSet = useMemo(() => new Set(codeMapVisibleCodes.map((code) => String(code.slug))), [codeMapVisibleCodes]);
 
@@ -757,6 +837,13 @@ const CommentsModePage = () => {
     const isCollapsed = Boolean(collapsedCodeSlugs[slug]);
     const isSelected = selectedCodeSlug === slug;
     const usageCount = Number(codeUsageCount.get(slug) || 0);
+    const score = codeScoreBySlug.get(slug) || {
+      score_total: 0,
+      score_frecuencia: 0,
+      score_dispersion: 0,
+      score_consistencia: 0,
+      score_intensidad: 0,
+    };
 
     return (
       <div key={slug} className="space-y-1">
@@ -777,12 +864,15 @@ const CommentsModePage = () => {
                   </button>
                 ) : <span className="inline-block w-5" />}
                 <h3 className={`truncate ${depth === 0 ? 'text-[15px]' : 'text-sm'} font-semibold text-slate-900`}>{code.name}</h3>
+                <span className={`rounded-full border px-2 py-0.5 text-[11px] ${getScoreColorClass(score.score_total)}`}>{score.score_total} / 100</span>
                 <span className={`rounded-full px-2 py-0.5 text-[11px] ${usageCount > 10 ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>{usageCount} fragmentos</span>
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
                 <span>Nivel {depth + 1}</span>
                 <span>·</span>
                 <span>{code.created_at ? new Date(code.created_at).toLocaleDateString() : 'Sin fecha'}</span>
+                <span>·</span>
+                <span>F {score.score_frecuencia} · D {score.score_dispersion}</span>
                 {Array.isArray(code.tags) && code.tags.length ? <><span>·</span><span className="line-clamp-1">{code.tags.slice(0, 3).join(', ')}</span></> : null}
               </div>
             </div>
@@ -1284,6 +1374,15 @@ const CommentsModePage = () => {
                 </select>
               </div>
 
+              <div className="flex items-center justify-end">
+                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeSortBy} onChange={(e) => setCodeSortBy(e.target.value)}>
+                  <option value="score_total_desc">Ordenar por score total</option>
+                  <option value="frecuencia_desc">Ordenar por frecuencia</option>
+                  <option value="dispersion_desc">Ordenar por dispersión</option>
+                  <option value="name_asc">Ordenar por nombre</option>
+                </select>
+              </div>
+
               <div className="space-y-2">
                 {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
               </div>
@@ -1303,6 +1402,20 @@ const CommentsModePage = () => {
                         {codes.filter((code) => String(code.slug) !== String(codeEditor.targetSlug)).map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
                       </select>
                       <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Tags (coma separada)" value={codeEditor.tags} onChange={(e) => setCodeEditor((prev) => ({ ...prev, tags: e.target.value }))} />
+                      <div className="rounded-lg border px-3 py-2 text-sm">
+                        <div className="mb-1 flex items-center justify-between text-xs text-slate-600">
+                          <span>Consistencia semántica</span>
+                          <span>{Number(codeEditor.score_consistencia || 0)}</span>
+                        </div>
+                        <input type="range" min={0} max={100} step={1} value={Number(codeEditor.score_consistencia || 0)} onChange={(e) => setCodeEditor((prev) => ({ ...prev, score_consistencia: Number(e.target.value) || 0 }))} className="w-full" />
+                      </div>
+                      <div className="rounded-lg border px-3 py-2 text-sm">
+                        <div className="mb-1 flex items-center justify-between text-xs text-slate-600">
+                          <span>Intensidad narrativa</span>
+                          <span>{Number(codeEditor.score_intensidad || 0)}</span>
+                        </div>
+                        <input type="range" min={0} max={100} step={1} value={Number(codeEditor.score_intensidad || 0)} onChange={(e) => setCodeEditor((prev) => ({ ...prev, score_intensidad: Number(e.target.value) || 0 }))} className="w-full" />
+                      </div>
                       <textarea className="md:col-span-2 h-28 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción opcional" value={codeEditor.description} onChange={(e) => setCodeEditor((prev) => ({ ...prev, description: e.target.value }))} />
                     </div>
                     <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
@@ -1376,12 +1489,13 @@ const CommentsModePage = () => {
 
                         {codeMapNodes.map((code) => {
                           const isNodeSelected = selectedCodeMapNode === code.slug;
+                          const nodeWidth = Math.max(100, Math.min(220, 100 + (Number(code.scoreTotal || 0) * 1.1)));
                           return (
                             <div
                               key={code.slug}
                               data-code-map-node="true"
-                              className={`absolute min-w-[90px] max-w-[180px] rounded-md border bg-white px-2.5 py-1.5 text-[13px] font-medium text-slate-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:border-indigo-500 hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] ${draggingCodeMapNode === code.slug || isNodeSelected ? 'border-2 border-indigo-500' : 'border-[#D0D5DD]'}`}
-                              style={{ left: code.x, top: code.y }}
+                              className={`absolute min-w-[90px] rounded-md border bg-white px-2.5 py-1.5 text-[13px] font-medium text-slate-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:border-indigo-500 hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] ${draggingCodeMapNode === code.slug || isNodeSelected ? 'border-2 border-indigo-500' : 'border-[#D0D5DD]'}`}
+                              style={{ left: code.x, top: code.y, width: `${nodeWidth}px`, maxWidth: `${nodeWidth}px` }}
                               onMouseDown={(event) => handleCodeMapNodeMouseDown(event, code.slug)}
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -1400,7 +1514,7 @@ const CommentsModePage = () => {
                               }}
                             >
                               <p className="truncate">{code.name}</p>
-                              <p className="text-[10px] font-normal text-slate-500">({code.fragmentCount})</p>
+                              <p className="text-[10px] font-normal text-slate-500">({code.fragmentCount}) · {code.scoreTotal}/100</p>
                             </div>
                           );
                         })}
