@@ -81,7 +81,7 @@ const CommentsModePage = () => {
   const [ingestionRuns, setIngestionRuns] = useState([]);
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
   const [readerViewMode, setReaderViewMode] = useState('document');
-  const [readerSelectionText, setReaderSelectionText] = useState('');
+  const [readerSelection, setReaderSelection] = useState({ text: '', start: null, end: null, commentId: '' });
   const [selectedReaderCommentId, setSelectedReaderCommentId] = useState('');
   const [selectedFragmentIds, setSelectedFragmentIds] = useState([]);
   const [selectedFragmentId, setSelectedFragmentId] = useState('');
@@ -120,7 +120,14 @@ const CommentsModePage = () => {
     title: '',
     excerpt: '',
     linkedCode: '',
+    sourceCommentId: '',
+    sourceType: '',
+    sourceCommentText: '',
+    selectedText: '',
+    selectionStart: null,
+    selectionEnd: null,
   });
+  const readerTextContainerRef = useRef(null);
 
   const [store, setStore] = useState(() => {
     try {
@@ -542,6 +549,12 @@ const CommentsModePage = () => {
         title: '',
         excerpt: '',
         linkedCode: '',
+        sourceCommentId: '',
+        sourceType: '',
+        sourceCommentText: '',
+        selectedText: '',
+        selectionStart: null,
+        selectionEnd: null,
       });
       return;
     }
@@ -552,6 +565,12 @@ const CommentsModePage = () => {
       title: String(fragment.title || ''),
       excerpt: String(fragment.excerpt || ''),
       linkedCode: Array.isArray(fragment.code_slugs) ? String(fragment.code_slugs[0] || '') : '',
+      sourceCommentId: String(fragment.source_comment_id || fragment.comment_id || ''),
+      sourceType: String(fragment.source_type || ''),
+      sourceCommentText: String(fragment.source_comment_text || ''),
+      selectedText: String(fragment.selected_text || fragment.excerpt || ''),
+      selectionStart: Number.isFinite(Number(fragment.selection_start)) ? Number(fragment.selection_start) : null,
+      selectionEnd: Number.isFinite(Number(fragment.selection_end)) ? Number(fragment.selection_end) : null,
     });
   };
 
@@ -637,6 +656,25 @@ const CommentsModePage = () => {
     });
   }, [fragments, fragmentCodeFilter, fragmentClientFilter, fragmentInterviewFilter, fragmentQuery]);
 
+  const renderFragmentSourceWithHighlight = (fragment) => {
+    const sourceText = String(fragment?.source_comment_text || '');
+    const start = Number(fragment?.selection_start);
+    const end = Number(fragment?.selection_end);
+
+    if (!sourceText) return 'Sin comentario origen disponible.';
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > sourceText.length) {
+      return sourceText;
+    }
+
+    return (
+      <>
+        {sourceText.slice(0, start)}
+        <mark className="rounded bg-amber-100 px-0.5">{sourceText.slice(start, end)}</mark>
+        {sourceText.slice(end)}
+      </>
+    );
+  };
+
   const evolveFragmentToCode = (fragment) => {
     const baseName = String(fragment.title || fragment.excerpt || '').trim();
     if (!baseName) return;
@@ -664,16 +702,25 @@ const CommentsModePage = () => {
     });
   };
 
-  const createCommentFragment = ({ text, comment }) => {
-    const excerpt = String(text || '').trim();
-    if (!excerpt || !comment) return;
+  const createCommentFragment = ({ text, comment, sourceType = 'selection', selectionStart = null, selectionEnd = null }) => {
+    const excerpt = String(text || '');
+    if (!excerpt.trim() || !comment) return;
+    const resolvedSourceCommentId = String(comment.source_comment_id || comment.id || '').trim();
+    const sourceCommentText = String(comment.text || '');
     const nextFragment = {
       id: `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
       title: '',
       excerpt,
       comment_id: comment.id,
-      source_comment_id: comment.source_comment_id,
+      source_comment_id: resolvedSourceCommentId,
+      source_comment_text: sourceCommentText,
+      selected_text: excerpt,
+      selection_start: Number.isFinite(Number(selectionStart)) ? Number(selectionStart) : null,
+      selection_end: Number.isFinite(Number(selectionEnd)) ? Number(selectionEnd) : null,
+      source_type: String(sourceType || 'manual'),
       video_id: comment.video_id || null,
+      source_run_id: comment.source_run_id || null,
+      author_name: comment.author_name || null,
       code_slugs: [],
       created_at: new Date().toISOString(),
     };
@@ -681,7 +728,7 @@ const CommentsModePage = () => {
       ...store,
       fragments: [nextFragment, ...fragments],
     });
-    setReaderSelectionText('');
+    setReaderSelection({ text: '', start: null, end: null, commentId: '' });
   };
 
   const loadInputs = async () => {
@@ -798,8 +845,31 @@ const CommentsModePage = () => {
 
   const captureReaderSelection = () => {
     const selection = window.getSelection?.();
-    const text = String(selection?.toString() || '').trim();
-    setReaderSelectionText(text);
+    const text = String(selection?.toString() || '');
+    const container = readerTextContainerRef.current;
+    if (!selection || !container || !selection.rangeCount || !text.trim() || !selectedReaderComment) {
+      setReaderSelection({ text: '', start: null, end: null, commentId: '' });
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) {
+      setReaderSelection({ text: '', start: null, end: null, commentId: '' });
+      return;
+    }
+
+    const preSelectionRange = range.cloneRange();
+    preSelectionRange.selectNodeContents(container);
+    preSelectionRange.setEnd(range.startContainer, range.startOffset);
+    const start = preSelectionRange.toString().length;
+    const selectedText = range.toString();
+    const end = start + selectedText.length;
+    setReaderSelection({
+      text: selectedText,
+      start,
+      end,
+      commentId: String(selectedReaderComment.id || ''),
+    });
   };
 
   const runYouTubeIngestion = async () => {
@@ -1140,11 +1210,17 @@ const CommentsModePage = () => {
                 collapsed={false}
                 onBackToCloud={() => setTab('comments')}
                 onDownloadDocument={() => loadCommentsTable({ offset: 0, q: commentsTable.q })}
-                onCreateFragment={() => createCommentFragment({ text: readerSelectionText, comment: selectedReaderComment })}
+                onCreateFragment={() => createCommentFragment({
+                  text: readerSelection.text,
+                  comment: selectedReaderComment,
+                  sourceType: 'selection',
+                  selectionStart: readerSelection.start,
+                  selectionEnd: readerSelection.end,
+                })}
                 onCreateManualFragment={() => {
                   const manualText = window.prompt('Nuevo fragmento manual');
                   if (!manualText) return;
-                  createCommentFragment({ text: manualText, comment: selectedReaderComment || readerComments[0] });
+                  createCommentFragment({ text: manualText, comment: selectedReaderComment || readerComments[0], sourceType: 'manual' });
                 }}
                 onViewFragments={() => setTab('fragments')}
                 onViewCodes={() => setTab('codes')}
@@ -1154,10 +1230,10 @@ const CommentsModePage = () => {
                 onCreateMemo={() => {
                   const memoText = window.prompt('Memo de lectura');
                   if (!memoText) return;
-                  createCommentFragment({ text: memoText, comment: selectedReaderComment || readerComments[0] });
+                  createCommentFragment({ text: memoText, comment: selectedReaderComment || readerComments[0], sourceType: 'manual' });
                 }}
                 onToggleView={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
-                canCreateFragment={Boolean(readerSelectionText && selectedReaderComment)}
+                canCreateFragment={Boolean(readerSelection.text.trim() && selectedReaderComment && readerSelection.commentId === String(selectedReaderComment.id || ''))}
                 viewLabel={readerViewMode === 'focus' ? 'focus' : 'comentario'}
               />
               <div className="grid gap-3 lg:grid-cols-[260px_minmax(0,1fr)]">
@@ -1171,7 +1247,7 @@ const CommentsModePage = () => {
                         className={`w-full rounded-lg border p-2 text-left text-xs ${String(selectedReaderComment?.id) === String(comment.id) ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
                         onClick={() => {
                           setSelectedReaderCommentId(String(comment.id));
-                          setReaderSelectionText('');
+                          setReaderSelection({ text: '', start: null, end: null, commentId: '' });
                         }}
                       >
                         <p className="line-clamp-2 text-slate-700">{comment.text || 'Sin texto'}</p>
@@ -1187,6 +1263,7 @@ const CommentsModePage = () => {
                     <p className="text-xs text-slate-500">Selecciona texto y usa “Crear fragmento” en la barra de tareas.</p>
                   </div>
                   <div
+                    ref={readerTextContainerRef}
                     className={`min-h-[320px] max-h-[560px] overflow-auto text-slate-800 whitespace-pre-wrap ${readerViewMode === 'focus' ? 'px-10 py-8 text-[16px] leading-8' : 'px-6 py-5 text-[14px] leading-7'}`}
                     onMouseUp={captureReaderSelection}
                   >
@@ -1198,7 +1275,7 @@ const CommentsModePage = () => {
                     <span>Autor: {selectedReaderComment?.author_name || '—'}</span>
                     <span>·</span>
                     <span>Video: {selectedReaderComment?.video_id || '—'}</span>
-                    {readerSelectionText ? <span className="ml-auto rounded bg-indigo-50 px-2 py-0.5 text-indigo-700">Selección lista ({readerSelectionText.length} chars)</span> : null}
+                    {readerSelection.text ? <span className="ml-auto rounded bg-indigo-50 px-2 py-0.5 text-indigo-700">Selección lista ({readerSelection.text.length} chars, {readerSelection.start ?? 0}-{readerSelection.end ?? 0})</span> : null}
                   </div>
                 </div>
               </div>
@@ -1304,6 +1381,9 @@ const CommentsModePage = () => {
 
                       <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
                         {linkedCode ? <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-indigo-700">{linkedCode.name}</span> : <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5">Sin código</span>}
+                        <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-emerald-700">Origen: {fragment.source_comment_id || fragment.comment_id || '—'}</span>
+                        <span>Tipo: {fragment.source_type || 'manual'}</span>
+                        {(fragment.selection_start != null && fragment.selection_end != null) ? <span>Rango: {fragment.selection_start}-{fragment.selection_end}</span> : null}
                         <span>Cliente: {fragment.client_id || '—'}</span>
                         <span>Entrevista: {fragment.interview_id || '—'}</span>
                         <span>Fecha: {fragment.created_at ? new Date(fragment.created_at).toLocaleDateString() : '—'}</span>
@@ -1341,6 +1421,26 @@ const CommentsModePage = () => {
                         <option value="">Sin código vinculado</option>
                         {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
                       </select>
+                      {fragmentEditor.mode === 'edit' ? (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700 space-y-2">
+                          <p className="font-semibold text-slate-900">Trazabilidad de evidencia</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="rounded bg-white px-2 py-0.5 border">Comentario: {fragmentEditor.sourceCommentId || '—'}</span>
+                            <span className="rounded bg-white px-2 py-0.5 border">Tipo: {fragmentEditor.sourceType || 'manual'}</span>
+                            {(fragmentEditor.selectionStart != null && fragmentEditor.selectionEnd != null) ? (
+                              <span className="rounded bg-white px-2 py-0.5 border">Rango: {fragmentEditor.selectionStart}-{fragmentEditor.selectionEnd}</span>
+                            ) : null}
+                          </div>
+                          <div>
+                            <p className="mb-1 font-medium text-slate-800">Texto extraído</p>
+                            <p className="rounded border bg-white px-2 py-1 whitespace-pre-wrap">{fragmentEditor.selectedText || fragmentEditor.excerpt || '—'}</p>
+                          </div>
+                          <div>
+                            <p className="mb-1 font-medium text-slate-800">Comentario origen (con anclaje)</p>
+                            <p className="rounded border bg-white px-2 py-1 whitespace-pre-wrap">{renderFragmentSourceWithHighlight({ source_comment_text: fragmentEditor.sourceCommentText, selection_start: fragmentEditor.selectionStart, selection_end: fragmentEditor.selectionEnd })}</p>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex items-center justify-between border-t px-5 py-3">
                       <Button
