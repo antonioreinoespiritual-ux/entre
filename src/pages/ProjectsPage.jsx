@@ -80,10 +80,18 @@ const ProjectsPage = () => {
     }
   }, []);
 
+  const loadIntegrationsStatus = async () => {
+    await Promise.allSettled([loadYouTubeConfig(), loadAiConfig(), loadOpenClawConfig()]);
+  };
+
   const openSettings = async ({ tab = 'integrations', integration = 'youtube' } = {}) => {
     setSettingsOpen(true);
     setSettingsTab(tab);
     setSelectedIntegration(integration);
+    if (tab === 'integrations') {
+      await loadIntegrationsStatus();
+      return;
+    }
     if (tab === 'integrations' && integration === 'youtube') await loadYouTubeConfig();
     if (tab === 'integrations' && integration === 'ai') await loadAiConfig();
     if (tab === 'integrations' && integration === 'openclaw') await loadOpenClawConfig();
@@ -192,6 +200,11 @@ const ProjectsPage = () => {
       setYoutubeConfig((prev) => ({ ...prev, error: error.message || 'No se pudo desconectar YouTube' }));
     }
   };
+
+  useEffect(() => {
+    if (!settingsOpen || settingsTab !== 'integrations') return;
+    loadIntegrationsStatus();
+  }, [settingsOpen, settingsTab]);
 
   const previewChannel = async () => {
     try {
@@ -557,6 +570,7 @@ const ProjectsPage = () => {
 
                             <div className="flex flex-wrap gap-2">
                               <Button className="bg-indigo-600 text-white" onClick={saveAiSettings}>Guardar integración IA</Button>
+                              <Button className="bg-white border text-slate-700" onClick={loadAiConfig}>Verificar estado</Button>
                             </div>
                           </div>
                         ) : null}
@@ -591,6 +605,7 @@ const ProjectsPage = () => {
 
                             <div className="flex flex-wrap gap-2">
                               <Button className="bg-emerald-600 text-white" onClick={saveOpenClawSettings}>Guardar integración OpenClaw</Button>
+                              <Button className="bg-white border text-slate-700" onClick={loadOpenClawConfig}>Verificar estado</Button>
                             </div>
                           </div>
                         ) : null}
