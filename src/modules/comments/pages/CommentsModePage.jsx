@@ -138,9 +138,10 @@ const CommentsModePage = () => {
       return {
         fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
         codes: Array.isArray(parsed.codes) ? parsed.codes : [],
+        codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
       };
     } catch {
-      return { fragments: [], codes: [] };
+      return { fragments: [], codes: [], codeProposals: [] };
     }
   });
 
@@ -151,6 +152,7 @@ const CommentsModePage = () => {
 
   const fragments = store.fragments || [];
   const codes = store.codes || [];
+  const codeProposals = store.codeProposals || [];
   const readerComments = commentsTable.items || [];
 
   const selectedReaderComment = useMemo(() => {
@@ -231,6 +233,191 @@ const CommentsModePage = () => {
   const codeHypothesisOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.hypothesis_id || '').trim()).filter(Boolean))), [codes]);
   const codeClusterOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.cluster_id || '').trim()).filter(Boolean))), [codes]);
   const codeClientOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.client_id || '').trim()).filter(Boolean))), [codes]);
+
+  const tokenize = (text = '') => String(text || '').toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 2);
+
+  const scoreCodeReuse = (fragmentText = '', code = {}) => {
+    const fragmentTokens = new Set(tokenize(fragmentText));
+    const codeTokens = new Set([
+      ...tokenize(code.name),
+      ...tokenize(code.description),
+      ...tokenize(Array.isArray(code.tags) ? code.tags.join(' ') : String(code.tags || '')),
+    ]);
+    if (!fragmentTokens.size || !codeTokens.size) return 0;
+
+    let overlap = 0;
+    fragmentTokens.forEach((token) => {
+      if (codeTokens.has(token)) overlap += 1;
+    });
+
+    const overlapRatio = overlap / Math.max(fragmentTokens.size, 1);
+    const usageBonus = Math.min(0.2, Number(codeUsageCount.get(String(code.slug)) || 0) * 0.02);
+    return Math.max(0, Math.min(1, overlapRatio + usageBonus));
+  };
+
+  const buildCandidateCodeFromFragment = (fragment) => {
+    const raw = String(fragment.title || fragment.excerpt || '').trim();
+    const short = raw.split(/[.!?\n]/)[0]?.trim() || raw;
+    const candidateName = short.slice(0, 72) || `Código ${new Date().toLocaleTimeString()}`;
+    const baseSlug = slugify(candidateName).slice(0, 64) || `code-${Date.now()}`;
+    let candidateSlug = baseSlug;
+    let suffix = 1;
+    while (codes.some((code) => String(code.slug) === String(candidateSlug))) {
+      suffix += 1;
+      candidateSlug = `${baseSlug}-${suffix}`;
+    }
+    return { candidateName, candidateSlug };
+  };
+
+  const runCodeProposalAgent = () => {
+    const acceptedByFragment = new Map();
+    codeProposals.forEach((proposal) => {
+      if (proposal.status !== 'aceptado') return;
+      acceptedByFragment.set(String(proposal.fragment_id), proposal);
+    });
+
+    const targetFragments = fragments.filter((fragment) => {
+      const fragmentId = String(fragment.id);
+      const hasAcceptedProposal = acceptedByFragment.has(fragmentId);
+      const hasAcceptedCoding = Array.isArray(fragment.code_slugs) && fragment.code_slugs.length > 0;
+      return !hasAcceptedProposal && !hasAcceptedCoding;
+    });
+
+    if (!targetFragments.length) return;
+
+    const now = new Date().toISOString();
+    const nextProposals = [...codeProposals.filter((proposal) => proposal.status === 'aceptado')];
+
+    targetFragments.forEach((fragment) => {
+      const fragmentText = String(fragment.excerpt || '').trim();
+      if (!fragmentText) return;
+
+      const rankedExistingCodes = codes
+        .map((code) => ({
+          slug: String(code.slug),
+          name: String(code.name || code.slug || 'Código'),
+          score: scoreCodeReuse(fragmentText, code),
+        }))
+        .sort((a, b) => b.score - a.score);
+
+      const best = rankedExistingCodes[0] || null;
+      const alternatives = rankedExistingCodes
+        .slice(0, 3)
+        .filter((option) => option.score > 0)
+        .map((option) => ({
+          code_slug: option.slug,
+          code_name: option.name,
+          confidence: Number(option.score.toFixed(2)),
+        }));
+
+      if (best && best.score >= 0.28) {
+        nextProposals.push({
+          id: `code_proposal_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+          fragment_id: String(fragment.id),
+          fragment_excerpt: fragmentText,
+          suggested_code_slug: best.slug,
+          suggested_code_name: best.name,
+          decision_type: 'reutilizacion',
+          confidence: Number(best.score.toFixed(2)),
+          justification: `Reutilización prioritaria: coincide semánticamente con “${best.name}”.`,
+          alternatives,
+          status: 'propuesto',
+          created_at: now,
+          updated_at: now,
+          parent_candidate_slug: null,
+        });
+        return;
+      }
+
+      const candidate = buildCandidateCodeFromFragment(fragment);
+      nextProposals.push({
+        id: `code_proposal_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
+        fragment_id: String(fragment.id),
+        fragment_excerpt: fragmentText,
+        suggested_code_slug: candidate.candidateSlug,
+        suggested_code_name: candidate.candidateName,
+        decision_type: 'nuevo',
+        confidence: Number((best?.score ? Math.min(0.55, Math.max(0.3, best.score + 0.1)) : 0.52).toFixed(2)),
+        justification: 'No se encontró un código existente con ajuste semántico suficiente; se propone candidato nuevo.',
+        alternatives,
+        status: 'propuesto',
+        created_at: now,
+        updated_at: now,
+        parent_candidate_slug: null,
+      });
+    });
+
+    persist({
+      ...store,
+      codeProposals: nextProposals,
+    });
+  };
+
+  const updateProposalStatus = (proposalId, status) => {
+    const now = new Date().toISOString();
+    const nextCodeProposals = codeProposals.map((proposal) => (
+      String(proposal.id) === String(proposalId)
+        ? { ...proposal, status, updated_at: now }
+        : proposal
+    ));
+    persist({ ...store, codeProposals: nextCodeProposals });
+  };
+
+  const acceptCodeProposal = (proposal) => {
+    if (!proposal) return;
+    const fragmentId = String(proposal.fragment_id || '');
+    if (!fragmentId) return;
+
+    let nextCodes = [...codes];
+    const nextFragments = fragments.map((fragment) => {
+      if (String(fragment.id) !== fragmentId) return fragment;
+
+      const previous = Array.isArray(fragment.code_slugs) ? fragment.code_slugs : [];
+      const merged = Array.from(new Set([...previous, String(proposal.suggested_code_slug || '')].filter(Boolean)));
+      return { ...fragment, code_slugs: merged };
+    });
+
+    if (proposal.decision_type === 'nuevo') {
+      const exists = nextCodes.some((code) => String(code.slug) === String(proposal.suggested_code_slug));
+      if (!exists) {
+        nextCodes = [
+          {
+            id: `code_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+            name: String(proposal.suggested_code_name || 'Código nuevo'),
+            slug: String(proposal.suggested_code_slug || `code-${Date.now()}`),
+            parent_slug: null,
+            description: 'Creado desde aceptación de propuesta del Agente 2.',
+            tags: [],
+          },
+          ...nextCodes,
+        ];
+      }
+    }
+
+    const now = new Date().toISOString();
+    const nextCodeProposals = codeProposals.map((item) => (
+      String(item.id) === String(proposal.id)
+        ? { ...item, status: 'aceptado', updated_at: now }
+        : item
+    ));
+
+    persist({
+      ...store,
+      codes: nextCodes,
+      fragments: nextFragments,
+      codeProposals: nextCodeProposals,
+    });
+  };
+
+  const rejectCodeProposal = (proposalId) => {
+    updateProposalStatus(proposalId, 'rechazado');
+  };
 
   const openCodeEditor = (mode = 'create', code = null, parentSlug = '') => {
     setCodeMenuSlug('');
@@ -1665,6 +1852,9 @@ const CommentsModePage = () => {
                   <p className="text-xs text-slate-500">Panel de estructura semántica jerárquica.</p>
                 </div>
                 <div className="flex items-center gap-2">
+                  <Button className="bg-violet-600 text-white" onClick={runCodeProposalAgent}>
+                    Agente 2 · Proponer códigos
+                  </Button>
                   <Button className="bg-white border text-slate-700" title="Mapa de códigos" onClick={() => setCodeMapOpen(true)}>
                     🕸️ Mapa de códigos
                   </Button>
@@ -1704,6 +1894,73 @@ const CommentsModePage = () => {
 
               <div className="space-y-2">
                 {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
+              </div>
+
+              <div className="rounded-xl border bg-white p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Propuestas de codificación (Agente 2)</h3>
+                    <p className="text-xs text-slate-500">Reutilización prioritaria de códigos existentes antes de proponer códigos nuevos.</p>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    Total: {codeProposals.length} · Propuestas: {codeProposals.filter((item) => item.status === 'propuesto').length}
+                  </div>
+                </div>
+
+                {!codeProposals.length ? (
+                  <p className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">Sin propuestas aún. Ejecuta “Agente 2 · Proponer códigos”.</p>
+                ) : (
+                  <div className="space-y-2 max-h-[380px] overflow-auto pr-1">
+                    {codeProposals.map((proposal) => {
+                      const statusClass = proposal.status === 'aceptado'
+                        ? 'bg-emerald-50 border-emerald-200'
+                        : proposal.status === 'rechazado'
+                          ? 'bg-rose-50 border-rose-200'
+                          : 'bg-amber-50 border-amber-200';
+                      const decisionClass = proposal.decision_type === 'reutilizacion'
+                        ? 'bg-blue-100 text-blue-700 border-blue-200'
+                        : 'bg-violet-100 text-violet-700 border-violet-200';
+                      return (
+                        <article key={proposal.id} className={`rounded-lg border p-3 ${statusClass}`}>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className={`rounded-full border px-2 py-0.5 ${decisionClass}`}>
+                                {proposal.decision_type === 'reutilizacion' ? 'Reutilización código existente' : 'Código nuevo candidato'}
+                              </span>
+                              <span className="rounded-full border bg-white px-2 py-0.5">Estado: {proposal.status || 'pendiente'}</span>
+                              <span className="rounded-full border bg-white px-2 py-0.5">Confianza: {proposal.confidence ?? '—'}</span>
+                            </div>
+                            <div className="text-[11px] text-slate-500">Fragmento: {proposal.fragment_id}</div>
+                          </div>
+
+                          <p className="mt-2 text-sm text-slate-800">{proposal.fragment_excerpt || 'Sin texto de fragmento'}</p>
+                          <div className="mt-2 text-xs text-slate-700">
+                            <span className="font-semibold">Código sugerido:</span> {proposal.suggested_code_name} <span className="text-slate-500">({proposal.suggested_code_slug})</span>
+                          </div>
+                          <div className="mt-1 text-xs text-slate-600">{proposal.justification || 'Sin justificación.'}</div>
+
+                          {Array.isArray(proposal.alternatives) && proposal.alternatives.length ? (
+                            <div className="mt-2">
+                              <p className="text-[11px] font-semibold text-slate-600">Alternativas cercanas</p>
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {proposal.alternatives.map((alt) => (
+                                  <span key={`${proposal.id}-${alt.code_slug}`} className="rounded-full border bg-white px-2 py-0.5 text-[11px] text-slate-600">
+                                    {alt.code_name} ({alt.confidence})
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <Button className="bg-emerald-600 text-white" disabled={proposal.status === 'aceptado'} onClick={() => acceptCodeProposal(proposal)}>Aceptar</Button>
+                            <Button className="bg-white border text-rose-700" disabled={proposal.status === 'rechazado'} onClick={() => rejectCodeProposal(proposal.id)}>Rechazar</Button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
               {codeEditor.open ? (
