@@ -43,6 +43,7 @@ export const interviewsModuleApi = {
   listHypotheses: interviewsApi.listInterviewHypotheses,
   createHypothesis: interviewsApi.createInterviewHypothesis,
   updateHypothesis: interviewsApi.updateInterviewHypothesis,
+  evaluateHypothesis: interviewsApi.evaluateInterviewHypothesis,
   deleteHypothesis: interviewsApi.deleteInterviewHypothesis,
 
   listForms: async (projectId, campaignId) => {

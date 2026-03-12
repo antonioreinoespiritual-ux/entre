@@ -8,6 +8,9 @@ import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createPool, validateDbEnv } from './config/db.js';
 import { loadBackendEnv } from './config/env.js';
+import { getYouTubeConfig, isYouTubeApiKeyConfigured, isYouTubeOAuthConfigured } from './youtube/config.js';
+import { buildYouTubeConsentUrl, exchangeYouTubeCodeForTokens, refreshYouTubeAccessToken, revokeYouTubeToken } from './youtube/auth.js';
+import { listYouTubeChannels, listYouTubeVideos, listYouTubePlaylists, listYouTubeCommentThreads, listYouTubeComments, searchYouTubeVideos } from './youtube/services.js';
 
 
 const envSource = loadBackendEnv();
@@ -48,6 +51,80 @@ const schemaSql = [
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
   )`,
+  `CREATE TABLE IF NOT EXISTS youtube_connections (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    youtube_channel_id TEXT,
+    youtube_channel_title TEXT,
+    access_token TEXT,
+    refresh_token TEXT,
+    scope TEXT,
+    token_type TEXT,
+    expires_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_youtube_connections_user ON youtube_connections(user_id)',
+  `CREATE TABLE IF NOT EXISTS youtube_integrations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    api_key TEXT,
+    client_id TEXT,
+    client_secret TEXT,
+    redirect_uri TEXT,
+    scopes TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_youtube_integrations_user ON youtube_integrations(user_id)',
+  `CREATE TABLE IF NOT EXISTS ai_integrations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    provider TEXT,
+    model TEXT,
+    api_key TEXT,
+    base_url TEXT,
+    organization TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_ai_integrations_user ON ai_integrations(user_id)',
+  `CREATE TABLE IF NOT EXISTS ai_project_chat_messages (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_ai_project_chat_messages_scope ON ai_project_chat_messages(user_id, project_id, created_at)',
+  `CREATE TABLE IF NOT EXISTS openclaw_integrations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    endpoint_url TEXT,
+    workspace_id TEXT,
+    api_key TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_openclaw_integrations_user ON openclaw_integrations(user_id)',
+  `CREATE TABLE IF NOT EXISTS youtube_oauth_states (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    state_token TEXT NOT NULL UNIQUE,
+    redirect_path TEXT,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_youtube_oauth_states_user ON youtube_oauth_states(user_id)',
   `CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -232,16 +309,47 @@ const schemaSql = [
     project_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
     audience_id TEXT,
+    segment TEXT,
+    related_client_id TEXT,
+    interview_form_id TEXT,
     user_id TEXT NOT NULL,
     type TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT,
     status TEXT DEFAULT 'active',
+    last_evaluated_at TEXT,
+    min_interviews INTEGER,
+    validation_metric_config TEXT,
+    evaluated_interviews_count INTEGER,
+    problem_score_avg REAL,
+    solution_score_avg REAL,
+    problem_intensity_avg REAL,
+    problem_frequency_avg REAL,
+    problem_urgency_avg REAL,
+    problem_attempts_avg REAL,
+    problem_spend_avg REAL,
+    problem_clarity_avg REAL,
+    segment_fit_avg REAL,
+    emotional_language_avg REAL,
+    solution_interest_avg REAL,
+    solution_clarity_avg REAL,
+    solution_value_avg REAL,
+    solution_recurrence_avg REAL,
+    solution_payment_avg REAL,
+    criteria_passed_count INTEGER,
+    criteria_failed_count INTEGER,
+    validation_summary TEXT,
+    validation_result TEXT,
+    experiment_notes TEXT,
+    observations TEXT,
+    next_actions TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
     FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+    FOREIGN KEY (related_client_id) REFERENCES interview_clients(id) ON DELETE SET NULL,
+    FOREIGN KEY (interview_form_id) REFERENCES interview_forms(id) ON DELETE SET NULL,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_interview_hypotheses_campaign ON interview_hypotheses(campaign_id)',
@@ -306,6 +414,106 @@ const schemaSql = [
     FOREIGN KEY (document_node_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_interview_semantic_fragments_document ON interview_semantic_fragments(document_node_id, created_at)',
+  `CREATE TABLE IF NOT EXISTS comment_ingestion_runs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_job TEXT NOT NULL,
+    input_id TEXT,
+    source_query_json TEXT,
+    status TEXT NOT NULL DEFAULT 'running',
+    comments_count INTEGER DEFAULT 0,
+    imported_count INTEGER DEFAULT 0,
+    error_message TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_runs_campaign ON comment_ingestion_runs(user_id, project_id, campaign_id, created_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_ingestion_inputs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    source TEXT NOT NULL,
+    name TEXT,
+    config_json TEXT NOT NULL,
+    linked_run_id TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (linked_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_inputs_campaign ON comment_ingestion_inputs(user_id, project_id, campaign_id, created_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_dataset_comments (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    audience_id TEXT,
+    hypothesis_id TEXT,
+    source TEXT NOT NULL,
+    source_comment_id TEXT NOT NULL,
+    parent_comment_id TEXT,
+    video_id TEXT,
+    channel_id TEXT,
+    author_name TEXT,
+    author_channel_id TEXT,
+    text TEXT NOT NULL,
+    published_at TEXT,
+    like_count INTEGER DEFAULT 0,
+    reply_count INTEGER DEFAULT 0,
+    source_job TEXT,
+    source_run_id TEXT,
+    source_input_id TEXT,
+    source_query_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+    FOREIGN KEY (hypothesis_id) REFERENCES interview_hypotheses(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL,
+    FOREIGN KEY (source_input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
+    UNIQUE(user_id, project_id, campaign_id, source, source_comment_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, published_at DESC, created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)',
+  `CREATE TABLE IF NOT EXISTS comment_code_proposal_reviews (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    fragment_id TEXT,
+    action TEXT NOT NULL,
+    decision_status TEXT,
+    decision_type TEXT,
+    confidence REAL,
+    justification TEXT,
+    suggested_code_slug TEXT,
+    suggested_code_name TEXT,
+    final_code_slug TEXT,
+    final_code_name TEXT,
+    metadata_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_code_reviews_campaign ON comment_code_proposal_reviews(user_id, project_id, campaign_id, created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_code_reviews_slug ON comment_code_proposal_reviews(user_id, project_id, campaign_id, suggested_code_slug, final_code_slug)',
   `CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -365,6 +573,11 @@ const ENTITY_ID_PREFIX = {
   interview_form: 'form_',
   interview_session: 'int_',
   hypothesis_video_link: 'hvid_',
+  comment_ingestion_run: 'crun_',
+  comment_ingestion_input: 'cinp_',
+  comment_record: 'com_',
+  comment_code_review: 'ccrev_',
+  ai_chat_message: 'aicm_',
 };
 
 function buildEntityId(entityType, fallbackPrefix = 'id_') {
@@ -1743,6 +1956,62 @@ async function ensureVideoHierarchyMigration() {
     }
   }
 
+  const optionalInterviewHypothesisColumns = [
+    ['segment', 'TEXT'],
+    ['related_client_id', 'TEXT'],
+    ['interview_form_id', 'TEXT'],
+    ['last_evaluated_at', 'TEXT'],
+    ['min_interviews', 'INTEGER'],
+    ['validation_metric_config', 'TEXT'],
+    ['evaluated_interviews_count', 'INTEGER'],
+    ['problem_score_avg', 'REAL'],
+    ['solution_score_avg', 'REAL'],
+    ['problem_intensity_avg', 'REAL'],
+    ['problem_frequency_avg', 'REAL'],
+    ['problem_urgency_avg', 'REAL'],
+    ['problem_attempts_avg', 'REAL'],
+    ['problem_spend_avg', 'REAL'],
+    ['problem_clarity_avg', 'REAL'],
+    ['segment_fit_avg', 'REAL'],
+    ['emotional_language_avg', 'REAL'],
+    ['solution_interest_avg', 'REAL'],
+    ['solution_clarity_avg', 'REAL'],
+    ['solution_value_avg', 'REAL'],
+    ['solution_recurrence_avg', 'REAL'],
+    ['solution_payment_avg', 'REAL'],
+    ['criteria_passed_count', 'INTEGER'],
+    ['criteria_failed_count', 'INTEGER'],
+    ['validation_summary', 'TEXT'],
+    ['validation_result', 'TEXT'],
+    ['experiment_notes', 'TEXT'],
+    ['observations', 'TEXT'],
+    ['next_actions', 'TEXT'],
+  ];
+
+  for (const [columnName, columnType] of optionalInterviewHypothesisColumns) {
+    if (!(await hasColumn('interview_hypotheses', columnName))) {
+      await pool.query(`ALTER TABLE interview_hypotheses ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
+  const optionalCommentIngestionRunColumns = [
+    ['input_id', 'TEXT'],
+  ];
+  for (const [columnName, columnType] of optionalCommentIngestionRunColumns) {
+    if (await tableExists('comment_ingestion_runs') && !(await hasColumn('comment_ingestion_runs', columnName))) {
+      await pool.query(`ALTER TABLE comment_ingestion_runs ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
+  const optionalCommentDatasetColumns = [
+    ['source_input_id', 'TEXT'],
+  ];
+  for (const [columnName, columnType] of optionalCommentDatasetColumns) {
+    if (await tableExists('comment_dataset_comments') && !(await hasColumn('comment_dataset_comments', columnName))) {
+      await pool.query(`ALTER TABLE comment_dataset_comments ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
   if (!(await hasColumn('videos', 'audience_id'))) {
     await pool.query('ALTER TABLE videos ADD COLUMN audience_id TEXT');
   }
@@ -1799,9 +2068,12 @@ async function ensureVideoHierarchyMigration() {
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
-  await pool.query('DROP TABLE IF EXISTS cloud_events');
-  await pool.query('DROP TABLE IF EXISTS cloud_edges');
-  await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  const forceCloudReset = String(process.env.RESET_CLOUD_SCHEMA || '').trim() === '1';
+  if (forceCloudReset) {
+    await pool.query('DROP TABLE IF EXISTS cloud_events');
+    await pool.query('DROP TABLE IF EXISTS cloud_edges');
+    await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  }
 
   await pool.query(`CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
@@ -1950,10 +2222,14 @@ async function ensureVideoHierarchyMigration() {
 }
 
 async function runMigrations() {
-  // Rebuild Cloud schema from scratch to avoid legacy column/index mismatches.
-  await pool.query('DROP TABLE IF EXISTS cloud_events');
-  await pool.query('DROP TABLE IF EXISTS cloud_edges');
-  await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  // Keep cloud data persistent across backend restarts/reconnects.
+  // If a destructive reset is explicitly needed for maintenance, use RESET_CLOUD_SCHEMA=1.
+  const forceCloudReset = String(process.env.RESET_CLOUD_SCHEMA || '').trim() === '1';
+  if (forceCloudReset) {
+    await pool.query('DROP TABLE IF EXISTS cloud_events');
+    await pool.query('DROP TABLE IF EXISTS cloud_edges');
+    await pool.query('DROP TABLE IF EXISTS cloud_nodes');
+  }
 
   for (const statement of schemaSql) {
     await pool.query(statement);
@@ -1998,6 +2274,1246 @@ function parseTypedValue(value, type) {
   if (!Number.isFinite(parsed)) return null;
   if (type === 'int') return Math.trunc(parsed);
   return parsed;
+}
+
+const HYPOTHESIS_PROBLEM_KEYS = ['problem_intensity', 'problem_frequency', 'perceived_urgency', 'solution_attempts', 'previous_spend', 'problem_clarity', 'segment_fit', 'emotional_language'];
+const HYPOTHESIS_SOLUTION_KEYS = ['solution_interest', 'solution_clarity', 'perceived_value', 'usage_probability', 'willingness_to_pay'];
+const INTERVIEW_HYPOTHESIS_METRIC_ALIASES = {
+  score_problema: 'problem_score_avg',
+  score_solucion: 'solution_score_avg',
+  intensidad_problema: 'problem_intensity_avg',
+  frecuencia_problema: 'problem_frequency_avg',
+  urgencia_percibida: 'problem_urgency_avg',
+  intentos_solucion: 'problem_attempts_avg',
+  gasto_previo: 'problem_spend_avg',
+  claridad_problema: 'problem_clarity_avg',
+  encaje_segmento: 'segment_fit_avg',
+  lenguaje_emocional: 'emotional_language_avg',
+  interes_solucion: 'solution_interest_avg',
+  claridad_solucion: 'solution_clarity_avg',
+  valor_percibido: 'solution_value_avg',
+  probabilidad_uso_recurrente: 'solution_recurrence_avg',
+  disposicion_pagar: 'solution_payment_avg',
+  problem_score_avg: 'problem_score_avg',
+  solution_score_avg: 'solution_score_avg',
+  problem_intensity_avg: 'problem_intensity_avg',
+  problem_frequency_avg: 'problem_frequency_avg',
+  problem_urgency_avg: 'problem_urgency_avg',
+  problem_attempts_avg: 'problem_attempts_avg',
+  problem_spend_avg: 'problem_spend_avg',
+  problem_clarity_avg: 'problem_clarity_avg',
+  segment_fit_avg: 'segment_fit_avg',
+  emotional_language_avg: 'emotional_language_avg',
+  solution_interest_avg: 'solution_interest_avg',
+  solution_clarity_avg: 'solution_clarity_avg',
+  solution_value_avg: 'solution_value_avg',
+  solution_recurrence_avg: 'solution_recurrence_avg',
+  solution_payment_avg: 'solution_payment_avg',
+};
+const INTERVIEW_HYPOTHESIS_COMPARISON_OPERATORS = new Set(['>=', '>', '<=', '<']);
+
+function toValidScore(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < 1 || parsed > 5) return null;
+  return parsed;
+}
+
+function averageScores(values = []) {
+  const clean = values.map(toValidScore).filter((value) => value != null);
+  if (!clean.length) return null;
+  return Number((clean.reduce((acc, value) => acc + value, 0) / clean.length).toFixed(2));
+}
+
+function normalizeInterviewHypothesisValidationConfig(rawConfig) {
+  let parsedConfig = rawConfig;
+  if (typeof parsedConfig === 'string') {
+    parsedConfig = safeParseJsonField(parsedConfig, null);
+  }
+  if (!parsedConfig || typeof parsedConfig !== 'object' || Array.isArray(parsedConfig)) return null;
+  const selectedMetrics = Array.isArray(parsedConfig.selected_metrics)
+    ? parsedConfig.selected_metrics
+      .map((metric) => INTERVIEW_HYPOTHESIS_METRIC_ALIASES[String(metric || '').trim()])
+      .filter(Boolean)
+    : [];
+  const deduplicatedMetrics = [...new Set(selectedMetrics)];
+  const thresholdValue = Number(parsedConfig.threshold_value);
+  const comparisonOperator = String(parsedConfig.comparison_operator || '>=').trim();
+  const outcomeIfTrue = String(parsedConfig.outcome_if_true || 'validada').trim() || 'validada';
+  const outcomeIfFalse = String(parsedConfig.outcome_if_false || 'refutada').trim() || 'refutada';
+  const evaluationType = String(parsedConfig.evaluation_type || 'average_selected_metrics').trim() || 'average_selected_metrics';
+  if (!deduplicatedMetrics.length || !Number.isFinite(thresholdValue) || !INTERVIEW_HYPOTHESIS_COMPARISON_OPERATORS.has(comparisonOperator)) {
+    return null;
+  }
+  return {
+    selected_metrics: deduplicatedMetrics,
+    threshold_value: Number(thresholdValue.toFixed(2)),
+    comparison_operator: comparisonOperator,
+    outcome_if_true: outcomeIfTrue,
+    outcome_if_false: outcomeIfFalse,
+    evaluation_type: evaluationType,
+  };
+}
+
+function evaluateComparison(actualValue, thresholdValue, operator) {
+  if (!Number.isFinite(actualValue) || !Number.isFinite(thresholdValue)) return false;
+  if (operator === '>=') return actualValue >= thresholdValue;
+  if (operator === '>') return actualValue > thresholdValue;
+  if (operator === '<=') return actualValue <= thresholdValue;
+  if (operator === '<') return actualValue < thresholdValue;
+  return false;
+}
+
+function parseInterviewHypothesisRow(row = null) {
+  if (!row) return row;
+  return {
+    ...row,
+    validation_metric_config: normalizeInterviewHypothesisValidationConfig(row.validation_metric_config),
+  };
+}
+
+function buildHypothesisValidationSummary({ result, interviewsCount, passCount, failCount, minInterviews, problemScoreAvg, solutionScoreAvg }) {
+  if (result === 'no evaluada') return `Muestra insuficiente para evaluar la hipótesis (${interviewsCount}/${minInterviews || 0} entrevistas).`;
+  if (result === 'validada') return `Hipótesis validada: problema y solución superan umbrales (${passCount} criterios cumplidos).`;
+  if (result === 'refutada') return `Hipótesis refutada: bajo cumplimiento de criterios (${failCount} fallos).`;
+  if (result === 'señal fuerte') return `Señal fuerte: cumplimiento alto de criterios con evidencia consistente.`;
+  if (result === 'señal moderada') return `Señal moderada: buen dolor (${problemScoreAvg ?? '—'}) y/o solución (${solutionScoreAvg ?? '—'}) con brechas puntuales.`;
+  return 'Señal débil: resultados iniciales aún no alcanzan umbrales robustos.';
+}
+
+
+function computeFutureIso(seconds = 0) {
+  const base = Date.now() + Math.max(0, Number(seconds) || 0) * 1000;
+  return new Date(base).toISOString();
+}
+
+
+async function getYouTubeIntegrationByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM youtube_integrations WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+function mergeYouTubeConfig(baseConfig, integration = null) {
+  const parsedScopes = String(integration?.scopes || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return {
+    ...baseConfig,
+    apiKey: String(integration?.api_key || '').trim() || baseConfig.apiKey,
+    clientId: String(integration?.client_id || '').trim() || baseConfig.clientId,
+    clientSecret: String(integration?.client_secret || '').trim() || baseConfig.clientSecret,
+    redirectUri: String(integration?.redirect_uri || '').trim() || baseConfig.redirectUri,
+    scopes: parsedScopes.length ? parsedScopes : baseConfig.scopes,
+  };
+}
+
+async function getYouTubeConfigForUser(userId) {
+  const baseConfig = getYouTubeConfig();
+  const integration = await getYouTubeIntegrationByUserId(userId);
+  return {
+    config: mergeYouTubeConfig(baseConfig, integration),
+    integration,
+    hasCustomConfig: Boolean(integration),
+  };
+}
+
+async function getAiIntegrationByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM ai_integrations WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+async function getOpenClawIntegrationByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM openclaw_integrations WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+async function ensureProjectAccess(userId, projectId) {
+  const [rows] = await pool.query('SELECT id, name FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, userId]);
+  return rows[0] || null;
+}
+
+function resolveAiBaseUrl(integration) {
+  const provider = String(integration?.provider || '').trim().toLowerCase();
+  const customBaseUrl = String(integration?.base_url || '').trim();
+  if (customBaseUrl) return customBaseUrl.replace(/\/+$/, '');
+  if (provider === 'openai') return 'https://api.openai.com/v1';
+  if (provider === 'openrouter') return 'https://openrouter.ai/api/v1';
+  if (provider === 'groq') return 'https://api.groq.com/openai/v1';
+  if (provider === 'ollama') return 'http://localhost:11434/v1';
+  return '';
+}
+
+const AI_PROVIDER_DEFAULT_MODEL = {
+  openai: 'gpt-4o-mini',
+  openrouter: 'openai/gpt-4o-mini',
+  anthropic: 'claude-3-5-sonnet-latest',
+  groq: 'llama-3.1-8b-instant',
+  gemini: 'gemini-1.5-flash',
+  ollama: 'llama3.1:8b',
+};
+
+function normalizeAiModel(provider, modelValue) {
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+  const rawModel = String(modelValue || '').trim();
+  if (!rawModel) return '';
+
+  const genericInputs = new Set([
+    normalizedProvider,
+    normalizedProvider.replace(/_/g, '-'),
+    'model',
+    'default',
+    'ia',
+    'ai',
+  ]);
+
+  if (genericInputs.has(rawModel.toLowerCase()) && AI_PROVIDER_DEFAULT_MODEL[normalizedProvider]) {
+    return AI_PROVIDER_DEFAULT_MODEL[normalizedProvider];
+  }
+
+  return rawModel;
+}
+
+async function getProjectScopeSummary(userId, projectId) {
+  const countByProjectColumn = async (tableName) => {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS total FROM ${normalizeIdentifier(tableName)} WHERE user_id = ? AND project_id = ?`,
+      [userId, projectId],
+    );
+    return Number(rows?.[0]?.total || 0);
+  };
+
+  const countByCampaignScope = async (tableName) => {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM ${normalizeIdentifier(tableName)} t
+       JOIN campaigns c ON c.id = t.campaign_id
+       WHERE t.user_id = ? AND c.project_id = ?`,
+      [userId, projectId],
+    );
+    return Number(rows?.[0]?.total || 0);
+  };
+
+  const [topCommentRows] = await pool.query(
+    `SELECT text, author_name, like_count, published_at
+     FROM comment_dataset_comments
+     WHERE user_id = ? AND project_id = ?
+     ORDER BY like_count DESC, published_at DESC
+     LIMIT 5`,
+    [userId, projectId],
+  );
+
+  const [topInterviewHypRows] = await pool.query(
+    `SELECT title, validation_result, evaluated_interviews_count, problem_score_avg, solution_score_avg
+     FROM interview_hypotheses
+     WHERE user_id = ? AND project_id = ?
+     ORDER BY updated_at DESC
+     LIMIT 5`,
+    [userId, projectId],
+  );
+
+  return {
+    counts: {
+      campaigns: await countByProjectColumn('campaigns'),
+      audiences: await countByCampaignScope('audiences'),
+      videos: await countByProjectColumn('videos'),
+      hypotheses: await countByCampaignScope('hypotheses'),
+      interview_hypotheses: await countByProjectColumn('interview_hypotheses'),
+      interviews: await countByProjectColumn('interview_sessions'),
+      interview_fragments: await countByProjectColumn('interview_semantic_fragments'),
+      comment_runs: await countByProjectColumn('comment_ingestion_runs'),
+      comment_records: await countByProjectColumn('comment_dataset_comments'),
+    },
+    top_comments: topCommentRows.map((row) => ({
+      author_name: row.author_name || 'Sin autor',
+      like_count: Number(row.like_count || 0),
+      published_at: row.published_at || null,
+      text: String(row.text || '').slice(0, 320),
+    })),
+    top_interview_hypotheses: topInterviewHypRows.map((row) => ({
+      title: row.title || 'Hipótesis sin título',
+      validation_result: row.validation_result || 'no evaluada',
+      evaluated_interviews_count: Number(row.evaluated_interviews_count || 0),
+      problem_score_avg: row.problem_score_avg == null ? null : Number(row.problem_score_avg),
+      solution_score_avg: row.solution_score_avg == null ? null : Number(row.solution_score_avg),
+    })),
+  };
+}
+
+function buildProjectScopedSystemPrompt(project, projectSummary) {
+  const summaryJson = JSON.stringify(projectSummary, null, 2);
+  return [
+    'Eres Tessa, una IA analista de investigación de mercado.',
+    `Contexto permitido: SOLO proyecto ${project.id} (${project.name || 'sin nombre'}).`,
+    'Prohibido usar o inferir información de otros proyectos.',
+    'Si la pregunta requiere otro proyecto, responde que tu alcance está restringido al proyecto activo.',
+    'Usa los datos del resumen como base factual y sé explícita cuando falte evidencia.',
+    'Responde en español, clara y accionable.',
+    `Resumen de datos del proyecto:\n${summaryJson}`,
+  ].join('\n');
+}
+
+async function requestAiChatCompletion(integration, payload) {
+  const provider = String(integration?.provider || '').trim().toLowerCase();
+  const model = normalizeAiModel(provider, integration?.model);
+  const apiKey = String(integration?.api_key || '').trim();
+  const baseUrl = resolveAiBaseUrl(integration);
+
+  if (!model) throw new Error('La integración de IA no tiene un modelo válido configurado.');
+  if (!baseUrl) throw new Error(`El proveedor ${provider || 'seleccionado'} requiere base_url compatible para chat.`);
+  if (provider !== 'ollama' && !apiKey) {
+    throw new Error('La integración de IA requiere API key para enviar mensajes.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (integration?.organization) headers['OpenAI-Organization'] = String(integration.organization);
+  if (provider === 'openrouter') {
+    headers['HTTP-Referer'] = 'https://marketclaw.local';
+    headers['X-Title'] = 'MarketClaw Chat IA';
+  }
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: payload,
+    }),
+  });
+
+  const raw = await response.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
+  }
+
+  if (!response.ok) {
+    const apiError = json?.error?.message || json?.error || raw || `HTTP ${response.status}`;
+    throw new Error(`No se pudo completar el chat con IA: ${apiError}`);
+  }
+
+  const content = json?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('El proveedor de IA no devolvió contenido de respuesta.');
+  return {
+    content: String(content).trim(),
+    usage: json?.usage || null,
+  };
+}
+
+function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText }) {
+  return [
+    'Eres un agente de fragmentación semántica robusta.',
+    'Tu única tarea es segmentar comentarios en unidades mínimas de significado psicológico o narrativo.',
+    'Reglas obligatorias:',
+    '1) Divide solo por unidades reales de significado.',
+    '2) No resumas, no reinterpretes, no inventes texto.',
+    '3) No fusiones ideas distintas ni cortes ideas incompletas.',
+    '4) Conserva exactamente las palabras originales y su orden.',
+    '5) Si hay una sola idea, devuelve un solo fragmento.',
+    '6) Ignora saludos, emojis sin significado psicológico y ruido de relleno.',
+    '7) Debes calcular semantic_confidence (0..1) según claridad, completitud y coherencia.',
+    'Respuesta requerida: JSON válido puro, sin markdown, con esta forma exacta:',
+    '{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0}]}',
+    `comment_id: ${commentId}`,
+    `source_id: ${sourceId}`,
+    `texto_completo_del_comentario: ${commentText}`,
+  ].join('\n');
+}
+
+function extractJsonObjectFromText(rawText = '') {
+  const text = String(rawText || '').trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function clampConfidence(value, fallback = 0.75) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (parsed < 0) return 0;
+  if (parsed > 1) return 1;
+  return Number(parsed.toFixed(3));
+}
+
+function fallbackSemanticSplit(commentId, commentText = '') {
+  const text = String(commentText || '');
+  if (!text.trim()) {
+    return {
+      comment_id: String(commentId || ''),
+      fragments: [],
+    };
+  }
+
+  const fragments = [];
+  const sentenceRegex = /[^.!?\n]+[.!?]?|[^\n]+/g;
+  const matches = [...text.matchAll(sentenceRegex)];
+  for (const match of matches) {
+    const rawSegment = String(match[0] || '');
+    const startBase = Number(match.index || 0);
+    const trimmed = rawSegment.trim();
+    if (!trimmed) continue;
+
+    const leftTrim = rawSegment.length - rawSegment.trimStart().length;
+    const start = startBase + leftTrim;
+    const end = start + trimmed.length;
+
+    fragments.push({
+      fragment_id: uuid(),
+      fragment_text: trimmed,
+      start_char_index: start,
+      end_char_index: end,
+      semantic_confidence: 0.65,
+    });
+  }
+
+  if (!fragments.length) {
+    fragments.push({
+      fragment_id: uuid(),
+      fragment_text: text.trim(),
+      start_char_index: text.indexOf(text.trim()),
+      end_char_index: text.indexOf(text.trim()) + text.trim().length,
+      semantic_confidence: 0.6,
+    });
+  }
+
+  return {
+    comment_id: String(commentId || ''),
+    fragments,
+  };
+}
+
+function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, commentText }) {
+  const text = String(commentText || '');
+  const incoming = Array.isArray(parsed?.fragments) ? parsed.fragments : [];
+  const normalized = [];
+  let cursor = 0;
+
+  for (const item of incoming) {
+    const fragmentText = String(item?.fragment_text || '').trim();
+    if (!fragmentText) continue;
+
+    let start = Number(item?.start_char_index);
+    let end = Number(item?.end_char_index);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || start < 0 || end > text.length) {
+      const foundAt = text.indexOf(fragmentText, Math.max(0, cursor));
+      if (foundAt >= 0) {
+        start = foundAt;
+        end = foundAt + fragmentText.length;
+        cursor = end;
+      } else {
+        const fallbackAt = text.indexOf(fragmentText);
+        if (fallbackAt >= 0) {
+          start = fallbackAt;
+          end = fallbackAt + fragmentText.length;
+        } else {
+          continue;
+        }
+      }
+    }
+
+    normalized.push({
+      fragment_id: String(item?.fragment_id || uuid()),
+      comment_id: String(commentId || ''),
+      source_id: String(sourceId || ''),
+      fragment_text: fragmentText,
+      start_char_index: Math.max(0, Math.floor(start)),
+      end_char_index: Math.max(0, Math.floor(end)),
+      semantic_confidence: clampConfidence(item?.semantic_confidence, 0.75),
+    });
+  }
+
+  if (!normalized.length) {
+    const fallback = fallbackSemanticSplit(commentId, text);
+    return {
+      comment_id: String(commentId || ''),
+      fragments: fallback.fragments.map((fragment) => ({
+        ...fragment,
+        comment_id: String(commentId || ''),
+        source_id: String(sourceId || ''),
+      })),
+    };
+  }
+
+  return {
+    comment_id: String(commentId || ''),
+    fragments: normalized,
+  };
+}
+
+const AI_PROVIDERS = new Set([
+  'openai',
+  'openrouter',
+  'anthropic',
+  'groq',
+  'gemini',
+  'ollama',
+  'custom_compatible_api',
+]);
+
+async function getYouTubeConnectionByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM youtube_connections WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+function normalizeFrontendPath(rawPath = '/projects') {
+  const pathValue = String(rawPath || '/projects').trim() || '/projects';
+  if (!pathValue.startsWith('/')) return '/projects';
+  if (pathValue.startsWith('//')) return '/projects';
+  return pathValue;
+}
+
+function isPrivateIpv4Host(hostname = '') {
+  const parts = String(hostname || '').split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+  if (parts[0] === 10) return true;
+  if (parts[0] === 127) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
+function validateYouTubeRedirectUri(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return { ok: false, reason: 'Debes configurar redirect_uri para OAuth de YouTube.' };
+  }
+
+  let parsed = null;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return { ok: false, reason: 'redirect_uri no es una URL válida.' };
+  }
+
+  const protocol = parsed.protocol.toLowerCase();
+  if (!['http:', 'https:'].includes(protocol)) {
+    return { ok: false, reason: 'redirect_uri debe usar http o https.' };
+  }
+
+  const host = parsed.hostname.toLowerCase();
+  if (isPrivateIpv4Host(host) && host !== '127.0.0.1') {
+    return {
+      ok: false,
+      reason: 'Google OAuth bloquea redirect_uri con IP privada (ej. 192.168.x.x). Usa localhost o un dominio HTTPS público registrado en Google Cloud Console.',
+    };
+  }
+
+  if (protocol === 'http:' && host !== 'localhost' && host !== '127.0.0.1') {
+    return { ok: false, reason: 'Con http solo se permite localhost/127.0.0.1 para OAuth.' };
+  }
+
+  return { ok: true };
+}
+
+function inferRequestOrigin(req) {
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const host = forwardedHost || String(req.headers.host || '').trim();
+  if (!host) return '';
+  const protocol = forwardedProto || 'http';
+  return `${protocol}://${host}`;
+}
+
+function buildDefaultYouTubeRedirectUri(req) {
+  const origin = inferRequestOrigin(req).replace(/\/$/, '');
+  if (!origin) return '';
+  return `${origin}/api/youtube/auth/callback`;
+}
+
+function resolveYouTubeRedirectUri(config, req) {
+  const defaultRedirectUri = buildDefaultYouTubeRedirectUri(req);
+  const configured = String(config?.redirectUri || '').trim();
+  if (!configured) return defaultRedirectUri;
+
+  let parsed = null;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    return configured;
+  }
+
+  const frontendBase = String(config?.frontendBaseUrl || '').trim();
+  const frontendOrigin = (() => {
+    try {
+      return frontendBase ? new URL(frontendBase).origin : '';
+    } catch {
+      return '';
+    }
+  })();
+
+  const pointsToFrontendRoot = frontendOrigin && parsed.origin === frontendOrigin && parsed.pathname === '/';
+  if (pointsToFrontendRoot && defaultRedirectUri) {
+    return defaultRedirectUri;
+  }
+
+  return configured;
+}
+
+function withResolvedYouTubeRedirectUri(config, req) {
+  return {
+    ...config,
+    redirectUri: resolveYouTubeRedirectUri(config, req),
+  };
+}
+
+function parseYouTubeVideoId(rawValue = '') {
+  const input = String(rawValue || '').trim();
+  if (!input) return '';
+  if (/^[a-zA-Z0-9_-]{11}$/.test(input)) return input;
+  try {
+    const parsed = new URL(input);
+    if (parsed.hostname.includes('youtu.be')) return String(parsed.pathname || '').replace('/', '').slice(0, 11);
+    const searchVideoId = String(parsed.searchParams.get('v') || '').trim();
+    if (searchVideoId) return searchVideoId.slice(0, 11);
+    const embedMatch = parsed.pathname.match(/\/embed\/([a-zA-Z0-9_-]{11})/);
+    return embedMatch?.[1] || '';
+  } catch {
+    return '';
+  }
+}
+
+function slugify(input = '') {
+  return String(input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function extractResolvedVideoId(item = null) {
+  if (!item) return '';
+  if (typeof item.videoId === 'string' && item.videoId.trim()) return item.videoId.trim();
+  if (typeof item.id === 'string' && item.id.trim()) return item.id.trim();
+  if (item.id && typeof item.id === 'object' && typeof item.id.videoId === 'string' && item.id.videoId.trim()) {
+    return item.id.videoId.trim();
+  }
+  return '';
+}
+
+
+function normalizeYouTubeIngestionInput(rawInput = {}) {
+  const normalized = {
+    video_url: String(rawInput.video_url || '').trim(),
+    video_id: parseYouTubeVideoId(rawInput.video_id || rawInput.video_url || ''),
+    channel_id: String(rawInput.channel_id || '').trim(),
+    video_search_query: String(rawInput.video_search_query || '').trim(),
+    keyword: String(rawInput.keyword || '').trim(),
+    videos_limit: rawInput.videos_limit == null || rawInput.videos_limit === '' ? null : Math.min(50, Math.max(1, Number(rawInput.videos_limit) || 1)),
+    comments_per_video: Math.min(500, Math.max(1, Number(rawInput.comments_per_video) || Number(rawInput.max_comments) || 100)),
+    max_comments: Math.min(5000, Math.max(1, Number(rawInput.max_comments) || Number(rawInput.comments_per_video) || 100)),
+    include_replies: Boolean(rawInput.include_replies),
+    order: ['relevance', 'time'].includes(String(rawInput.order || '').trim()) ? String(rawInput.order || '').trim() : 'time',
+  };
+
+  if (!Number.isFinite(Number(normalized.comments_per_video)) || Number(normalized.comments_per_video) <= 0) {
+    throw new Error('comments_per_video is required and must be greater than 0');
+  }
+
+  let inputType = 'none';
+  if (normalized.video_id) inputType = 'video';
+  else if (normalized.video_search_query) inputType = 'search';
+  else if (normalized.keyword) inputType = 'keyword';
+  else throw new Error('You must provide video_url/video_id, video_search_query or keyword');
+
+  return {
+    ...normalized,
+    input_type: inputType,
+    source_query: inputType === 'search' ? normalized.video_search_query : (inputType === 'keyword' ? normalized.keyword : ''),
+  };
+}
+
+async function resolveVideosFromInput({ normalizedInput, config, auth }) {
+  if (normalizedInput.input_type === 'video') {
+    return [{ videoId: normalizedInput.video_id, title: '', channel: '', publishedAt: null, queryContext: null }];
+  }
+
+  const queryTerms = Array.from(new Set([
+    ...String(normalizedInput.video_search_query || '').split(/[\n,;]+/g),
+    ...String(normalizedInput.keyword || '').split(/[\n,;]+/g),
+  ]
+    .map((q) => q.trim())
+    .filter(Boolean)));
+
+  if (!queryTerms.length) {
+    throw new Error('No se encontró una búsqueda válida para resolver videos de YouTube.');
+  }
+
+  const maxVideosPerQuery = normalizedInput.videos_limit == null ? 10 : normalizedInput.videos_limit;
+  const searchOrder = normalizedInput.order === 'time' ? 'date' : 'relevance';
+
+  const resolved = [];
+  const seen = new Set();
+
+  for (const queryTerm of queryTerms) {
+    let pageToken = '';
+    let collected = 0;
+    while (collected < maxVideosPerQuery) {
+      const searchResponse = await searchYouTubeVideos({
+        config,
+        auth,
+        params: {
+          q: queryTerm,
+          type: 'video',
+          maxResults: String(Math.min(50, maxVideosPerQuery - collected)),
+          order: searchOrder,
+          pageToken: pageToken || undefined,
+          safeSearch: 'none',
+          channelId: normalizedInput.channel_id || undefined,
+        },
+      });
+
+      const items = Array.isArray(searchResponse?.data?.items) ? searchResponse.data.items : [];
+      for (const item of items) {
+        const videoId = extractResolvedVideoId(item);
+        if (!videoId || seen.has(videoId)) continue;
+        resolved.push({
+          videoId,
+          title: String(item?.title || '').trim(),
+          channel: String(item?.channelTitle || '').trim(),
+          publishedAt: item?.publishedAt || null,
+          queryContext: queryTerm,
+        });
+        seen.add(videoId);
+        collected += 1;
+      }
+
+      const nextToken = searchResponse?.data?.nextPageToken || '';
+      if (!nextToken) break;
+      pageToken = nextToken;
+    }
+  }
+
+  if (!resolved.length) {
+    throw new Error('No se encontraron videos para la búsqueda indicada. Ajusta la consulta o incrementa la cantidad de videos.');
+  }
+
+  return resolved;
+}
+
+async function ingestCommentsFromResolvedVideos({ resolvedVideos, normalizedInput, config, auth }) {
+  const skippableReasons = new Set(['commentsDisabled', 'notFound', 'videoNotFound', 'processingFailure']);
+  const rows = [];
+  const stats = { videos_resolved: resolvedVideos.length, videos_processed: 0, videos_skipped: 0 };
+
+  for (const video of resolvedVideos) {
+    try {
+      let pageToken = '';
+      const videoRows = [];
+      const pageSize = Math.min(100, normalizedInput.comments_per_video);
+
+      while (videoRows.length < normalizedInput.comments_per_video) {
+        let response;
+        try {
+          response = await listYouTubeCommentThreads({
+            config,
+            auth,
+            params: {
+              videoId: video.videoId,
+              maxResults: String(pageSize),
+              order: normalizedInput.order,
+              textFormat: 'plainText',
+              pageToken: pageToken || undefined,
+            },
+          });
+        } catch (pageError) {
+          const reason = String(pageError?.reason || '').trim();
+          const status = Number(pageError?.statusCode || 0);
+          const canRetryWithApiKey = Boolean(auth?.apiKey) && Boolean(auth?.accessToken) && (reason === 'forbidden' || status === 403);
+          if (!canRetryWithApiKey) throw pageError;
+          response = await listYouTubeCommentThreads({
+            config,
+            auth: { apiKey: auth.apiKey, accessToken: null },
+            params: {
+              videoId: video.videoId,
+              maxResults: String(pageSize),
+              order: normalizedInput.order,
+              textFormat: 'plainText',
+              pageToken: pageToken || undefined,
+            },
+          });
+        }
+
+        const items = Array.isArray(response?.data?.items) ? response.data.items : [];
+        items.forEach((thread) => {
+          videoRows.push({
+            source: 'youtube',
+            source_comment_id: thread.topLevelCommentId || thread.id,
+            parent_comment_id: null,
+            video_id: thread.videoId || video.videoId,
+            channel_id: thread.channelId || normalizedInput.channel_id || '',
+            author_name: thread.authorDisplayName || '',
+            author_channel_id: thread.authorChannelId || '',
+            text: thread.textOriginal || thread.textDisplay || '',
+            published_at: thread.publishedAt || null,
+            like_count: Number(thread.likeCount || 0),
+            reply_count: Number(thread.replyCount || 0),
+            source_query: video.queryContext || normalizedInput.source_query || '',
+          });
+
+          if (normalizedInput.include_replies && Array.isArray(thread.replies) && videoRows.length < normalizedInput.comments_per_video) {
+            thread.replies.forEach((reply) => {
+              if (videoRows.length >= normalizedInput.comments_per_video) return;
+              videoRows.push({
+                source: 'youtube',
+                source_comment_id: reply.id,
+                parent_comment_id: reply.parentId || (thread.topLevelCommentId || thread.id),
+                video_id: thread.videoId || video.videoId,
+                channel_id: thread.channelId || normalizedInput.channel_id || '',
+                author_name: reply.authorDisplayName || '',
+                author_channel_id: reply.authorChannelId || '',
+                text: reply.textOriginal || reply.textDisplay || '',
+                published_at: reply.publishedAt || null,
+                like_count: Number(reply.likeCount || 0),
+                reply_count: 0,
+                source_query: video.queryContext || normalizedInput.source_query || '',
+              });
+            });
+          }
+        });
+
+        const nextToken = response?.data?.nextPageToken || '';
+        if (!nextToken) break;
+        pageToken = nextToken;
+      }
+
+      rows.push(...videoRows.slice(0, normalizedInput.comments_per_video));
+      stats.videos_processed += 1;
+    } catch (videoError) {
+      const reason = String(videoError?.reason || '').trim();
+      const status = Number(videoError?.statusCode || 0);
+      const message = String(videoError?.message || '').toLowerCase();
+      const isPrivateForbidden = reason === 'forbidden' && (message.includes('private') || message.includes('permission'));
+      const isSkippable = skippableReasons.has(reason) || status === 404 || isPrivateForbidden;
+      if (!isSkippable) throw videoError;
+      stats.videos_skipped += 1;
+    }
+  }
+
+  return { rows, stats };
+}
+
+function normalizeFragmentTextForHash(input = '') {
+  return String(input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeFragment(input = '') {
+  return normalizeFragmentTextForHash(input)
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2);
+}
+
+function buildSemanticHash(input = '') {
+  return crypto.createHash('sha1').update(normalizeFragmentTextForHash(input)).digest('hex');
+}
+
+function scoreDensity(text = '') {
+  const tokens = tokenizeFragment(text);
+  if (!tokens.length) return 0;
+  const unique = new Set(tokens);
+  const ratio = unique.size / Math.max(tokens.length, 1);
+  const emotionalHints = ['miedo', 'dolor', 'ansiedad', 'problema', 'necesito', 'quiero', 'bloqueo', 'frustracion', 'urgente', 'rechazo'];
+  const hintHits = tokens.reduce((acc, token) => (emotionalHints.includes(token) ? acc + 1 : acc), 0);
+  const hintBoost = Math.min(0.25, hintHits * 0.04);
+  return Math.max(0, Math.min(1, (ratio * 0.75) + hintBoost));
+}
+
+function scoreExtractionQuality(text = '') {
+  const clean = String(text || '').trim();
+  const length = clean.length;
+  if (!length) return 0;
+  const minIdeal = 30;
+  const maxIdeal = 420;
+  if (length < 8) return 0.08;
+  if (length < minIdeal) return Math.max(0.2, length / minIdeal);
+  if (length <= maxIdeal) return 0.95;
+  const overflowPenalty = Math.min(0.75, (length - maxIdeal) / 1000);
+  return Math.max(0.2, 0.95 - overflowPenalty);
+}
+
+function scoreRedundancy({ semanticHash, corpusHashCounts, tokenSet = new Set(), corpusTokenSets = [] }) {
+  const exactCount = Number(corpusHashCounts.get(semanticHash) || 0);
+  let nearDuplicate = 0;
+  const sample = corpusTokenSets.slice(0, 120);
+  for (const other of sample) {
+    const inter = [...tokenSet].filter((token) => other.has(token)).length;
+    const union = new Set([...tokenSet, ...other]).size;
+    const jaccard = union ? inter / union : 0;
+    if (jaccard >= 0.82) {
+      nearDuplicate += 1;
+      if (nearDuplicate >= 6) break;
+    }
+  }
+  const score = Math.min(1, (exactCount > 0 ? 0.55 : 0) + (Math.min(nearDuplicate, 6) * 0.075));
+  return score;
+}
+
+function enrichCommentFragments({ fragments = [], existingFragments = [] }) {
+  const now = nowIso();
+  const safeIncoming = Array.isArray(fragments) ? fragments : [];
+  const safeExisting = Array.isArray(existingFragments) ? existingFragments : [];
+  const corpus = [...safeExisting, ...safeIncoming];
+
+  const corpusHashCounts = new Map();
+  const corpusTokenSets = [];
+  const sourceMarkerCount = new Map();
+
+  corpus.forEach((fragment) => {
+    const excerpt = String(fragment.excerpt || fragment.text || '').trim();
+    if (!excerpt) return;
+    const semanticHash = String(fragment.semantic_hash || buildSemanticHash(excerpt));
+    corpusHashCounts.set(semanticHash, Number(corpusHashCounts.get(semanticHash) || 0) + 1);
+    corpusTokenSets.push(new Set(tokenizeFragment(excerpt)));
+    const sourceKey = `${fragment.source_comment_id || fragment.comment_id || ''}|${fragment.video_id || fragment.source_video_id || ''}|${fragment.source_run_id || ''}`;
+    sourceMarkerCount.set(sourceKey, Number(sourceMarkerCount.get(sourceKey) || 0) + 1);
+  });
+
+  return safeIncoming.map((fragment) => {
+    const excerpt = String(fragment.excerpt || fragment.text || '').trim();
+    const semanticHash = String(fragment.semantic_hash || buildSemanticHash(excerpt));
+    const tokenSet = new Set(tokenizeFragment(excerpt));
+    const redundancyScore = scoreRedundancy({ semanticHash, corpusHashCounts, tokenSet, corpusTokenSets });
+    const extractionQualityScore = scoreExtractionQuality(excerpt);
+    const densityScore = scoreDensity(excerpt);
+    const noveltyScore = Math.max(0, Math.min(1, (1 - redundancyScore) * 0.72 + densityScore * 0.28));
+    const sourceMarker = `${fragment.source_comment_id || fragment.comment_id || ''}|${fragment.video_id || fragment.source_video_id || ''}|${fragment.source_run_id || ''}`;
+    const sourceDispersionMarker = sourceMarkerCount.get(sourceMarker) > 1 ? 'repeated_source_pattern' : 'isolated_source_pattern';
+
+    return {
+      ...fragment,
+      id: String(fragment.id || `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`),
+      source_comment_id: String(fragment.source_comment_id || fragment.comment_id || ''),
+      source_video_id: String(fragment.source_video_id || fragment.video_id || ''),
+      source_run_id: String(fragment.source_run_id || ''),
+      excerpt,
+      source_comment_text: String(fragment.source_comment_text || ''),
+      selection_start: Number.isFinite(Number(fragment.selection_start)) ? Number(fragment.selection_start) : null,
+      selection_end: Number.isFinite(Number(fragment.selection_end)) ? Number(fragment.selection_end) : null,
+      fragment_length: excerpt.length,
+      source_type: String(fragment.source_type || 'manual'),
+      hypothesis_id: fragment.hypothesis_id || null,
+      audience_id: fragment.audience_id || null,
+      semantic_hash: semanticHash,
+      redundancy_score: Number(redundancyScore.toFixed(4)),
+      novelty_score: Number(noveltyScore.toFixed(4)),
+      density_score: Number(densityScore.toFixed(4)),
+      extraction_quality_score: Number(extractionQualityScore.toFixed(4)),
+      source_dispersion_marker: sourceDispersionMarker,
+      ai_candidate_score: fragment.ai_candidate_score == null ? null : Number(fragment.ai_candidate_score),
+      fragment_status: String(fragment.fragment_status || 'raw'),
+      created_at: fragment.created_at || now,
+      updated_at: now,
+      coding_budget_target: 30,
+      coding_budget_max: 40,
+    };
+  });
+}
+
+function clamp(min, value, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function safeNumber(input, fallback = 0) {
+  const n = Number(input);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function rankAndSelectFragmentsForCoding(fragments = []) {
+  const analyzed = (Array.isArray(fragments) ? fragments : [])
+    .map((fragment) => {
+      const redundancy = clamp(0, safeNumber(fragment.redundancy_score, 0), 1);
+      const novelty = clamp(0, safeNumber(fragment.novelty_score, 0.5), 1);
+      const density = clamp(0, safeNumber(fragment.density_score, 0.5), 1);
+      const quality = clamp(0, safeNumber(fragment.extraction_quality_score, 0.5), 1);
+      const dispersionBoost = String(fragment.source_dispersion_marker || '').includes('repeated') ? 0.08 : 0;
+      const aiCandidateScore = clamp(0, (0.4 * novelty) + (0.35 * density) + (0.2 * quality) - (0.35 * redundancy) + dispersionBoost, 1);
+      return {
+        ...fragment,
+        redundancy_score: redundancy,
+        novelty_score: novelty,
+        density_score: density,
+        extraction_quality_score: quality,
+        ai_candidate_score: Number(aiCandidateScore.toFixed(4)),
+      };
+    })
+    .filter((fragment) => String(fragment.excerpt || '').trim().length >= 8)
+    .sort((a, b) => Number(b.ai_candidate_score || 0) - Number(a.ai_candidate_score || 0));
+
+  const total = analyzed.length;
+  if (!total) return { analyzed: [], selected: [], ratio: 0 };
+
+  const targetMin = Math.max(1, Math.floor(total * 0.08));
+  const targetMax = Math.max(targetMin, Math.floor(total * 0.15));
+  const hardMax = Math.max(1, Math.floor(total * 0.2));
+
+  const baseSelected = analyzed
+    .filter((fragment) => fragment.density_score >= 0.24 && fragment.extraction_quality_score >= 0.24)
+    .slice(0, hardMax);
+
+  let selected = baseSelected.slice(0, targetMax);
+  if (selected.length < targetMin) selected = analyzed.slice(0, targetMin);
+
+  // Forzar segunda compresión si supera 25%.
+  const currentRatio = selected.length / Math.max(total, 1);
+  if (currentRatio > 0.25) {
+    selected = selected.filter((fragment) => Number(fragment.ai_candidate_score || 0) >= 0.58);
+    if (selected.length < targetMin) {
+      selected = analyzed.slice(0, targetMin);
+    }
+  }
+
+  const selectedHashes = new Set();
+  const deduped = [];
+  for (const fragment of selected) {
+    const hash = String(fragment.semantic_hash || '');
+    if (hash && selectedHashes.has(hash)) continue;
+    selectedHashes.add(hash);
+    deduped.push({ ...fragment, fragment_status: 'selected' });
+  }
+
+  const selectedIds = new Set(deduped.map((fragment) => String(fragment.id || '')));
+  const analyzedWithStatus = analyzed.map((fragment) => (
+    selectedIds.has(String(fragment.id || ''))
+      ? { ...fragment, fragment_status: 'selected' }
+      : { ...fragment, fragment_status: Number(fragment.ai_candidate_score || 0) >= 0.3 ? 'candidate' : 'rejected' }
+  ));
+
+  return {
+    analyzed: analyzedWithStatus,
+    selected: deduped,
+    ratio: deduped.length / Math.max(total, 1),
+  };
+}
+
+function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], existingCodes = [] }) {
+  const tokensToIgnore = new Set(['pero', 'aunque', 'porque', 'para', 'esto', 'esta', 'este', 'muy', 'mas', 'solo', 'como', 'cuando']);
+  const codeBySlug = new Map();
+  const semanticGroups = new Map();
+  const sourceSetsBySlug = new Map();
+
+  const existing = Array.isArray(existingCodes) ? existingCodes : [];
+  const existingBySlug = new Map(existing.map((code) => [String(code.slug), code]));
+
+  const buildGroupKey = (fragment) => {
+    const text = String(fragment.excerpt || '').toLowerCase();
+    const tokens = tokenizeFragment(text).filter((token) => !tokensToIgnore.has(token));
+    const anchor = tokens.slice(0, 3).join('-') || String(fragment.semantic_hash || '').slice(0, 8) || `cluster-${Math.floor(Math.random() * 1000)}`;
+    return anchor;
+  };
+
+  selectedFragments.forEach((fragment) => {
+    const key = buildGroupKey(fragment);
+    if (!semanticGroups.has(key)) semanticGroups.set(key, []);
+    semanticGroups.get(key).push(fragment);
+  });
+
+  let clusters = Array.from(semanticGroups.entries()).map(([key, items]) => ({
+    key,
+    items,
+    strength: items.reduce((acc, item) => acc + Number(item.ai_candidate_score || 0), 0),
+  }));
+
+  clusters.sort((a, b) => b.strength - a.strength);
+
+  const targetCodes = clamp(25, clusters.length, 30);
+  const hardMaxCodes = 40;
+  if (clusters.length > hardMaxCodes) {
+    clusters = clusters.slice(0, hardMaxCodes);
+  }
+
+  const compressed = clusters.slice(0, targetCodes).map((cluster, index) => {
+    const representative = cluster.items[0] || {};
+    const text = String(representative.excerpt || '').trim();
+    const label = text.split(/[.!?\n]/)[0].trim().slice(0, 72) || `Código ${index + 1}`;
+
+    // Reutilización disciplinada: primero intentar código existente más cercano.
+    let chosenCode = null;
+    let bestScore = 0;
+    existing.forEach((code) => {
+      const score = (() => {
+        const fragTokens = new Set(tokenizeFragment(text));
+        const codeTokens = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
+        const inter = [...fragTokens].filter((t) => codeTokens.has(t)).length;
+        const union = new Set([...fragTokens, ...codeTokens]).size;
+        return union ? inter / union : 0;
+      })();
+      if (score > bestScore) {
+        bestScore = score;
+        chosenCode = code;
+      }
+    });
+
+    const shouldReuse = Boolean(chosenCode) && bestScore >= 0.26;
+    let slug;
+    let name;
+    let decisionType;
+    if (shouldReuse) {
+      slug = String(chosenCode.slug);
+      name = String(chosenCode.name || chosenCode.slug || 'Código');
+      decisionType = 'reutilizacion';
+    } else {
+      const baseSlug = slugify(label).slice(0, 64) || `code-${Date.now()}-${index}`;
+      let candidate = baseSlug;
+      let suffix = 1;
+      while (codeBySlug.has(candidate) || existingBySlug.has(candidate)) {
+        suffix += 1;
+        candidate = `${baseSlug}-${suffix}`;
+      }
+      slug = candidate;
+      name = label;
+      decisionType = 'nuevo';
+    }
+
+    if (!codeBySlug.has(slug)) {
+      codeBySlug.set(slug, {
+        suggested_code_slug: slug,
+        suggested_code_name: name,
+        decision_type: decisionType,
+        cluster_strength: Number(cluster.strength.toFixed(4)),
+        fragments: [],
+      });
+      sourceSetsBySlug.set(slug, new Set());
+    }
+
+    const bucket = codeBySlug.get(slug);
+    cluster.items.forEach((item) => {
+      bucket.fragments.push(item);
+      const sourceKey = `${item.source_video_id || item.video_id || ''}|${item.source_run_id || ''}|${item.source_comment_id || ''}`;
+      if (sourceKey !== '||') sourceSetsBySlug.get(slug).add(sourceKey);
+    });
+
+    return bucket;
+  });
+
+  const proposals = [];
+  let proposalCounter = 0;
+
+  codeBySlug.forEach((bucket, slug) => {
+    const fragmentsForCode = Array.isArray(bucket.fragments) ? bucket.fragments : [];
+    const codeFrequency = fragmentsForCode.length;
+    const sourceDispersion = Number(sourceSetsBySlug.get(slug)?.size || 0);
+    const consistency = (() => {
+      if (fragmentsForCode.length <= 1) return 0.82;
+      const avgRedundancy = fragmentsForCode.reduce((acc, f) => acc + Number(f.redundancy_score || 0), 0) / fragmentsForCode.length;
+      return clamp(0, 1 - avgRedundancy, 1);
+    })();
+    const intensity = fragmentsForCode.reduce((acc, f) => acc + Number(f.density_score || 0), 0) / Math.max(1, fragmentsForCode.length);
+    const scoreIa = clamp(0, (0.35 * clamp(0, codeFrequency / Math.max(1, selectedFragments.length), 1)) + (0.3 * clamp(0, sourceDispersion / Math.max(1, selectedFragments.length), 1)) + (0.2 * consistency) + (0.15 * intensity), 1);
+
+    fragmentsForCode.forEach((fragment) => {
+      proposalCounter += 1;
+      proposals.push({
+        id: `code_proposal_ai_${Date.now()}_${proposalCounter}`,
+        fragment_id: String(fragment.id || ''),
+        fragment_excerpt: String(fragment.excerpt || ''),
+        suggested_code_slug: slug,
+        suggested_code_name: bucket.suggested_code_name,
+        decision_type: bucket.decision_type,
+        confidence: Number(clamp(0.05, (Number(fragment.ai_candidate_score || 0) * 0.65) + (scoreIa * 0.35), 0.99).toFixed(2)),
+        justification: bucket.decision_type === 'reutilizacion'
+          ? `Compresión semántica: fragmento asignado a código existente con narrativa compartida.`
+          : 'Compresión semántica: no hubo código existente suficientemente cercano; se propone núcleo nuevo.',
+        alternatives: [],
+        status: 'propuesto',
+        created_at: nowIso(),
+        updated_at: nowIso(),
+        review_log: [],
+        parent_candidate_slug: null,
+        ai_code_score: Number((scoreIa * 100).toFixed(2)),
+        traceability: {
+          source_comment_id: fragment.source_comment_id || fragment.comment_id || null,
+          source_video_id: fragment.source_video_id || fragment.video_id || null,
+          source_run_id: fragment.source_run_id || null,
+          semantic_hash: fragment.semantic_hash || null,
+        },
+      });
+    });
+  });
+
+  const generatedCodes = Array.from(codeBySlug.values()).map((bucket) => ({
+    suggested_code_slug: bucket.suggested_code_slug,
+    suggested_code_name: bucket.suggested_code_name,
+    decision_type: bucket.decision_type,
+    fragments_count: Array.isArray(bucket.fragments) ? bucket.fragments.length : 0,
+  }));
+
+  return {
+    proposals,
+    generatedCodes,
+  };
+}
+
+async function ensureYouTubeAccessToken(connection, config) {
+  if (!connection) return null;
+  const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
+  if (connection.access_token && Number.isFinite(expiresAtMs) && expiresAtMs > Date.now() + 15000) {
+    return { ...connection, access_token: connection.access_token };
+  }
+  if (!connection.refresh_token) {
+    return { ...connection, access_token: connection.access_token || '' };
+  }
+
+  const refreshed = await refreshYouTubeAccessToken({ refreshToken: connection.refresh_token, config });
+  const nextAccessToken = refreshed.access_token || connection.access_token;
+  const nextExpiresAt = computeFutureIso(refreshed.expires_in || 3600);
+  const nextScope = refreshed.scope || connection.scope || '';
+  const nextTokenType = refreshed.token_type || connection.token_type || 'Bearer';
+
+  await pool.query(
+    `UPDATE youtube_connections
+     SET access_token = ?, scope = ?, token_type = ?, expires_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [nextAccessToken, nextScope, nextTokenType, nextExpiresAt, nowIso(), connection.id],
+  );
+
+  return {
+    ...connection,
+    access_token: nextAccessToken,
+    scope: nextScope,
+    token_type: nextTokenType,
+    expires_at: nextExpiresAt,
+  };
+}
+
+async function getYouTubeAuthForUser(userId, config) {
+  const connection = await getYouTubeConnectionByUserId(userId);
+  if (!connection) {
+    if (isYouTubeApiKeyConfigured(config)) return { apiKey: config.apiKey, connection: null };
+    return { apiKey: '', connection: null };
+  }
+  const withAccess = await ensureYouTubeAccessToken(connection, config);
+  return {
+    accessToken: withAccess?.access_token || '',
+    apiKey: isYouTubeApiKeyConfigured(config) ? config.apiKey : '',
+    connection: withAccess,
+  };
 }
 
 function normalizeBulkUpdateFields(fields) {
@@ -3391,6 +4907,1131 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/api/youtube/config' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const { config, integration } = await getYouTubeConfigForUser(user.id);
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
+      const connection = await getYouTubeConnectionByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          oauthConfigured: isYouTubeOAuthConfigured(runtimeConfig),
+          apiKeyConfigured: isYouTubeApiKeyConfigured(runtimeConfig),
+          redirectUri: runtimeConfig.redirectUri || null,
+          configuredRedirectUri: config.redirectUri || null,
+          scopes: runtimeConfig.scopes,
+          connected: Boolean(connection),
+          hasCustomConfig: Boolean(integration),
+          integration: integration ? {
+            api_key: integration.api_key || '',
+            client_id: integration.client_id || '',
+            client_secret: integration.client_secret || '',
+            redirect_uri: integration.redirect_uri || '',
+            scopes: integration.scopes || '',
+          } : null,
+          channel: connection ? {
+            id: connection.youtube_channel_id || '',
+            title: connection.youtube_channel_title || '',
+          } : null,
+        },
+      });
+    }
+
+
+    if (url.pathname === '/api/youtube/settings' && req.method === 'PUT') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+
+      const apiKey = String(body.api_key || '').trim();
+      const clientId = String(body.client_id || '').trim();
+      const clientSecret = String(body.client_secret || '').trim();
+      const redirectUri = String(body.redirect_uri || '').trim();
+      const scopes = String(body.scopes || '').trim();
+
+      const oauthAttempted = Boolean(clientId || clientSecret || redirectUri);
+      if (oauthAttempted) {
+        const redirectCheck = validateYouTubeRedirectUri(redirectUri);
+        if (!redirectCheck.ok) {
+          return sendJson(req, res, 400, { error: redirectCheck.reason, code: 'invalid_redirect_uri' });
+        }
+      }
+
+      const id = buildEntityId('youtube_integration');
+      await pool.query(
+        `INSERT INTO youtube_integrations (id, user_id, api_key, client_id, client_secret, redirect_uri, scopes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           api_key = excluded.api_key,
+           client_id = excluded.client_id,
+           client_secret = excluded.client_secret,
+           redirect_uri = excluded.redirect_uri,
+           scopes = excluded.scopes,
+           updated_at = excluded.updated_at`,
+        [id, user.id, apiKey, clientId, clientSecret, redirectUri, scopes, nowIso(), nowIso()],
+      );
+
+      const { config, integration } = await getYouTubeConfigForUser(user.id);
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
+      return sendJson(req, res, 200, {
+        data: {
+          oauthConfigured: isYouTubeOAuthConfigured(runtimeConfig),
+          apiKeyConfigured: isYouTubeApiKeyConfigured(runtimeConfig),
+          redirectUri: runtimeConfig.redirectUri || null,
+          configuredRedirectUri: config.redirectUri || null,
+          scopes: runtimeConfig.scopes,
+          hasCustomConfig: Boolean(integration),
+          integration: integration ? {
+            api_key: integration.api_key || '',
+            client_id: integration.client_id || '',
+            client_secret: integration.client_secret || '',
+            redirect_uri: integration.redirect_uri || '',
+            scopes: integration.scopes || '',
+          } : null,
+        },
+      });
+    }
+
+
+    if (url.pathname === '/api/integrations/ai/config' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const integration = await getAiIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          enabled: Boolean(integration && integration.provider && integration.model),
+          integration: integration ? {
+            provider: integration.provider || '',
+            model: integration.model || '',
+            api_key: integration.api_key || '',
+            base_url: integration.base_url || '',
+            organization: integration.organization || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/integrations/ai/settings' && req.method === 'PUT') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const provider = String(body.provider || '').trim().toLowerCase();
+      const model = normalizeAiModel(provider, body.model);
+      const apiKey = String(body.api_key || '').trim();
+      const baseUrl = String(body.base_url || '').trim();
+      const organization = String(body.organization || '').trim();
+
+      if (!AI_PROVIDERS.has(provider)) {
+        return sendJson(req, res, 400, { error: 'Proveedor de IA inválido.' });
+      }
+      if (!model) {
+        return sendJson(req, res, 400, { error: 'Debes especificar el modelo para la integración de IA.' });
+      }
+
+      const id = buildEntityId('ai_integration');
+      await pool.query(
+        `INSERT INTO ai_integrations (id, user_id, provider, model, api_key, base_url, organization, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           provider = excluded.provider,
+           model = excluded.model,
+           api_key = excluded.api_key,
+           base_url = excluded.base_url,
+           organization = excluded.organization,
+           updated_at = excluded.updated_at`,
+        [id, user.id, provider, model, apiKey, baseUrl, organization, nowIso(), nowIso()],
+      );
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          enabled: Boolean(integration && integration.provider && integration.model),
+          integration: integration ? {
+            provider: integration.provider || '',
+            model: integration.model || '',
+            api_key: integration.api_key || '',
+            base_url: integration.base_url || '',
+            organization: integration.organization || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/integrations/openclaw/config' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const integration = await getOpenClawIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          connected: Boolean(integration && integration.endpoint_url && integration.workspace_id),
+          integration: integration ? {
+            endpoint_url: integration.endpoint_url || '',
+            workspace_id: integration.workspace_id || '',
+            api_key: integration.api_key || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/integrations/openclaw/settings' && req.method === 'PUT') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+
+      const endpointUrl = String(body.endpoint_url || '').trim();
+      const workspaceId = String(body.workspace_id || '').trim();
+      const apiKey = String(body.api_key || '').trim();
+
+      if (!endpointUrl || !workspaceId) {
+        return sendJson(req, res, 400, { error: 'Debes indicar endpoint y workspace para OpenClaw.' });
+      }
+
+      const id = buildEntityId('openclaw_integration');
+      await pool.query(
+        `INSERT INTO openclaw_integrations (id, user_id, endpoint_url, workspace_id, api_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           endpoint_url = excluded.endpoint_url,
+           workspace_id = excluded.workspace_id,
+           api_key = excluded.api_key,
+           updated_at = excluded.updated_at`,
+        [id, user.id, endpointUrl, workspaceId, apiKey, nowIso(), nowIso()],
+      );
+
+      const integration = await getOpenClawIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          connected: Boolean(integration && integration.endpoint_url && integration.workspace_id),
+          integration: integration ? {
+            endpoint_url: integration.endpoint_url || '',
+            workspace_id: integration.workspace_id || '',
+            api_key: integration.api_key || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/projects/chat/history' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      if (!projectId) return sendJson(req, res, 400, { error: 'projectId is required' });
+
+      const project = await ensureProjectAccess(user.id, projectId);
+      if (!project) return sendJson(req, res, 404, { error: 'Project not found' });
+
+      const [rows] = await pool.query(
+        `SELECT id, role, content, created_at
+         FROM ai_project_chat_messages
+         WHERE user_id = ? AND project_id = ?
+         ORDER BY created_at ASC
+         LIMIT 200`,
+        [user.id, projectId],
+      );
+      return sendJson(req, res, 200, { data: { items: rows } });
+    }
+
+    if (url.pathname === '/api/projects/chat/messages' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const projectId = String(body?.projectId || '').trim();
+      const message = String(body?.message || '').trim();
+
+      if (!projectId) return sendJson(req, res, 400, { error: 'projectId is required' });
+      if (!message) return sendJson(req, res, 400, { error: 'message is required' });
+
+      const project = await ensureProjectAccess(user.id, projectId);
+      if (!project) return sendJson(req, res, 404, { error: 'Project not found' });
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial antes de usar Chat IA.',
+        });
+      }
+
+      const [historyRows] = await pool.query(
+        `SELECT role, content
+         FROM ai_project_chat_messages
+         WHERE user_id = ? AND project_id = ?
+         ORDER BY created_at DESC
+         LIMIT 12`,
+        [user.id, projectId],
+      );
+      const orderedHistory = historyRows.reverse().map((row) => ({ role: row.role, content: row.content }));
+
+      const projectSummary = await getProjectScopeSummary(user.id, projectId);
+      const systemPrompt = buildProjectScopedSystemPrompt(project, projectSummary);
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...orderedHistory,
+        { role: 'user', content: message },
+      ];
+
+      const userMessageRow = {
+        id: buildEntityId('ai_chat_message'),
+        user_id: user.id,
+        project_id: projectId,
+        role: 'user',
+        content: message,
+        created_at: nowIso(),
+      };
+      await pool.query(
+        `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [userMessageRow.id, userMessageRow.user_id, userMessageRow.project_id, userMessageRow.role, userMessageRow.content, userMessageRow.created_at],
+      );
+
+      try {
+        const completion = await requestAiChatCompletion(integration, messages);
+        const assistantMessageRow = {
+          id: buildEntityId('ai_chat_message'),
+          user_id: user.id,
+          project_id: projectId,
+          role: 'assistant',
+          content: completion.content,
+          created_at: nowIso(),
+        };
+        await pool.query(
+          `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [assistantMessageRow.id, assistantMessageRow.user_id, assistantMessageRow.project_id, assistantMessageRow.role, assistantMessageRow.content, assistantMessageRow.created_at],
+        );
+
+        return sendJson(req, res, 200, {
+          data: {
+            project: { id: project.id, name: project.name },
+            user_message: userMessageRow,
+            assistant_message: assistantMessageRow,
+            usage: completion.usage,
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo generar respuesta de IA para este proyecto.',
+        });
+      }
+    }
+
+    if (url.pathname === '/api/comment-base/semantic-fragment-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const commentId = String(body?.comment_id || '').trim();
+      const sourceId = String(body?.source_id || '').trim();
+      const commentText = String(body?.texto_completo_del_comentario || '').trim();
+
+      if (!commentId || !sourceId || !commentText) {
+        return sendJson(req, res, 400, {
+          error: 'comment_id, source_id y texto_completo_del_comentario son obligatorios.',
+        });
+      }
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial antes de usar el agente de fragmentación.',
+        });
+      }
+
+      const prompt = buildSemanticFragmentAgentPrompt({
+        commentId,
+        sourceId,
+        commentText,
+      });
+
+      try {
+        const completion = await requestAiChatCompletion(integration, [
+          {
+            role: 'system',
+            content: 'Responde exclusivamente con JSON válido, sin markdown ni texto adicional.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ]);
+
+        const parsed = extractJsonObjectFromText(completion.content);
+        const normalized = normalizeSemanticFragmentAgentOutput({
+          parsed,
+          commentId,
+          sourceId,
+          commentText,
+        });
+
+        return sendJson(req, res, 200, {
+          data: {
+            comment_id: normalized.comment_id,
+            fragments: normalized.fragments.map((fragment) => ({
+              fragment_id: fragment.fragment_id,
+              fragment_text: fragment.fragment_text,
+              start_char_index: fragment.start_char_index,
+              end_char_index: fragment.end_char_index,
+              semantic_confidence: fragment.semantic_confidence,
+            })),
+          },
+        });
+      } catch (error) {
+        const fallback = fallbackSemanticSplit(commentId, commentText);
+        return sendJson(req, res, 200, {
+          data: {
+            comment_id: fallback.comment_id,
+            fragments: fallback.fragments,
+          },
+          warning: error?.message || 'Se aplicó fallback de fragmentación.',
+        });
+      }
+    }
+
+    if (url.pathname === '/api/youtube/auth/start' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const { config } = await getYouTubeConfigForUser(user.id);
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
+      if (!isYouTubeOAuthConfigured(runtimeConfig)) {
+        return sendJson(req, res, 400, { error: 'YouTube OAuth is not configured on backend' });
+      }
+
+      const redirectCheck = validateYouTubeRedirectUri(runtimeConfig.redirectUri);
+      if (!redirectCheck.ok) {
+        return sendJson(req, res, 400, { error: redirectCheck.reason, code: 'invalid_redirect_uri' });
+      }
+
+      const body = await readBody(req);
+      const stateToken = crypto.randomUUID();
+      const stateId = buildEntityId('youtube_oauth_state');
+      const redirectPath = normalizeFrontendPath(body.redirect_path || '/projects');
+
+      await pool.query(
+        `INSERT INTO youtube_oauth_states (id, user_id, state_token, redirect_path, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [stateId, user.id, stateToken, redirectPath, computeFutureIso(10 * 60)],
+      );
+
+      return sendJson(req, res, 200, {
+        data: {
+          authUrl: buildYouTubeConsentUrl({ state: stateToken, config: runtimeConfig }),
+        },
+      });
+    }
+
+    if (url.pathname === '/api/youtube/auth/callback' && req.method === 'GET') {
+      const baseConfig = getYouTubeConfig();
+      const stateToken = String(url.searchParams.get('state') || '').trim();
+      const code = String(url.searchParams.get('code') || '').trim();
+      const errorParam = String(url.searchParams.get('error') || '').trim();
+
+      const redirectWithStatus = (status, message = '') => {
+        const frontend = baseConfig.frontendBaseUrl.replace(/\/$/, '');
+        const destination = new URL('/projects', frontend);
+        destination.searchParams.set('youtube', status);
+        if (message) destination.searchParams.set('reason', message);
+        res.writeHead(302, { Location: destination.toString() });
+        res.end();
+      };
+
+      if (!stateToken) return redirectWithStatus('error', 'missing_state');
+      if (errorParam) return redirectWithStatus('error', errorParam);
+      if (!code) return redirectWithStatus('error', 'missing_code');
+
+      const [stateRows] = await pool.query(
+        `SELECT * FROM youtube_oauth_states
+         WHERE state_token = ? AND consumed_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+        [stateToken],
+      );
+      const state = stateRows[0] || null;
+      if (!state) return redirectWithStatus('error', 'invalid_state');
+      if (new Date(state.expires_at).getTime() < Date.now()) {
+        await pool.query('UPDATE youtube_oauth_states SET consumed_at = ? WHERE id = ?', [nowIso(), state.id]);
+        return redirectWithStatus('error', 'expired_state');
+      }
+
+      const { config } = await getYouTubeConfigForUser(state.user_id);
+      const runtimeConfig = withResolvedYouTubeRedirectUri(config, req);
+      const tokenPayload = await exchangeYouTubeCodeForTokens({ code, config: runtimeConfig });
+      const accessToken = tokenPayload.access_token || '';
+      const refreshToken = tokenPayload.refresh_token || '';
+      const expiresAt = computeFutureIso(tokenPayload.expires_in || 3600);
+      const scope = tokenPayload.scope || runtimeConfig.scopes.join(' ');
+      const tokenType = tokenPayload.token_type || 'Bearer';
+
+      let channelId = '';
+      let channelTitle = '';
+      if (accessToken) {
+        const channelResp = await listYouTubeChannels({
+          config: runtimeConfig,
+          auth: { accessToken, apiKey: '' },
+          params: { mine: 'true', maxResults: 1, fields: 'items(id,snippet(title))' },
+        });
+        const me = channelResp?.data?.items?.[0];
+        channelId = me?.id || '';
+        channelTitle = me?.title || '';
+      }
+
+      const connectionId = buildEntityId('youtube_connection');
+      await pool.query(
+        `INSERT INTO youtube_connections (
+          id, user_id, youtube_channel_id, youtube_channel_title, access_token, refresh_token,
+          scope, token_type, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+          youtube_channel_id = excluded.youtube_channel_id,
+          youtube_channel_title = excluded.youtube_channel_title,
+          access_token = excluded.access_token,
+          refresh_token = CASE WHEN excluded.refresh_token = '' THEN youtube_connections.refresh_token ELSE excluded.refresh_token END,
+          scope = excluded.scope,
+          token_type = excluded.token_type,
+          expires_at = excluded.expires_at,
+          updated_at = excluded.updated_at`,
+        [
+          connectionId,
+          state.user_id,
+          channelId,
+          channelTitle,
+          accessToken,
+          refreshToken,
+          scope,
+          tokenType,
+          expiresAt,
+          nowIso(),
+          nowIso(),
+        ],
+      );
+
+      await pool.query('UPDATE youtube_oauth_states SET consumed_at = ? WHERE id = ?', [nowIso(), state.id]);
+
+      const frontend = runtimeConfig.frontendBaseUrl.replace(/\/$/, '');
+      const destination = new URL(normalizeFrontendPath(state.redirect_path || '/projects'), frontend);
+      destination.searchParams.set('youtube', 'connected');
+      res.writeHead(302, { Location: destination.toString() });
+      res.end();
+      return;
+    }
+
+    if (url.pathname === '/api/youtube/auth/disconnect' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const { config } = await getYouTubeConfigForUser(user.id);
+      const connection = await getYouTubeConnectionByUserId(user.id);
+      if (connection?.refresh_token) {
+        try {
+          await revokeYouTubeToken({ token: connection.refresh_token, config });
+        } catch {
+          // noop
+        }
+      }
+      if (connection?.access_token) {
+        try {
+          await revokeYouTubeToken({ token: connection.access_token, config });
+        } catch {
+          // noop
+        }
+      }
+      await pool.query('DELETE FROM youtube_connections WHERE user_id = ?', [user.id]);
+      return sendJson(req, res, 200, { ok: true });
+    }
+
+    const youtubeResourceMatch = url.pathname.match(/^\/api\/youtube\/(channels|videos|playlists|comment-threads|comments)$/);
+    if (youtubeResourceMatch && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const resource = youtubeResourceMatch[1];
+      const { config } = await getYouTubeConfigForUser(user.id);
+      const auth = await getYouTubeAuthForUser(user.id, config);
+
+      if (!auth.accessToken && !auth.apiKey) {
+        return sendJson(req, res, 400, { error: 'YouTube integration is not configured. Configure API key and/or OAuth first.' });
+      }
+
+      const params = Object.fromEntries(url.searchParams.entries());
+      let response;
+      if (resource === 'channels') response = await listYouTubeChannels({ config, auth, params });
+      if (resource === 'videos') response = await listYouTubeVideos({ config, auth, params });
+      if (resource === 'playlists') response = await listYouTubePlaylists({ config, auth, params });
+      if (resource === 'comment-threads') response = await listYouTubeCommentThreads({ config, auth, params });
+      if (resource === 'comments') response = await listYouTubeComments({ config, auth, params });
+
+      return sendJson(req, res, 200, {
+        data: response?.data || { items: [] },
+        meta: {
+          etag: response?.etag || null,
+          source: auth.accessToken ? 'oauth' : 'api_key',
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/inputs' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      let normalizedInput;
+      try {
+        normalizedInput = normalizeYouTubeIngestionInput(body);
+      } catch (error) {
+        return sendJson(req, res, 400, { error: String(error?.message || 'Invalid ingestion input') });
+      }
+
+      const inputId = buildEntityId('comment_ingestion_input');
+      const createdAt = nowIso();
+      await pool.query(
+        `INSERT INTO comment_ingestion_inputs
+          (id, user_id, project_id, campaign_id, source, name, config_json, linked_run_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          inputId,
+          user.id,
+          projectId,
+          campaignId,
+          'youtube',
+          String(body.name || normalizedInput.video_url || normalizedInput.video_id || normalizedInput.channel_id || 'YouTube input').trim(),
+          JSON.stringify(normalizedInput),
+          null,
+          createdAt,
+          createdAt,
+        ],
+      );
+
+      return sendJson(req, res, 200, {
+        data: {
+          id: inputId,
+          source: 'youtube',
+          name: String(body.name || '').trim() || 'YouTube input',
+          config: normalizedInput,
+          created_at: createdAt,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/inputs' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_ingestion_inputs
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+         ORDER BY created_at DESC LIMIT 100`,
+        [user.id, projectId, campaignId],
+      );
+      const items = rows.map((row) => ({
+        ...row,
+        config: (() => {
+          try { return JSON.parse(row.config_json || '{}'); } catch { return {}; }
+        })(),
+      }));
+      return sendJson(req, res, 200, { data: { items } });
+    }
+
+    if (url.pathname === '/api/comment-base/fragments/enrich' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const fragments = Array.isArray(body.fragments) ? body.fragments : [];
+      const existingFragments = Array.isArray(body.existing_fragments) ? body.existing_fragments : [];
+
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const cleaned = fragments
+        .map((fragment) => ({ ...fragment, excerpt: String(fragment?.excerpt || fragment?.text || '').trim() }))
+        .filter((fragment) => fragment.excerpt && fragment.excerpt.length >= 8);
+
+      const enriched = enrichCommentFragments({
+        fragments: cleaned,
+        existingFragments: existingFragments.slice(0, 5000),
+      });
+
+      return sendJson(req, res, 200, {
+        data: {
+          items: enriched,
+          meta: {
+            coding_budget_target: 30,
+            coding_budget_max: 40,
+            dropped_as_noise: Math.max(0, fragments.length - cleaned.length),
+          },
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/code-selection-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const fragments = Array.isArray(body.fragments) ? body.fragments : [];
+      const existingCodes = Array.isArray(body.existing_codes) ? body.existing_codes : [];
+
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const ranked = rankAndSelectFragmentsForCoding(fragments);
+      const compressed = buildCompressedCodesFromSelectedFragments({
+        selectedFragments: ranked.selected,
+        existingCodes,
+      });
+
+      const totalAnalyzed = ranked.analyzed.length;
+      const totalSelected = ranked.selected.length;
+      const finalCodeCount = compressed.generatedCodes.length;
+      const compressionRatio = totalAnalyzed > 0 ? Number((totalSelected / totalAnalyzed).toFixed(4)) : 0;
+
+      return sendJson(req, res, 200, {
+        data: {
+          selected_fragments: ranked.selected,
+          clusters_internal: compressed.generatedCodes,
+          final_code_proposals: compressed.proposals,
+          metrics: {
+            total_fragments_analyzed: totalAnalyzed,
+            total_fragments_selected: totalSelected,
+            compression_ratio: compressionRatio,
+            final_codes_count: finalCodeCount,
+            code_budget_target: 30,
+            code_budget_max: 40,
+          },
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const proposalId = String(body.proposal_id || '').trim();
+      const action = String(body.action || '').trim();
+      if (!projectId || !campaignId || !proposalId || !action) {
+        return sendJson(req, res, 400, { error: 'project_id, campaign_id, proposal_id and action are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const reviewId = buildEntityId('comment_code_review');
+      const createdAt = nowIso();
+      const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
+      await pool.query(
+        `INSERT INTO comment_code_proposal_reviews
+          (id, user_id, project_id, campaign_id, proposal_id, fragment_id, action, decision_status, decision_type, confidence, justification, suggested_code_slug, suggested_code_name, final_code_slug, final_code_name, metadata_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          reviewId,
+          user.id,
+          projectId,
+          campaignId,
+          proposalId,
+          String(body.fragment_id || '').trim() || null,
+          action,
+          String(body.decision_status || '').trim() || null,
+          String(body.decision_type || '').trim() || null,
+          Number.isFinite(Number(body.confidence)) ? Number(body.confidence) : null,
+          String(body.justification || '').trim() || null,
+          String(body.suggested_code_slug || '').trim() || null,
+          String(body.suggested_code_name || '').trim() || null,
+          String(body.final_code_slug || '').trim() || null,
+          String(body.final_code_name || '').trim() || null,
+          JSON.stringify(metadata),
+          createdAt,
+          createdAt,
+        ],
+      );
+
+      return sendJson(req, res, 200, {
+        data: {
+          id: reviewId,
+          proposal_id: proposalId,
+          action,
+          created_at: createdAt,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      const limit = Math.max(1, Math.min(5000, Number(url.searchParams.get('limit') || 500)));
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_code_proposal_reviews
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [user.id, projectId, campaignId, limit],
+      );
+
+      const items = rows.map((row) => ({
+        ...row,
+        metadata: (() => {
+          try { return JSON.parse(row.metadata_json || '{}'); } catch { return {}; }
+        })(),
+      }));
+
+      const summaryByCode = {};
+      items.forEach((item) => {
+        const slug = String(item.final_code_slug || item.suggested_code_slug || '').trim();
+        if (!slug) return;
+        if (!summaryByCode[slug]) {
+          summaryByCode[slug] = { code_slug: slug, accepted: 0, rejected: 0, reassigned: 0, corrected: 0, fused: 0, total: 0 };
+        }
+        summaryByCode[slug].total += 1;
+        const status = String(item.decision_status || '').trim();
+        if (status === 'aceptado') summaryByCode[slug].accepted += 1;
+        if (status === 'rechazado') summaryByCode[slug].rejected += 1;
+        if (status === 'reasignado') summaryByCode[slug].reassigned += 1;
+        if (status === 'corregido') summaryByCode[slug].corrected += 1;
+        if (status === 'fusionado') summaryByCode[slug].fused += 1;
+      });
+
+      return sendJson(req, res, 200, { data: { items, summaryByCode } });
+    }
+
+    if (url.pathname === '/api/comment-base/ingest' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query(
+        'SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1',
+        [campaignId, user.id],
+      );
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const requestedInputId = String(body.input_id || '').trim();
+      let inputId = requestedInputId;
+      let normalizedInput = null;
+
+      if (requestedInputId) {
+        const [inputRows] = await pool.query(
+          `SELECT * FROM comment_ingestion_inputs
+           WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+          [requestedInputId, user.id, projectId, campaignId],
+        );
+        const savedInput = inputRows[0] || null;
+        if (!savedInput) return sendJson(req, res, 404, { error: 'Input not found' });
+        try {
+          normalizedInput = normalizeYouTubeIngestionInput(JSON.parse(savedInput.config_json || '{}'));
+        } catch (error) {
+          return sendJson(req, res, 400, { error: String(error?.message || 'Invalid saved ingestion input') });
+        }
+      } else {
+        try {
+          normalizedInput = normalizeYouTubeIngestionInput(body);
+        } catch (error) {
+          return sendJson(req, res, 400, { error: String(error?.message || 'Invalid ingestion input') });
+        }
+      }
+
+      if (!inputId) {
+        inputId = buildEntityId('comment_ingestion_input');
+        await pool.query(
+          `INSERT INTO comment_ingestion_inputs
+            (id, user_id, project_id, campaign_id, source, name, config_json, linked_run_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            inputId,
+            user.id,
+            projectId,
+            campaignId,
+            'youtube',
+            String(body.name || normalizedInput.video_url || normalizedInput.video_id || normalizedInput.channel_id || 'YouTube input').trim(),
+            JSON.stringify(normalizedInput),
+            null,
+            nowIso(),
+            nowIso(),
+          ],
+        );
+      }
+
+      const runId = buildEntityId('comment_ingestion_run');
+      const startedAt = nowIso();
+      await pool.query(
+        `INSERT INTO comment_ingestion_runs
+          (id, user_id, project_id, campaign_id, source, source_job, input_id, source_query_json, status, started_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          runId,
+          user.id,
+          projectId,
+          campaignId,
+          'youtube',
+          'youtube_comments_ingestion',
+          inputId,
+          JSON.stringify(normalizedInput),
+          'running',
+          startedAt,
+          startedAt,
+          startedAt,
+        ],
+      );
+
+      try {
+        const { config } = await getYouTubeConfigForUser(user.id);
+        const auth = await getYouTubeAuthForUser(user.id, config);
+        if (!auth.accessToken && !auth.apiKey) {
+          throw new Error('YouTube integration is not configured. Configure API key and/or OAuth first.');
+        }
+
+        const resolvedVideos = await resolveVideosFromInput({ normalizedInput, config, auth });
+        const { rows, stats } = await ingestCommentsFromResolvedVideos({ resolvedVideos, normalizedInput, config, auth });
+        if (!rows.length) {
+          throw new Error(`No se pudieron importar comentarios. Videos resueltos: ${stats.videos_resolved}, procesados: ${stats.videos_processed}, omitidos: ${stats.videos_skipped}.`);
+        }
+        const slicedRows = rows;
+
+        const audienceId = String(body.audience_id || '').trim() || null;
+
+        const hypothesisId = String(body.hypothesis_id || '').trim() || null;
+        let importedCount = 0;
+        for (const row of slicedRows) {
+          const id = buildEntityId('comment_record');
+          await pool.query(
+            `INSERT INTO comment_dataset_comments
+              (id, user_id, project_id, campaign_id, audience_id, hypothesis_id, source, source_comment_id, parent_comment_id,
+               video_id, channel_id, author_name, author_channel_id, text, published_at, like_count, reply_count,
+               source_job, source_run_id, source_input_id, source_query_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(user_id, project_id, campaign_id, source, source_comment_id) DO UPDATE SET
+               parent_comment_id = excluded.parent_comment_id,
+               video_id = excluded.video_id,
+               channel_id = excluded.channel_id,
+               author_name = excluded.author_name,
+               author_channel_id = excluded.author_channel_id,
+               text = excluded.text,
+               published_at = excluded.published_at,
+               like_count = excluded.like_count,
+               reply_count = excluded.reply_count,
+               source_job = excluded.source_job,
+               source_run_id = excluded.source_run_id,
+               source_input_id = excluded.source_input_id,
+               source_query_json = excluded.source_query_json,
+               updated_at = excluded.updated_at`,
+            [
+              id,
+              user.id,
+              projectId,
+              campaignId,
+              audienceId,
+              hypothesisId,
+              row.source,
+              row.source_comment_id,
+              row.parent_comment_id,
+              row.video_id,
+              row.channel_id,
+              row.author_name,
+              row.author_channel_id,
+              row.text,
+              row.published_at,
+              row.like_count,
+              row.reply_count,
+              'youtube_comments_ingestion',
+              runId,
+              inputId,
+              JSON.stringify(normalizedInput),
+              nowIso(),
+              nowIso(),
+            ],
+          );
+          importedCount += 1;
+        }
+
+        await pool.query(
+          `UPDATE comment_ingestion_runs
+           SET status = ?, comments_count = ?, imported_count = ?, completed_at = ?, updated_at = ?
+           WHERE id = ?`,
+          [
+            'succeeded',
+            slicedRows.length,
+            importedCount,
+            nowIso(),
+            nowIso(),
+            runId,
+          ],
+        );
+
+        await pool.query(
+          `UPDATE comment_ingestion_runs
+           SET error_message = ?, updated_at = ?
+           WHERE id = ?`,
+          [JSON.stringify({
+            input_type: normalizedInput.input_type,
+            videos_resolved: stats.videos_resolved,
+            videos_processed: stats.videos_processed,
+            videos_skipped: stats.videos_skipped,
+          }), nowIso(), runId],
+        );
+
+        await pool.query(
+          `UPDATE comment_ingestion_inputs SET linked_run_id = ?, updated_at = ? WHERE id = ?`,
+          [runId, nowIso(), inputId],
+        );
+
+        return sendJson(req, res, 200, {
+          data: {
+            run_id: runId,
+            status: 'succeeded',
+            comments_count: slicedRows.length,
+            imported_count: importedCount,
+          },
+        });
+      } catch (error) {
+        await pool.query(
+          `UPDATE comment_ingestion_runs
+           SET status = ?, error_message = ?, completed_at = ?, updated_at = ?
+           WHERE id = ?`,
+          ['failed', String(error?.message || 'Ingestion failed'), nowIso(), nowIso(), runId],
+        );
+        await pool.query(
+          `UPDATE comment_ingestion_inputs SET linked_run_id = ?, updated_at = ? WHERE id = ?`,
+          [runId, nowIso(), inputId],
+        );
+        return sendJson(req, res, 500, { error: String(error?.message || 'Ingestion failed') });
+      }
+    }
+
+    if (url.pathname === '/api/comment-base/table' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 100)));
+      const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
+      const q = String(url.searchParams.get('q') || '').trim();
+
+      const where = ['user_id = ?', 'project_id = ?', 'campaign_id = ?'];
+      const values = [user.id, projectId, campaignId];
+      if (q) {
+        where.push('(text LIKE ? OR author_name LIKE ? OR source_comment_id LIKE ?)');
+        values.push(`%${q}%`, `%${q}%`, `%${q}%`);
+      }
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_dataset_comments WHERE ${where.join(' AND ')}
+         ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC LIMIT ? OFFSET ?`,
+        [...values, limit, offset],
+      );
+      const [countRows] = await pool.query(
+        `SELECT COUNT(*) AS total FROM comment_dataset_comments WHERE ${where.join(' AND ')}`,
+        values,
+      );
+      return sendJson(req, res, 200, {
+        data: {
+          items: rows,
+          total: Number(countRows?.[0]?.total || 0),
+          limit,
+          offset,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/runs' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [rows] = await pool.query(
+        `SELECT r.*, i.name AS input_name, i.config_json AS input_config_json
+         FROM comment_ingestion_runs r
+         LEFT JOIN comment_ingestion_inputs i ON i.id = r.input_id
+         WHERE r.user_id = ? AND r.project_id = ? AND r.campaign_id = ?
+         ORDER BY r.created_at DESC LIMIT 30`,
+        [user.id, projectId, campaignId],
+      );
+      const items = rows.map((row) => ({
+        ...row,
+        input_config: (() => {
+          try { return JSON.parse(row.input_config_json || '{}'); } catch { return {}; }
+        })(),
+      }));
+      return sendJson(req, res, 200, { data: { items } });
+    }
+
+    const deleteRunMatch = url.pathname.match(/^\/api\/comment-base\/runs\/([^/]+)$/);
+    if (deleteRunMatch && req.method === 'DELETE') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const runId = String(deleteRunMatch[1] || '').trim();
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!runId || !projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'run id, projectId and campaignId are required' });
+      }
+
+      const [runRows] = await pool.query(
+        `SELECT * FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+        [runId, user.id, projectId, campaignId],
+      );
+      const run = runRows[0] || null;
+      if (!run) return sendJson(req, res, 404, { error: 'Run not found' });
+
+      await pool.query('DELETE FROM comment_dataset_comments WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND source_run_id = ?', [user.id, projectId, campaignId, runId]);
+      if (run.input_id) {
+        await pool.query('DELETE FROM comment_ingestion_inputs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ?', [run.input_id, user.id, projectId, campaignId]);
+      }
+      await pool.query('DELETE FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ?', [runId, user.id, projectId, campaignId]);
+
+      return sendJson(req, res, 200, { data: { deleted_run_id: runId, deleted_input_id: run.input_id || null } });
+    }
+
     if ((url.pathname === '/api/cloud/tree' || url.pathname === '/api/cloud/list') && req.method === 'GET') {
       const user = authFromRequest(req);
       if (!user) {
@@ -4391,18 +7032,60 @@ const server = http.createServer(async (req, res) => {
       const campaign = await fetchOwnedCampaignById(campaignId, user.id);
       if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
       if (req.method === 'GET') {
-        const [rows] = await pool.query('SELECT ih.*, a.name AS audience_name FROM interview_hypotheses ih LEFT JOIN audiences a ON a.id = ih.audience_id WHERE ih.user_id = ? AND ih.project_id = ? AND ih.campaign_id = ? ORDER BY ih.created_at DESC', [user.id, projectId, campaignId]);
-        return sendJson(req, res, 200, { data: rows });
+        const [rows] = await pool.query(
+          `SELECT ih.*, a.name AS audience_name, c.name AS related_client_name, f.title AS interview_form_title
+           FROM interview_hypotheses ih
+           LEFT JOIN audiences a ON a.id = ih.audience_id
+           LEFT JOIN interview_clients c ON c.id = ih.related_client_id
+           LEFT JOIN interview_forms f ON f.id = ih.interview_form_id
+           WHERE ih.user_id = ? AND ih.project_id = ? AND ih.campaign_id = ?
+           ORDER BY ih.created_at DESC`,
+          [user.id, projectId, campaignId],
+        );
+        return sendJson(req, res, 200, { data: rows.map(parseInterviewHypothesisRow) });
       }
       const body = await readBody(req);
       const now = nowIso();
+      const validationMetricConfig = normalizeInterviewHypothesisValidationConfig(body.validation_metric_config);
       await pool.query(
-        `INSERT INTO interview_hypotheses (id, project_id, campaign_id, audience_id, user_id, type, title, description, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [buildEntityId('interview_hypothesis'), projectId, campaignId, body.audience_id || null, user.id, body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', now, now],
+        `INSERT INTO interview_hypotheses (
+          id, project_id, campaign_id, audience_id, segment, related_client_id, interview_form_id,
+          user_id, type, title, description, status, last_evaluated_at,
+          min_interviews, validation_metric_config,
+          evaluated_interviews_count, problem_score_avg, solution_score_avg, validation_result,
+          experiment_notes, observations, next_actions,
+          created_at, updated_at
+        )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          buildEntityId('interview_hypothesis'),
+          projectId,
+          campaignId,
+          body.audience_id || null,
+          body.segment || null,
+          body.related_client_id || null,
+          body.interview_form_id || null,
+          user.id,
+          body.type || 'problema',
+          body.title || 'Hipótesis entrevistas',
+          body.description || null,
+          body.status || 'exploracion',
+          body.last_evaluated_at || null,
+          body.min_interviews ?? null,
+          validationMetricConfig ? JSON.stringify(validationMetricConfig) : null,
+          body.evaluated_interviews_count ?? null,
+          body.problem_score_avg ?? null,
+          body.solution_score_avg ?? null,
+          body.validation_result || 'no evaluada',
+          body.experiment_notes || null,
+          body.observations || null,
+          body.next_actions || null,
+          now,
+          now,
+        ],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
-      return sendJson(req, res, 200, { data: rows[0] || null });
+      return sendJson(req, res, 200, { data: parseInterviewHypothesisRow(rows[0] || null) });
     }
 
     const interviewHypothesisMatch = url.pathname.match(/^\/api\/interview-hypotheses\/([^/]+)$/);
@@ -4415,12 +7098,195 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 200, { ok: true });
       }
       const body = await readBody(req);
+      const validationMetricConfig = normalizeInterviewHypothesisValidationConfig(body.validation_metric_config);
       await pool.query(
-        'UPDATE interview_hypotheses SET type = ?, title = ?, description = ?, status = ?, audience_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
-        [body.type || 'exploratoria', body.title || 'Hipótesis entrevistas', body.description || null, body.status || 'active', body.audience_id || null, nowIso(), id, user.id],
+        `UPDATE interview_hypotheses
+         SET type = ?, title = ?, description = ?, status = ?, audience_id = ?,
+             segment = ?, related_client_id = ?, interview_form_id = ?, last_evaluated_at = ?,
+             min_interviews = ?, validation_metric_config = ?,
+             evaluated_interviews_count = ?, problem_score_avg = ?, solution_score_avg = ?, validation_result = ?,
+             experiment_notes = ?, observations = ?, next_actions = ?,
+             updated_at = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          body.type || 'problema',
+          body.title || 'Hipótesis entrevistas',
+          body.description || null,
+          body.status || 'exploracion',
+          body.audience_id || null,
+          body.segment || null,
+          body.related_client_id || null,
+          body.interview_form_id || null,
+          body.last_evaluated_at || null,
+          body.min_interviews ?? null,
+          validationMetricConfig ? JSON.stringify(validationMetricConfig) : null,
+          body.evaluated_interviews_count ?? null,
+          body.problem_score_avg ?? null,
+          body.solution_score_avg ?? null,
+          body.validation_result || 'no evaluada',
+          body.experiment_notes || null,
+          body.observations || null,
+          body.next_actions || null,
+          nowIso(),
+          id,
+          user.id,
+        ],
       );
       const [rows] = await pool.query('SELECT * FROM interview_hypotheses WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
-      return sendJson(req, res, 200, { data: rows[0] || null });
+      return sendJson(req, res, 200, { data: parseInterviewHypothesisRow(rows[0] || null) });
+    }
+
+    const interviewHypothesisEvaluateMatch = url.pathname.match(/^\/api\/interview-hypotheses\/([^/]+)\/evaluate$/);
+    if (interviewHypothesisEvaluateMatch && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const id = interviewHypothesisEvaluateMatch[1];
+
+      const [hypRows] = await pool.query('SELECT * FROM interview_hypotheses WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
+      const hypothesis = hypRows[0] || null;
+      if (!hypothesis) return sendJson(req, res, 404, { error: 'Hypothesis not found' });
+
+      const [linkedRows] = await pool.query(
+        `SELECT * FROM interview_sessions
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND interview_hypothesis_id = ?`,
+        [user.id, hypothesis.project_id, hypothesis.campaign_id, hypothesis.id],
+      );
+
+      let interviews = linkedRows;
+      if (!interviews.length) {
+        const clauses = ['user_id = ?', 'project_id = ?', 'campaign_id = ?'];
+        const params = [user.id, hypothesis.project_id, hypothesis.campaign_id];
+        if (hypothesis.audience_id) {
+          clauses.push('audience_id = ?');
+          params.push(hypothesis.audience_id);
+        }
+        if (hypothesis.related_client_id) {
+          clauses.push('client_id = ?');
+          params.push(hypothesis.related_client_id);
+        }
+        if (hypothesis.interview_form_id) {
+          clauses.push('form_id = ?');
+          params.push(hypothesis.interview_form_id);
+        }
+        const [contextRows] = await pool.query(`SELECT * FROM interview_sessions WHERE ${clauses.join(' AND ')}`, params);
+        interviews = contextRows;
+      }
+
+      const evaluations = interviews.map((row) => safeParseJsonField(row.responses_json, {})?.__lean_evaluation || {});
+
+      const metric = {
+        problem_score_avg: averageScores(evaluations.map((item) => averageScores(HYPOTHESIS_PROBLEM_KEYS.map((key) => item[key])))),
+        solution_score_avg: averageScores(evaluations.map((item) => averageScores(HYPOTHESIS_SOLUTION_KEYS.map((key) => item[key])))),
+        problem_intensity_avg: averageScores(evaluations.map((item) => item.problem_intensity)),
+        problem_frequency_avg: averageScores(evaluations.map((item) => item.problem_frequency)),
+        problem_urgency_avg: averageScores(evaluations.map((item) => item.perceived_urgency)),
+        problem_attempts_avg: averageScores(evaluations.map((item) => item.solution_attempts)),
+        problem_spend_avg: averageScores(evaluations.map((item) => item.previous_spend)),
+        problem_clarity_avg: averageScores(evaluations.map((item) => item.problem_clarity)),
+        segment_fit_avg: averageScores(evaluations.map((item) => item.segment_fit)),
+        emotional_language_avg: averageScores(evaluations.map((item) => item.emotional_language)),
+        solution_interest_avg: averageScores(evaluations.map((item) => item.solution_interest)),
+        solution_clarity_avg: averageScores(evaluations.map((item) => item.solution_clarity)),
+        solution_value_avg: averageScores(evaluations.map((item) => item.perceived_value)),
+        solution_recurrence_avg: averageScores(evaluations.map((item) => item.usage_probability)),
+        solution_payment_avg: averageScores(evaluations.map((item) => item.willingness_to_pay)),
+      };
+
+      const validationMetricConfig = normalizeInterviewHypothesisValidationConfig(hypothesis.validation_metric_config);
+      const selectedMetricValues = validationMetricConfig
+        ? validationMetricConfig.selected_metrics
+          .map((metricKey) => Number(metric[metricKey]))
+          .filter((value) => Number.isFinite(value))
+        : [];
+      const selectedMetricsAverage = selectedMetricValues.length
+        ? Number((selectedMetricValues.reduce((acc, value) => acc + value, 0) / selectedMetricValues.length).toFixed(2))
+        : null;
+
+      let passedCriteria = 0;
+      let failedCriteria = 0;
+      if (validationMetricConfig) {
+        const passed = evaluateComparison(
+          selectedMetricsAverage,
+          validationMetricConfig.threshold_value,
+          validationMetricConfig.comparison_operator,
+        );
+        passedCriteria = passed ? 1 : 0;
+        failedCriteria = passed ? 0 : 1;
+      }
+
+      const minInterviews = Number(hypothesis.min_interviews);
+      const minInterviewsTarget = Number.isFinite(minInterviews) && minInterviews > 0 ? minInterviews : 1;
+      let validationResult = 'no evaluada';
+      if (interviews.length >= minInterviewsTarget) {
+        if (validationMetricConfig) {
+          const passed = evaluateComparison(
+            selectedMetricsAverage,
+            validationMetricConfig.threshold_value,
+            validationMetricConfig.comparison_operator,
+          );
+          validationResult = passed ? validationMetricConfig.outcome_if_true : validationMetricConfig.outcome_if_false;
+        } else {
+          validationResult = 'señal débil';
+        }
+      }
+
+      const validationSummary = buildHypothesisValidationSummary({
+        result: validationResult,
+        interviewsCount: interviews.length,
+        passCount: passedCriteria,
+        failCount: failedCriteria,
+        minInterviews: minInterviewsTarget,
+        problemScoreAvg: metric.problem_score_avg,
+        solutionScoreAvg: metric.solution_score_avg,
+      });
+
+      await pool.query(
+        `UPDATE interview_hypotheses
+         SET evaluated_interviews_count = ?, problem_score_avg = ?, solution_score_avg = ?,
+             problem_intensity_avg = ?, problem_frequency_avg = ?, problem_urgency_avg = ?, problem_attempts_avg = ?,
+             problem_spend_avg = ?, problem_clarity_avg = ?, segment_fit_avg = ?, emotional_language_avg = ?,
+            solution_interest_avg = ?, solution_clarity_avg = ?, solution_value_avg = ?, solution_recurrence_avg = ?, solution_payment_avg = ?,
+            criteria_passed_count = ?, criteria_failed_count = ?, validation_summary = ?, validation_result = ?,
+            last_evaluated_at = ?, updated_at = ?
+         WHERE id = ? AND user_id = ?`,
+        [
+          interviews.length,
+          metric.problem_score_avg,
+          metric.solution_score_avg,
+          metric.problem_intensity_avg,
+          metric.problem_frequency_avg,
+          metric.problem_urgency_avg,
+          metric.problem_attempts_avg,
+          metric.problem_spend_avg,
+          metric.problem_clarity_avg,
+          metric.segment_fit_avg,
+          metric.emotional_language_avg,
+          metric.solution_interest_avg,
+          metric.solution_clarity_avg,
+          metric.solution_value_avg,
+          metric.solution_recurrence_avg,
+          metric.solution_payment_avg,
+          passedCriteria,
+          failedCriteria,
+          validationSummary,
+          validationResult,
+          nowIso(),
+          nowIso(),
+          id,
+          user.id,
+        ],
+      );
+
+      const [rows] = await pool.query(
+        `SELECT ih.*, a.name AS audience_name, c.name AS related_client_name, f.title AS interview_form_title
+         FROM interview_hypotheses ih
+         LEFT JOIN audiences a ON a.id = ih.audience_id
+         LEFT JOIN interview_clients c ON c.id = ih.related_client_id
+         LEFT JOIN interview_forms f ON f.id = ih.interview_form_id
+         WHERE ih.id = ? AND ih.user_id = ? LIMIT 1`,
+        [id, user.id],
+      );
+      return sendJson(req, res, 200, { data: parseInterviewHypothesisRow(rows[0] || null) });
     }
 
     const campaignInterviewsFormsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/campaigns\/([^/]+)\/interviews\/forms$/);

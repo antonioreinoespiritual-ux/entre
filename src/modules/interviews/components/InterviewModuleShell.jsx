@@ -11,6 +11,7 @@ export const InterviewModuleShell = ({ projectId, campaignId, activeTab, onTabCh
     ['sessions', 'Entrevistas'],
     ['cloud', 'Cloud research'],
     ['semantic', 'Análisis semántico'],
+    ['quantitative', 'Análisis cuantitativo'],
   ];
 
   return (
