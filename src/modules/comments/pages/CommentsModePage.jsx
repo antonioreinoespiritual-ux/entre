@@ -74,6 +74,7 @@ const CommentsModePage = () => {
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [readerSelectionText, setReaderSelectionText] = useState('');
   const [selectedReaderCommentId, setSelectedReaderCommentId] = useState('');
+  const [fragmentTitleDrafts, setFragmentTitleDrafts] = useState({});
 
   const [store, setStore] = useState(() => {
     try {
@@ -104,6 +105,19 @@ const CommentsModePage = () => {
 
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
 
+  useEffect(() => {
+    setFragmentTitleDrafts((prev) => {
+      const next = { ...prev };
+      fragments.forEach((fragment) => {
+        const fragmentId = String(fragment.id);
+        if (!(fragmentId in next)) {
+          next[fragmentId] = fragment.title || '';
+        }
+      });
+      return next;
+    });
+  }, [fragments]);
+
   const addCode = () => {
     const name = codeDraft.name.trim();
     const slug = slugify(codeDraft.slug || name);
@@ -125,11 +139,52 @@ const CommentsModePage = () => {
     persist({ ...store, fragments: nextFragments });
   };
 
+  const updateFragment = (fragmentId, patch) => {
+    const nextFragments = fragments.map((fragment) => {
+      if (String(fragment.id) !== String(fragmentId)) return fragment;
+      return { ...fragment, ...patch };
+    });
+    persist({ ...store, fragments: nextFragments });
+  };
+
+  const saveFragmentTitle = (fragmentId) => {
+    const draft = String(fragmentTitleDrafts[String(fragmentId)] || '').trim();
+    updateFragment(fragmentId, { title: draft });
+  };
+
+  const evolveFragmentToCode = (fragment) => {
+    const baseName = String(fragment.title || fragment.excerpt || '').trim();
+    if (!baseName) return;
+    const baseSlug = slugify(baseName).slice(0, 50) || `code-${Date.now()}`;
+    let candidate = baseSlug;
+    let suffix = 1;
+    while (codes.some((code) => code.slug === candidate)) {
+      suffix += 1;
+      candidate = `${baseSlug}-${suffix}`;
+    }
+
+    const nextCode = {
+      id: `code_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      name: baseName,
+      slug: candidate,
+      parent_slug: null,
+    };
+
+    const mergedCodeSlugs = Array.from(new Set([...(fragment.code_slugs || []), candidate]));
+
+    persist({
+      ...store,
+      codes: [nextCode, ...codes],
+      fragments: fragments.map((item) => (String(item.id) === String(fragment.id) ? { ...item, code_slugs: mergedCodeSlugs } : item)),
+    });
+  };
+
   const createCommentFragment = ({ text, comment }) => {
     const excerpt = String(text || '').trim();
     if (!excerpt || !comment) return;
     const nextFragment = {
       id: `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      title: '',
       excerpt,
       comment_id: comment.id,
       source_comment_id: comment.source_comment_id,
@@ -583,16 +638,60 @@ const CommentsModePage = () => {
 
           {tab === 'fragments' && (
             <div className="rounded-xl border bg-white p-4 space-y-3">
-              <h2 className="font-semibold text-slate-900">Fragmentos</h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="font-semibold text-slate-900">Fragmentos</h2>
+                <p className="text-xs text-slate-500">Edita título, vincula código o evoluciona a código.</p>
+              </div>
               {fragments.length === 0 ? <p className="text-sm text-slate-500">No hay fragmentos todavía.</p> : fragments.map((fragment) => (
-                <div key={fragment.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div key={fragment.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
+                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px_auto_auto] md:items-center">
+                    <input
+                      className="rounded-lg border bg-white px-3 py-2 text-sm"
+                      placeholder="Título del fragmento"
+                      value={fragmentTitleDrafts[String(fragment.id)] ?? fragment.title ?? ''}
+                      onChange={(e) => setFragmentTitleDrafts((prev) => ({ ...prev, [String(fragment.id)]: e.target.value }))}
+                      onBlur={() => saveFragmentTitle(fragment.id)}
+                    />
+                    <select
+                      className="rounded-lg border bg-white px-3 py-2 text-sm"
+                      value=""
+                      onChange={(e) => {
+                        const slug = String(e.target.value || '').trim();
+                        if (!slug) return;
+                        const current = Array.isArray(fragment.code_slugs) ? fragment.code_slugs : [];
+                        if (!current.includes(slug)) {
+                          updateFragment(fragment.id, { code_slugs: [...current, slug] });
+                        }
+                        e.target.value = '';
+                      }}
+                    >
+                      <option value="">Vincular a código…</option>
+                      {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+                    </select>
+                    <Button className="bg-white border text-slate-700" onClick={() => saveFragmentTitle(fragment.id)}>Guardar</Button>
+                    <Button className="bg-indigo-600 text-white" onClick={() => evolveFragmentToCode(fragment)}>Evolucionar a código</Button>
+                  </div>
+
                   <p className="text-sm text-slate-800">{fragment.excerpt}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {codes.map((code) => (
-                      <button key={code.slug} className={`rounded-full border px-2.5 py-1 text-xs ${fragment.code_slugs.includes(code.slug) ? 'border-indigo-300 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'}`} onClick={() => toggleFragmentCode(fragment.id, code.slug)}>
-                        {code.name}
-                      </button>
-                    ))}
+
+                  <div className="flex flex-wrap gap-2">
+                    {(fragment.code_slugs || []).length === 0 ? <span className="text-xs text-slate-500">Sin códigos vinculados.</span> : null}
+                    {(fragment.code_slugs || []).map((slug) => {
+                      const linkedCode = codes.find((code) => code.slug === slug);
+                      return (
+                        <span key={`${fragment.id}_${slug}`} className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs text-indigo-700">
+                          {linkedCode?.name || slug}
+                          <button
+                            type="button"
+                            className="rounded-full px-1 text-indigo-600 hover:bg-indigo-100"
+                            title="Desvincular código"
+                            onClick={() => updateFragment(fragment.id, { code_slugs: (fragment.code_slugs || []).filter((item) => item !== slug) })}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
