@@ -2419,8 +2419,22 @@ function resolveAiBaseUrl(integration) {
 }
 
 async function getProjectScopeSummary(userId, projectId) {
-  const queryCount = async (tableName) => {
-    const [rows] = await pool.query(`SELECT COUNT(*) AS total FROM ${normalizeIdentifier(tableName)} WHERE user_id = ? AND project_id = ?`, [userId, projectId]);
+  const countByProjectColumn = async (tableName) => {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS total FROM ${normalizeIdentifier(tableName)} WHERE user_id = ? AND project_id = ?`,
+      [userId, projectId],
+    );
+    return Number(rows?.[0]?.total || 0);
+  };
+
+  const countByCampaignScope = async (tableName) => {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS total
+       FROM ${normalizeIdentifier(tableName)} t
+       JOIN campaigns c ON c.id = t.campaign_id
+       WHERE t.user_id = ? AND c.project_id = ?`,
+      [userId, projectId],
+    );
     return Number(rows?.[0]?.total || 0);
   };
 
@@ -2444,15 +2458,15 @@ async function getProjectScopeSummary(userId, projectId) {
 
   return {
     counts: {
-      campaigns: await queryCount('campaigns'),
-      audiences: await queryCount('audiences'),
-      videos: await queryCount('videos'),
-      hypotheses: await queryCount('hypotheses'),
-      interview_hypotheses: await queryCount('interview_hypotheses'),
-      interviews: await queryCount('interview_sessions'),
-      interview_fragments: await queryCount('interview_semantic_fragments'),
-      comment_runs: await queryCount('comment_ingestion_runs'),
-      comment_records: await queryCount('comment_dataset_comments'),
+      campaigns: await countByProjectColumn('campaigns'),
+      audiences: await countByCampaignScope('audiences'),
+      videos: await countByProjectColumn('videos'),
+      hypotheses: await countByCampaignScope('hypotheses'),
+      interview_hypotheses: await countByProjectColumn('interview_hypotheses'),
+      interviews: await countByProjectColumn('interview_sessions'),
+      interview_fragments: await countByProjectColumn('interview_semantic_fragments'),
+      comment_runs: await countByProjectColumn('comment_ingestion_runs'),
+      comment_records: await countByProjectColumn('comment_dataset_comments'),
     },
     top_comments: topCommentRows.map((row) => ({
       author_name: row.author_name || 'Sin autor',
