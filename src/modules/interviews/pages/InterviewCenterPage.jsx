@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 import { FormBuilder, createEmptyFormDraft } from '@/modules/interviews/components/FormBuilder';
 import { InterviewRunner } from '@/modules/interviews/components/InterviewRunner';
+import { QuantitativeAnalysisLab } from '@/modules/interviews/components/QuantitativeAnalysisLab';
 import { SemanticAnalysisLab } from '@/modules/interviews/components/SemanticAnalysisLab';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 import { EmptyState, InterviewModuleShell, Modal } from '@/modules/interviews/components/InterviewModuleShell';
@@ -73,8 +74,78 @@ const getClientScoreTone = (score, type = 'problem') => {
   return 'border-rose-200 bg-rose-50 text-rose-700';
 };
 
+const validationToneByResult = {
+  'no evaluada': 'border-slate-200 bg-slate-50 text-slate-600',
+  'señal débil': 'border-amber-200 bg-amber-50 text-amber-700',
+  'señal moderada': 'border-indigo-200 bg-indigo-50 text-indigo-700',
+  'señal fuerte': 'border-sky-200 bg-sky-50 text-sky-700',
+  validada: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  refutada: 'border-rose-200 bg-rose-50 text-rose-700',
+};
+
+const hypothesisMetricOptions = [
+  { value: 'problem_score_avg', label: 'Score problema' },
+  { value: 'solution_score_avg', label: 'Score solución' },
+  { value: 'problem_intensity_avg', label: 'Intensidad problema' },
+  { value: 'problem_frequency_avg', label: 'Frecuencia problema' },
+  { value: 'problem_urgency_avg', label: 'Urgencia percibida' },
+  { value: 'problem_attempts_avg', label: 'Intentos de solución' },
+  { value: 'problem_spend_avg', label: 'Gasto previo' },
+  { value: 'problem_clarity_avg', label: 'Claridad del problema' },
+  { value: 'segment_fit_avg', label: 'Encaje con el segmento' },
+  { value: 'emotional_language_avg', label: 'Lenguaje emocional' },
+  { value: 'solution_interest_avg', label: 'Interés en la solución' },
+  { value: 'solution_clarity_avg', label: 'Claridad de la solución' },
+  { value: 'solution_value_avg', label: 'Valor percibido' },
+  { value: 'solution_recurrence_avg', label: 'Uso recurrente' },
+  { value: 'solution_payment_avg', label: 'Disposición a pagar' },
+];
+const hypothesisMetricLabelByValue = Object.fromEntries(hypothesisMetricOptions.map((option) => [option.value, option.label]));
+const defaultValidationMetricConfig = {
+  selected_metrics: ['problem_score_avg'],
+  threshold_value: '4',
+  comparison_operator: '>=',
+  outcome_if_true: 'validada',
+  outcome_if_false: 'refutada',
+  evaluation_type: 'average_selected_metrics',
+};
+
+const evaluateMetricComparison = (actual, threshold, operator) => {
+  if (!Number.isFinite(actual) || !Number.isFinite(threshold)) return false;
+  if (operator === '>=') return actual >= threshold;
+  if (operator === '>') return actual > threshold;
+  if (operator === '<=') return actual <= threshold;
+  if (operator === '<') return actual < threshold;
+  return false;
+};
+
 const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
-const blankHypothesis = { title: '', description: '', type: 'exploratoria', status: 'active', audience_id: '' };
+const blankHypothesis = {
+  title: '',
+  description: '',
+  type: 'problema',
+  status: 'exploracion',
+  audience_id: '',
+  segment: '',
+  related_client_id: '',
+  interview_form_id: '',
+  min_interviews: '',
+  validation_metric_config: { ...defaultValidationMetricConfig },
+  validation_summary: '',
+  validation_result: 'no evaluada',
+  experiment_notes: '',
+  observations: '',
+  next_actions: '',
+};
+
+const createBlankHypothesisDraft = () => ({
+  ...blankHypothesis,
+  validation_metric_config: {
+    ...defaultValidationMetricConfig,
+    selected_metrics: [...defaultValidationMetricConfig.selected_metrics],
+  },
+});
+
 const defaultFragmentEvolutionCodeOptions = [
   { slug: 'problema_intenso', label: 'Problema intenso' },
   { slug: 'problema_frecuente', label: 'Problema frecuente' },
@@ -97,7 +168,10 @@ const InterviewCenterPage = () => {
   const [clientModalOpen, setClientModalOpen] = useState(false);
   const [runModalOpen, setRunModalOpen] = useState(false);
   const [clientDraft, setClientDraft] = useState(blankClient);
-  const [hypDraft, setHypDraft] = useState(blankHypothesis);
+  const [hypDraft, setHypDraft] = useState(createBlankHypothesisDraft());
+  const [hypothesisEditModalOpen, setHypothesisEditModalOpen] = useState(false);
+  const [hypothesisEditDraft, setHypothesisEditDraft] = useState(createBlankHypothesisDraft());
+  const [activeHypothesisId, setActiveHypothesisId] = useState('');
   const [saving, setSaving] = useState(false);
   const [sessionFilter, setSessionFilter] = useState({ audience_id: '', client_id: '', form_id: '', from: '', to: '' });
   const [cloudState, setCloudState] = useState({ loading: false, error: '', rootId: '', parentId: '', breadcrumbs: [], items: [], overview: null });
@@ -240,6 +314,72 @@ const InterviewCenterPage = () => {
     await center.reload();
     return created;
   };
+
+  const buildHypothesisPayload = useCallback((draft = {}) => {
+    const payload = { ...draft };
+    const minInterviews = Number(payload.min_interviews);
+    payload.min_interviews = Number.isFinite(minInterviews) && minInterviews > 0 ? minInterviews : null;
+
+    const currentConfig = payload.validation_metric_config || defaultValidationMetricConfig;
+    const selectedMetrics = Array.isArray(currentConfig.selected_metrics)
+      ? [...new Set(currentConfig.selected_metrics.map((metric) => String(metric || '').trim()).filter(Boolean))]
+      : [];
+    const thresholdValue = Number(currentConfig.threshold_value);
+
+    payload.validation_metric_config = {
+      selected_metrics: selectedMetrics,
+      threshold_value: Number.isFinite(thresholdValue) ? thresholdValue : null,
+      comparison_operator: ['>=', '>', '<=', '<'].includes(currentConfig.comparison_operator) ? currentConfig.comparison_operator : '>=',
+      outcome_if_true: String(currentConfig.outcome_if_true || 'validada').trim() || 'validada',
+      outcome_if_false: String(currentConfig.outcome_if_false || 'refutada').trim() || 'refutada',
+      evaluation_type: 'average_selected_metrics',
+    };
+
+    ['audience_id', 'related_client_id', 'interview_form_id'].forEach((key) => {
+      if (!String(payload[key] || '').trim()) payload[key] = null;
+    });
+
+    return payload;
+  }, []);
+
+  const normalizeHypothesisForDraft = useCallback((hypothesis = {}) => {
+    const config = hypothesis.validation_metric_config || {};
+    return {
+      ...blankHypothesis,
+      ...hypothesis,
+      min_interviews: hypothesis.min_interviews ?? '',
+      validation_metric_config: {
+        ...defaultValidationMetricConfig,
+        ...config,
+        selected_metrics: Array.isArray(config.selected_metrics) ? config.selected_metrics : defaultValidationMetricConfig.selected_metrics,
+        threshold_value: config.threshold_value ?? defaultValidationMetricConfig.threshold_value,
+      },
+    };
+  }, []);
+
+  const openEditHypothesis = useCallback((hypothesis) => {
+    if (!hypothesis) return;
+    setActiveHypothesisId(String(hypothesis.id || ''));
+    setHypothesisEditDraft(normalizeHypothesisForDraft(hypothesis));
+    setHypothesisEditModalOpen(true);
+  }, [normalizeHypothesisForDraft]);
+
+  const getHypothesisRuleStatus = useCallback((hypothesis) => {
+    const config = hypothesis?.validation_metric_config;
+    const selectedMetrics = Array.isArray(config?.selected_metrics)
+      ? config.selected_metrics.map((metric) => String(metric || '').trim()).filter(Boolean)
+      : [];
+    const threshold = Number(config?.threshold_value);
+    if (!selectedMetrics.length || !Number.isFinite(threshold)) {
+      return { configured: false, comparisonValue: null, threshold: null, passed: false, selectedMetrics: [] };
+    }
+    const values = selectedMetrics
+      .map((metricKey) => Number(hypothesis?.[metricKey]))
+      .filter((value) => Number.isFinite(value));
+    const comparisonValue = values.length ? Number((values.reduce((acc, value) => acc + value, 0) / values.length).toFixed(2)) : null;
+    const passed = evaluateMetricComparison(comparisonValue, threshold, config.comparison_operator || '>=');
+    return { configured: true, comparisonValue, threshold, passed, selectedMetrics };
+  }, []);
 
   const openClientEditor = (client, closeProfile = false) => {
     setClientDraft({
@@ -1260,20 +1400,196 @@ const InterviewCenterPage = () => {
 
         {!center.loading && !center.error && tab === 'hypotheses' && (
           <div className="space-y-2">
-            <div className="bg-white border rounded-xl p-4 grid md:grid-cols-5 gap-2">
-              <input className="border rounded p-2 md:col-span-2" placeholder="Título" value={hypDraft.title} onChange={(e) => setHypDraft((prev) => ({ ...prev, title: e.target.value }))} />
-              <select className="border rounded p-2" value={hypDraft.type} onChange={(e) => setHypDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="exploratoria">exploratoria</option><option value="validacion">validacion</option></select>
-              <select className="border rounded p-2" value={hypDraft.audience_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia (opcional)</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
-              <Button className="bg-indigo-600 text-white" onClick={() => center.runMutation(() => interviewsModuleApi.createHypothesis(projectId, campaignId, hypDraft), 'Hipótesis creada')}>Guardar</Button>
-              <textarea className="border rounded p-2 md:col-span-5" rows={2} placeholder="Descripción" value={hypDraft.description} onChange={(e) => setHypDraft((prev) => ({ ...prev, description: e.target.value }))} />
+            <div className="bg-white border rounded-xl p-4 space-y-3">
+              <h4 className="text-sm font-semibold text-slate-900">Nueva ficha de hipótesis</h4>
+
+              <div className="grid gap-2 md:grid-cols-4">
+                <input className="border rounded p-2 md:col-span-2" placeholder="Nombre de hipótesis" value={hypDraft.title} onChange={(e) => setHypDraft((prev) => ({ ...prev, title: e.target.value }))} />
+                <select className="border rounded p-2" value={hypDraft.type} onChange={(e) => setHypDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="problema">problema</option><option value="solucion">solución</option><option value="mercado">mercado</option><option value="pricing">pricing</option><option value="comportamiento">comportamiento</option></select>
+                <select className="border rounded p-2" value={hypDraft.status} onChange={(e) => setHypDraft((prev) => ({ ...prev, status: e.target.value }))}><option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option></select>
+                <textarea className="border rounded p-2 md:col-span-4" rows={2} placeholder="Descripción" value={hypDraft.description} onChange={(e) => setHypDraft((prev) => ({ ...prev, description: e.target.value }))} />
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-4">
+                <select className="border rounded p-2" value={hypDraft.audience_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia objetivo</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
+                <input className="border rounded p-2" placeholder="Segmento" value={hypDraft.segment} onChange={(e) => setHypDraft((prev) => ({ ...prev, segment: e.target.value }))} />
+                <select className="border rounded p-2" value={hypDraft.related_client_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}><option value="">Cliente relacionado</option>{center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select>
+                <select className="border rounded p-2" value={hypDraft.interview_form_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, interview_form_id: e.target.value }))}><option value="">Formulario asociado</option>{center.forms.map((form) => <option key={form.id} value={form.id}>{form.title}</option>)}</select>
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-4">
+                <input className="border rounded p-2" type="number" min="1" placeholder="Min entrevistas" value={hypDraft.min_interviews} onChange={(e) => setHypDraft((prev) => ({ ...prev, min_interviews: e.target.value }))} />
+                <select
+                  className="border rounded p-2"
+                  value={hypDraft.validation_metric_config.comparison_operator}
+                  onChange={(e) => setHypDraft((prev) => ({
+                    ...prev,
+                    validation_metric_config: { ...prev.validation_metric_config, comparison_operator: e.target.value },
+                  }))}
+                >
+                  <option value=">=">Promedio métricas ≥ umbral</option>
+                  <option value=">">Promedio métricas &gt; umbral</option>
+                  <option value="<=">Promedio métricas ≤ umbral</option>
+                  <option value="<">Promedio métricas &lt; umbral</option>
+                </select>
+                <input
+                  className="border rounded p-2"
+                  type="number"
+                  min="1"
+                  max="5"
+                  step="0.1"
+                  placeholder="Umbral"
+                  value={hypDraft.validation_metric_config.threshold_value}
+                  onChange={(e) => setHypDraft((prev) => ({
+                    ...prev,
+                    validation_metric_config: { ...prev.validation_metric_config, threshold_value: e.target.value },
+                  }))}
+                />
+                <select
+                  className="border rounded p-2"
+                  value={hypDraft.validation_metric_config.outcome_if_true}
+                  onChange={(e) => setHypDraft((prev) => ({
+                    ...prev,
+                    validation_metric_config: { ...prev.validation_metric_config, outcome_if_true: e.target.value },
+                  }))}
+                >
+                  <option value="validada">Si cumple → validada</option>
+                  <option value="refutada">Si cumple → refutada</option>
+                  <option value="señal fuerte">Si cumple → señal fuerte</option>
+                  <option value="señal moderada">Si cumple → señal moderada</option>
+                  <option value="señal débil">Si cumple → señal débil</option>
+                </select>
+                <select
+                  className="border rounded p-2"
+                  value={hypDraft.validation_metric_config.outcome_if_false}
+                  onChange={(e) => setHypDraft((prev) => ({
+                    ...prev,
+                    validation_metric_config: { ...prev.validation_metric_config, outcome_if_false: e.target.value },
+                  }))}
+                >
+                  <option value="refutada">Si no cumple → refutada</option>
+                  <option value="validada">Si no cumple → validada</option>
+                  <option value="señal fuerte">Si no cumple → señal fuerte</option>
+                  <option value="señal moderada">Si no cumple → señal moderada</option>
+                  <option value="señal débil">Si no cumple → señal débil</option>
+                  <option value="no evaluada">Si no cumple → no evaluada</option>
+                </select>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 p-3">
+                <p className="text-xs font-semibold uppercase text-slate-500">Métrica independiente Y</p>
+                <p className="text-xs text-slate-600">Selecciona únicamente las métricas que realmente validarán esta hipótesis.</p>
+                <div className="mt-2 grid gap-2 md:grid-cols-3">
+                  {hypothesisMetricOptions.map((metric) => {
+                    const active = hypDraft.validation_metric_config.selected_metrics.includes(metric.value);
+                    return (
+                      <label key={metric.value} className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={active}
+                          onChange={(event) => setHypDraft((prev) => {
+                            const current = prev.validation_metric_config.selected_metrics || [];
+                            const next = event.target.checked
+                              ? [...new Set([...current, metric.value])]
+                              : current.filter((item) => item !== metric.value);
+                            return {
+                              ...prev,
+                              validation_metric_config: { ...prev.validation_metric_config, selected_metrics: next },
+                            };
+                          })}
+                        />
+                        <span>{metric.label}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid gap-2 md:grid-cols-3">
+                <textarea className="border rounded p-2" rows={2} placeholder="Notas del experimento" value={hypDraft.experiment_notes} onChange={(e) => setHypDraft((prev) => ({ ...prev, experiment_notes: e.target.value }))} />
+                <textarea className="border rounded p-2" rows={2} placeholder="Observaciones" value={hypDraft.observations} onChange={(e) => setHypDraft((prev) => ({ ...prev, observations: e.target.value }))} />
+                <textarea className="border rounded p-2" rows={2} placeholder="Próximas acciones" value={hypDraft.next_actions} onChange={(e) => setHypDraft((prev) => ({ ...prev, next_actions: e.target.value }))} />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button className="bg-white border" onClick={() => setHypDraft(createBlankHypothesisDraft())}>Limpiar</Button>
+                <Button
+                  className="bg-indigo-600 text-white"
+                  onClick={() => center.runMutation(async () => {
+                    const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, buildHypothesisPayload(hypDraft));
+                    setHypDraft(createBlankHypothesisDraft());
+                    return created;
+                  }, 'Hipótesis creada')}
+                >
+                  Guardar ficha
+                </Button>
+              </div>
             </div>
             {center.hypotheses.map((hypothesis) => (
-              <div key={hypothesis.id} className="bg-white border rounded-xl p-4 flex justify-between">
-                <div>
-                  <p className="font-semibold">{hypothesis.title}</p>
-                  <p className="text-sm text-slate-500">{hypothesis.type} · {hypothesis.status || 'active'} · {hypothesis.audience_name || 'Sin audiencia'}</p>
+              <div key={hypothesis.id} className="bg-white border rounded-xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="font-semibold">{hypothesis.title}</p>
+                    <p className="text-sm text-slate-500">{hypothesis.type} · {hypothesis.status || 'exploracion'} · {hypothesis.audience_name || 'Sin audiencia'}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      className="bg-indigo-600 text-white"
+                      onClick={() => center.runMutation(() => interviewsModuleApi.evaluateHypothesis(hypothesis.id), 'Hipótesis evaluada')}
+                    >
+                      Evaluar hipótesis
+                    </Button>
+                    <Button className="bg-white border" onClick={() => openEditHypothesis(hypothesis)}>Editar</Button>
+                    <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada')}>Borrar</Button>
+                  </div>
                 </div>
-                <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada')}>Borrar</Button>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 1 · Información general</p>
+                    <p className="mt-1 text-sm text-slate-700">{hypothesis.description || 'Sin descripción'}</p>
+                    <p className="mt-1 text-xs text-slate-500">Segmento: {hypothesis.segment || '—'} · Cliente: {hypothesis.related_client_name || '—'} · Formulario: {hypothesis.interview_form_title || '—'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 2 · Configuración de validación</p>
+                    <p className="mt-1 text-xs text-slate-600">Min entrevistas: {hypothesis.min_interviews ?? '—'}</p>
+                    <p className="text-xs text-slate-600">Métricas: {(hypothesis.validation_metric_config?.selected_metrics || []).map((metric) => hypothesisMetricLabelByValue[metric] || metric).join(', ') || '—'}</p>
+                    <p className="text-xs text-slate-600">Regla: promedio métricas {hypothesis.validation_metric_config?.comparison_operator || '≥'} {hypothesis.validation_metric_config?.threshold_value ?? '—'}</p>
+                    <p className="text-xs text-slate-600">Resultado: cumple → {hypothesis.validation_metric_config?.outcome_if_true || 'validada'} · no cumple → {hypothesis.validation_metric_config?.outcome_if_false || 'refutada'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 3 · Resultados (preparado para 14.1)</p>
+                    <p className="mt-1 text-xs text-slate-600">Entrevistas evaluadas: {hypothesis.evaluated_interviews_count ?? '—'} · Avg problema: {hypothesis.problem_score_avg ?? '—'} · Avg solución: {hypothesis.solution_score_avg ?? '—'}</p>
+                    <p className="text-xs text-slate-600">Última evaluación: {hypothesis.last_evaluated_at ? new Date(hypothesis.last_evaluated_at).toLocaleString() : '—'}</p>
+                    <div className="mt-1">
+                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${validationToneByResult[hypothesis.validation_result || 'no evaluada'] || validationToneByResult['no evaluada']}`}>{hypothesis.validation_result || 'no evaluada'}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600">{hypothesis.validation_summary || 'Sin resumen de validación aún.'}</p>
+                  </div>
+                  <div className="rounded-lg border border-slate-200 p-3">
+                    <p className="text-xs font-semibold uppercase text-slate-500">Sección 4 · Notas del experimento</p>
+                    <p className="mt-1 text-xs text-slate-600">Notas: {hypothesis.experiment_notes || '—'}</p>
+                    <p className="text-xs text-slate-600">Observaciones: {hypothesis.observations || '—'}</p>
+                    <p className="text-xs text-slate-600">Siguientes acciones: {hypothesis.next_actions || '—'}</p>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <p className="text-xs font-semibold uppercase text-slate-500">Detalle de regla activa</p>
+                  {(() => {
+                    const ruleStatus = getHypothesisRuleStatus(hypothesis);
+                    if (!ruleStatus.configured) {
+                      return <p className="mt-2 text-xs text-slate-600">No hay regla configurada.</p>;
+                    }
+                    return (
+                      <div className="mt-2 space-y-1 text-xs text-slate-700">
+                        <p>Métricas evaluadas: {ruleStatus.selectedMetrics.map((metric) => hypothesisMetricLabelByValue[metric] || metric).join(', ')}</p>
+                        <p>Promedio actual: {ruleStatus.comparisonValue ?? '—'} · Umbral: {ruleStatus.threshold}</p>
+                        <p>Estado: {ruleStatus.passed ? 'Cumple regla' : 'No cumple regla'}</p>
+                      </div>
+                    );
+                  })()}
+                </div>
               </div>
             ))}
           </div>
@@ -1611,12 +1927,94 @@ const InterviewCenterPage = () => {
             audiences={center.audiences}
             forms={center.forms}
             clients={center.clients}
+            hypotheses={center.hypotheses}
             persistedFragments={semanticCloudFragments}
             onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
             onCreateFragment={createSemanticInterviewFragment}
           />
         )}
+
+        {!center.loading && !center.error && tab === 'quantitative' && (
+          <QuantitativeAnalysisLab
+            sessions={center.sessions}
+            audiences={center.audiences}
+            forms={center.forms}
+            clients={center.clients}
+            hypotheses={center.hypotheses}
+            onOpenSession={(id) => navigate(`/projects/${projectId}/campaigns/${campaignId}/interviews/${id}`)}
+          />
+        )}
       </InterviewModuleShell>
+
+      <Modal
+        title="Editar ficha de hipótesis"
+        open={hypothesisEditModalOpen}
+        onClose={() => {
+          setHypothesisEditModalOpen(false);
+          setActiveHypothesisId('');
+          setHypothesisEditDraft(createBlankHypothesisDraft());
+        }}
+      >
+        <div className="grid gap-2 md:grid-cols-3">
+          <input className="border rounded p-2 md:col-span-2" placeholder="Nombre de hipótesis" value={hypothesisEditDraft.title} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, title: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.type} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="problema">problema</option><option value="solucion">solución</option><option value="mercado">mercado</option><option value="pricing">pricing</option><option value="comportamiento">comportamiento</option></select>
+          <textarea className="border rounded p-2 md:col-span-3" rows={2} placeholder="Descripción" value={hypothesisEditDraft.description} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, description: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.status} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, status: e.target.value }))}><option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option></select>
+          <select className="border rounded p-2" value={hypothesisEditDraft.audience_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia objetivo</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
+          <input className="border rounded p-2" placeholder="Segmento" value={hypothesisEditDraft.segment || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, segment: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.related_client_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}><option value="">Cliente relacionado</option>{center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select>
+          <select className="border rounded p-2" value={hypothesisEditDraft.interview_form_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, interview_form_id: e.target.value }))}><option value="">Formulario asociado</option>{center.forms.map((form) => <option key={form.id} value={form.id}>{form.title}</option>)}</select>
+          <input className="border rounded p-2" type="number" min="1" placeholder="Min entrevistas" value={hypothesisEditDraft.min_interviews || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, min_interviews: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.validation_metric_config.comparison_operator} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, comparison_operator: e.target.value } }))}>
+            <option value=">=">Promedio métricas ≥ umbral</option>
+            <option value=">">Promedio métricas &gt; umbral</option>
+            <option value="<=">Promedio métricas ≤ umbral</option>
+            <option value="<">Promedio métricas &lt; umbral</option>
+          </select>
+          <input className="border rounded p-2" type="number" min="1" max="5" step="0.1" placeholder="Umbral" value={hypothesisEditDraft.validation_metric_config.threshold_value || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, threshold_value: e.target.value } }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.validation_metric_config.outcome_if_true} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_true: e.target.value } }))}>
+            <option value="validada">Si cumple → validada</option><option value="refutada">Si cumple → refutada</option><option value="señal fuerte">Si cumple → señal fuerte</option><option value="señal moderada">Si cumple → señal moderada</option><option value="señal débil">Si cumple → señal débil</option>
+          </select>
+          <select className="border rounded p-2" value={hypothesisEditDraft.validation_metric_config.outcome_if_false} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_false: e.target.value } }))}>
+            <option value="refutada">Si no cumple → refutada</option><option value="validada">Si no cumple → validada</option><option value="señal fuerte">Si no cumple → señal fuerte</option><option value="señal moderada">Si no cumple → señal moderada</option><option value="señal débil">Si no cumple → señal débil</option><option value="no evaluada">Si no cumple → no evaluada</option>
+          </select>
+          <textarea className="border rounded p-2" rows={2} placeholder="Notas experimento" value={hypothesisEditDraft.experiment_notes || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, experiment_notes: e.target.value }))} />
+          <textarea className="border rounded p-2" rows={2} placeholder="Observaciones" value={hypothesisEditDraft.observations || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, observations: e.target.value }))} />
+          <div className="md:col-span-3 rounded-lg border border-slate-200 p-3">
+            <p className="text-xs font-semibold uppercase text-slate-500">Métrica independiente Y</p>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              {hypothesisMetricOptions.map((metric) => {
+                const selected = hypothesisEditDraft.validation_metric_config.selected_metrics.includes(metric.value);
+                return (
+                  <label key={metric.value} className="flex items-center gap-2 rounded border border-slate-200 px-2 py-1 text-xs">
+                    <input type="checkbox" checked={selected} onChange={(event) => setHypothesisEditDraft((prev) => {
+                      const current = prev.validation_metric_config.selected_metrics || [];
+                      const next = event.target.checked ? [...new Set([...current, metric.value])] : current.filter((item) => item !== metric.value);
+                      return { ...prev, validation_metric_config: { ...prev.validation_metric_config, selected_metrics: next } };
+                    })} />
+                    <span>{metric.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button className="bg-white border" onClick={() => setHypothesisEditModalOpen(false)}>Cancelar</Button>
+          <Button
+            className="bg-indigo-600 text-white"
+            onClick={() => center.runMutation(async () => {
+              const updated = await interviewsModuleApi.updateHypothesis(activeHypothesisId, buildHypothesisPayload(hypothesisEditDraft));
+              setHypothesisEditModalOpen(false);
+              setActiveHypothesisId('');
+              return updated;
+            }, 'Hipótesis actualizada')}
+            disabled={!activeHypothesisId}
+          >
+            Guardar cambios
+          </Button>
+        </div>
+      </Modal>
 
       <Modal
         title="Detalle del fragmento"

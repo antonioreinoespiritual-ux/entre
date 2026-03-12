@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { motion } from 'framer-motion';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Target, Trash2, Edit, Eye, Video } from 'lucide-react';
+import { ArrowLeft, Bot, Plus, Target, Trash2, Edit, Eye, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useProjects } from '@/contexts/ProjectContext';
 import { useCampaigns } from '@/contexts/CampaignContext';
@@ -119,6 +119,10 @@ const ProjectDetailPage = () => {
               </h1>
               <p className="text-gray-600">{project.description || 'No description'}</p>
               <Button onClick={openInCloud} className="mt-4 bg-indigo-600 hover:bg-indigo-700 text-white">Abrir en Cloud</Button>
+              <Button onClick={() => navigate(`/projects/${id}/chat`)} className="mt-4 ml-2 bg-violet-600 hover:bg-violet-700 text-white">
+                <Bot className="w-4 h-4 mr-2" />
+                Chat IA
+              </Button>
             </div>
           </motion.div>
 
