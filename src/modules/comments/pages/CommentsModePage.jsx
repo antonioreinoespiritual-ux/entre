@@ -95,6 +95,16 @@ const CommentsModePage = () => {
   const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
   const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
   const [codeMenuSlug, setCodeMenuSlug] = useState('');
+  const [codeMapOpen, setCodeMapOpen] = useState(false);
+  const [codeMapZoom, setCodeMapZoom] = useState(1);
+  const [codeMapPan, setCodeMapPan] = useState({ x: 0, y: 0 });
+  const [isCodeMapPanning, setIsCodeMapPanning] = useState(false);
+  const [codeMapLayoutBySlug, setCodeMapLayoutBySlug] = useState({});
+  const [draggingCodeMapNode, setDraggingCodeMapNode] = useState('');
+  const [selectedCodeMapNode, setSelectedCodeMapNode] = useState('');
+  const [selectedCodeMapEdge, setSelectedCodeMapEdge] = useState('');
+  const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
+  const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
   const [codeEditor, setCodeEditor] = useState({
     open: false,
     ...defaultCodeEditor,
@@ -253,6 +263,21 @@ const CommentsModePage = () => {
     setCodeMenuSlug('');
   };
 
+  const setCodeParent = (slug, parentSlug) => {
+    const normalizedSlug = String(slug || '');
+    if (!normalizedSlug) return;
+    const normalizedParent = String(parentSlug || '').trim();
+    if (normalizedParent && normalizedParent === normalizedSlug) return;
+    const nextCodes = codes.map((code) => {
+      if (String(code.slug) !== normalizedSlug) return code;
+      return {
+        ...code,
+        parent_slug: normalizedParent || null,
+      };
+    });
+    persist({ ...store, codes: nextCodes });
+  };
+
   const filteredCodes = useMemo(() => {
     const query = codeQuery.trim().toLowerCase();
     return codes.filter((code) => {
@@ -284,6 +309,111 @@ const CommentsModePage = () => {
 
     return { roots, childrenByParent };
   }, [filteredCodes]);
+
+  const codeMapVisibleCodes = useMemo(() => {
+    if (!codeHypothesisFilter) return codes;
+    return codes.filter((code) => String(code.hypothesis_id || '') === String(codeHypothesisFilter));
+  }, [codes, codeHypothesisFilter]);
+
+  const codeMapNodes = useMemo(() => codeMapVisibleCodes.map((code, index) => {
+    const saved = codeMapLayoutBySlug[code.slug] || {};
+    const x = Number(saved.x);
+    const y = Number(saved.y);
+    return {
+      ...code,
+      fragmentCount: Number(codeUsageCount.get(String(code.slug)) || 0),
+      x: Number.isFinite(x) ? x : 120 + ((index % 4) * 260),
+      y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 160),
+    };
+  }), [codeMapVisibleCodes, codeMapLayoutBySlug, codeUsageCount]);
+
+  const codeMapVisibleSlugSet = useMemo(() => new Set(codeMapVisibleCodes.map((code) => String(code.slug))), [codeMapVisibleCodes]);
+
+  const codeMapEdges = useMemo(() => codeMapVisibleCodes
+    .filter((code) => code.parent_slug && String(code.parent_slug) !== String(code.slug))
+    .filter((code) => codeMapVisibleSlugSet.has(String(code.slug)) && codeMapVisibleSlugSet.has(String(code.parent_slug)))
+    .map((code) => ({
+      id: `edge_${code.parent_slug}_${code.slug}`,
+      source: String(code.parent_slug),
+      target: String(code.slug),
+    })), [codeMapVisibleCodes, codeMapVisibleSlugSet]);
+
+  const handleCodeMapNodeMouseDown = (event, slug) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDraggingCodeMapNode(slug);
+    setSelectedCodeMapNode(slug);
+    setSelectedCodeMapEdge('');
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const start = codeMapLayoutBySlug[slug] || codeMapNodes.find((node) => node.slug === slug) || { x: 0, y: 0 };
+    const startNodeX = Number(start.x) || 0;
+    const startNodeY = Number(start.y) || 0;
+
+    const onMove = (moveEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / (codeMapZoom || 1);
+      const deltaY = (moveEvent.clientY - startY) / (codeMapZoom || 1);
+      setCodeMapLayoutBySlug((prev) => ({
+        ...prev,
+        [slug]: {
+          x: Math.max(12, Math.round(startNodeX + deltaX)),
+          y: Math.max(12, Math.round(startNodeY + deltaY)),
+        },
+      }));
+    };
+
+    const onUp = () => {
+      setDraggingCodeMapNode('');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const handleCodeMapCanvasMouseDown = (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest('[data-code-map-node="true"]')) return;
+    setSelectedCodeMapNode('');
+    setSelectedCodeMapEdge('');
+    setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+    setIsCodeMapPanning(true);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startPan = { ...codeMapPan };
+
+    const onMove = (moveEvent) => {
+      setCodeMapPan({
+        x: startPan.x + (moveEvent.clientX - startX),
+        y: startPan.y + (moveEvent.clientY - startY),
+      });
+    };
+
+    const onUp = () => {
+      setIsCodeMapPanning(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (!codeMapOpen) return;
+      if (!selectedCodeMapEdge) return;
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      const edge = codeMapEdges.find((item) => item.id === selectedCodeMapEdge);
+      if (!edge) return;
+      setCodeParent(edge.target, '');
+      setSelectedCodeMapEdge('');
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [codeMapOpen, selectedCodeMapEdge, codeMapEdges]);
 
   const updateFragment = (fragmentId, patch) => {
     const nextFragments = fragments.map((fragment) => {
@@ -673,7 +803,7 @@ const CommentsModePage = () => {
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Editar código</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('create', null, slug)}>Crear subcódigo</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Mover jerarquía</button>
-                  <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setTab('comments'); setCodeMenuSlug(''); }}>Ir a mapa de códigos</button>
+                  <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setCodeMapOpen(true); setCodeMenuSlug(''); }}>Ir a mapa de códigos</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => {
                     if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
                     deleteCodeTree(slug);
@@ -1125,9 +1255,14 @@ const CommentsModePage = () => {
                   <h2 className="font-semibold text-slate-900">Lista de códigos</h2>
                   <p className="text-xs text-slate-500">Panel de estructura semántica jerárquica.</p>
                 </div>
-                <Button className="bg-indigo-600 text-white" onClick={() => openCodeEditor('create')}>
-                  <Plus className="mr-1 h-4 w-4" /> Crear código
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button className="bg-white border text-slate-700" title="Mapa de códigos" onClick={() => setCodeMapOpen(true)}>
+                    🕸️ Mapa de códigos
+                  </Button>
+                  <Button className="bg-indigo-600 text-white" onClick={() => openCodeEditor('create')}>
+                    <Plus className="mr-1 h-4 w-4" /> Crear código
+                  </Button>
+                </div>
               </div>
 
               <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
@@ -1173,6 +1308,134 @@ const CommentsModePage = () => {
                     <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
                       <Button className="bg-white border text-slate-700" onClick={closeCodeEditor}>Cancelar</Button>
                       <Button className="bg-indigo-600 text-white" onClick={saveCodeEditor}>Guardar</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {codeMapOpen ? (
+                <div className="fixed inset-0 z-50 bg-slate-900/55 p-4">
+                  <div className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-xl border bg-white shadow-2xl">
+                    <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-900">Mapa de códigos</h3>
+                        <p className="text-xs text-slate-500">Vista de grafo para jerarquía semántica del modo comentarios.</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-slate-600">Hipótesis</label>
+                        <select className="rounded border border-slate-200 bg-white px-2 py-1 text-xs" value={codeHypothesisFilter} onChange={(e) => setCodeHypothesisFilter(e.target.value)}>
+                          <option value="">Todas</option>
+                          {codeHypothesisOptions.map((hypothesisId) => <option key={hypothesisId} value={hypothesisId}>{hypothesisId}</option>)}
+                        </select>
+                        <label className="text-xs text-slate-600">Zoom</label>
+                        <input type="range" min={0.6} max={1.8} step={0.1} value={codeMapZoom} onChange={(e) => setCodeMapZoom(Number(e.target.value) || 1)} />
+                        <Button className="bg-white border text-slate-700" onClick={() => { setCodeMapPan({ x: 0, y: 0 }); setCodeMapZoom(1); }}>Reset</Button>
+                        <Button className="bg-white border text-slate-700" onClick={() => setCodeMapOpen(false)}>Cerrar</Button>
+                      </div>
+                    </div>
+
+                    <div
+                      className={`relative h-full overflow-hidden bg-slate-50 ${isCodeMapPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+                      onMouseDown={handleCodeMapCanvasMouseDown}
+                    >
+                      {codeMapConnectSource ? (
+                        <div className="absolute left-3 top-3 z-20 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs text-indigo-700">
+                          Conectando desde <b>{codes.find((item) => String(item.slug) === String(codeMapConnectSource))?.name || codeMapConnectSource}</b>. Haz clic en otro nodo para completar.
+                        </div>
+                      ) : null}
+
+                      <div
+                        className="absolute h-[2200px] w-[2400px] origin-top-left"
+                        style={{ transform: `translate(${codeMapPan.x}px, ${codeMapPan.y}px) scale(${codeMapZoom})` }}
+                      >
+                        <svg className="absolute inset-0 h-full w-full">
+                          {codeMapEdges.map((edge) => {
+                            const source = codeMapNodes.find((node) => String(node.slug) === String(edge.source));
+                            const target = codeMapNodes.find((node) => String(node.slug) === String(edge.target));
+                            if (!source || !target) return null;
+                            const selected = selectedCodeMapEdge === edge.id;
+                            return (
+                              <line
+                                key={edge.id}
+                                x1={source.x + 90}
+                                y1={source.y + 26}
+                                x2={target.x + 90}
+                                y2={target.y + 26}
+                                stroke={selected ? '#4f46e5' : '#9CA3AF'}
+                                strokeWidth={selected ? 2 : 1.5}
+                                className="cursor-pointer"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setSelectedCodeMapNode('');
+                                  setSelectedCodeMapEdge(edge.id);
+                                }}
+                              />
+                            );
+                          })}
+                        </svg>
+
+                        {codeMapNodes.map((code) => {
+                          const isNodeSelected = selectedCodeMapNode === code.slug;
+                          return (
+                            <div
+                              key={code.slug}
+                              data-code-map-node="true"
+                              className={`absolute min-w-[90px] max-w-[180px] rounded-md border bg-white px-2.5 py-1.5 text-[13px] font-medium text-slate-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:border-indigo-500 hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] ${draggingCodeMapNode === code.slug || isNodeSelected ? 'border-2 border-indigo-500' : 'border-[#D0D5DD]'}`}
+                              style={{ left: code.x, top: code.y }}
+                              onMouseDown={(event) => handleCodeMapNodeMouseDown(event, code.slug)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (codeMapConnectSource && codeMapConnectSource !== code.slug) {
+                                  setCodeParent(code.slug, codeMapConnectSource);
+                                  setCodeMapConnectSource('');
+                                }
+                                setSelectedCodeMapEdge('');
+                                setSelectedCodeMapNode(code.slug);
+                              }}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setSelectedCodeMapNode(code.slug);
+                                setCodeMapContextMenu({ open: true, x: event.clientX, y: event.clientY, slug: code.slug });
+                              }}
+                            >
+                              <p className="truncate">{code.name}</p>
+                              <p className="text-[10px] font-normal text-slate-500">({code.fragmentCount})</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {codeMapContextMenu.open ? (
+                        <div
+                          style={{ left: codeMapContextMenu.x, top: codeMapContextMenu.y }}
+                          className="absolute z-30 min-w-[210px] rounded-md border border-slate-200 bg-white p-1 shadow-lg"
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            const target = codes.find((item) => String(item.slug) === String(codeMapContextMenu.slug));
+                            if (target) openCodeEditor('edit', target);
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Editar código</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            openCodeEditor('create', null, codeMapContextMenu.slug);
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Crear subcódigo</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            setCodeMapConnectSource(codeMapContextMenu.slug);
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Conectar con otro código</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            setCodeParent(codeMapContextMenu.slug, '');
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Quitar padre</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => {
+                            if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
+                            deleteCodeTree(codeMapContextMenu.slug);
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Eliminar código</button>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 </div>
