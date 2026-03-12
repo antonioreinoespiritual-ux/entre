@@ -2517,13 +2517,17 @@ async function resolveVideosFromInput({ normalizedInput, config, auth }) {
     return [{ videoId: normalizedInput.video_id, title: '', channel: '', publishedAt: null, queryContext: null }];
   }
 
-  const querySeed = normalizedInput.input_type === 'search' ? normalizedInput.video_search_query : normalizedInput.keyword;
-  const queryTerms = Array.from(new Set(
-    String(querySeed || '')
-      .split(/[\n,;]+/g)
-      .map((q) => q.trim())
-      .filter(Boolean),
-  ));
+  const queryTerms = Array.from(new Set([
+    ...String(normalizedInput.video_search_query || '').split(/[\n,;]+/g),
+    ...String(normalizedInput.keyword || '').split(/[\n,;]+/g),
+  ]
+    .map((q) => q.trim())
+    .filter(Boolean)));
+
+  if (!queryTerms.length) {
+    throw new Error('No se encontró una búsqueda válida para resolver videos de YouTube.');
+  }
+
   const maxVideosPerQuery = normalizedInput.videos_limit == null ? 10 : normalizedInput.videos_limit;
   const searchOrder = normalizedInput.order === 'time' ? 'date' : 'relevance';
 
@@ -2550,7 +2554,7 @@ async function resolveVideosFromInput({ normalizedInput, config, auth }) {
 
       const items = Array.isArray(searchResponse?.data?.items) ? searchResponse.data.items : [];
       for (const item of items) {
-        const videoId = String(item?.id || '').trim();
+        const videoId = String(item?.id || item?.videoId || '').trim();
         if (!videoId || seen.has(videoId)) continue;
         resolved.push({
           videoId,
@@ -2567,6 +2571,10 @@ async function resolveVideosFromInput({ normalizedInput, config, auth }) {
       if (!nextToken) break;
       pageToken = nextToken;
     }
+  }
+
+  if (!resolved.length) {
+    throw new Error('No se encontraron videos para la búsqueda indicada. Ajusta la consulta o incrementa la cantidad de videos.');
   }
 
   return resolved;
