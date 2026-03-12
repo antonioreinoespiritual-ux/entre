@@ -92,6 +92,17 @@ const schemaSql = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_ai_integrations_user ON ai_integrations(user_id)',
+  `CREATE TABLE IF NOT EXISTS ai_project_chat_messages (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_ai_project_chat_messages_scope ON ai_project_chat_messages(user_id, project_id, created_at)',
   `CREATE TABLE IF NOT EXISTS openclaw_integrations (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL UNIQUE,
@@ -540,6 +551,7 @@ const ENTITY_ID_PREFIX = {
   comment_ingestion_run: 'crun_',
   comment_ingestion_input: 'cinp_',
   comment_record: 'com_',
+  ai_chat_message: 'aicm_',
 };
 
 function buildEntityId(entityType, fallbackPrefix = 'id_') {
@@ -2388,6 +2400,140 @@ async function getAiIntegrationByUserId(userId) {
 async function getOpenClawIntegrationByUserId(userId) {
   const [rows] = await pool.query('SELECT * FROM openclaw_integrations WHERE user_id = ? LIMIT 1', [userId]);
   return rows[0] || null;
+}
+
+async function ensureProjectAccess(userId, projectId) {
+  const [rows] = await pool.query('SELECT id, name FROM projects WHERE id = ? AND user_id = ? LIMIT 1', [projectId, userId]);
+  return rows[0] || null;
+}
+
+function resolveAiBaseUrl(integration) {
+  const provider = String(integration?.provider || '').trim().toLowerCase();
+  const customBaseUrl = String(integration?.base_url || '').trim();
+  if (customBaseUrl) return customBaseUrl.replace(/\/+$/, '');
+  if (provider === 'openai') return 'https://api.openai.com/v1';
+  if (provider === 'openrouter') return 'https://openrouter.ai/api/v1';
+  if (provider === 'groq') return 'https://api.groq.com/openai/v1';
+  if (provider === 'ollama') return 'http://localhost:11434/v1';
+  return '';
+}
+
+async function getProjectScopeSummary(userId, projectId) {
+  const queryCount = async (tableName) => {
+    const [rows] = await pool.query(`SELECT COUNT(*) AS total FROM ${normalizeIdentifier(tableName)} WHERE user_id = ? AND project_id = ?`, [userId, projectId]);
+    return Number(rows?.[0]?.total || 0);
+  };
+
+  const [topCommentRows] = await pool.query(
+    `SELECT text, author_name, like_count, published_at
+     FROM comment_dataset_comments
+     WHERE user_id = ? AND project_id = ?
+     ORDER BY like_count DESC, published_at DESC
+     LIMIT 5`,
+    [userId, projectId],
+  );
+
+  const [topInterviewHypRows] = await pool.query(
+    `SELECT title, validation_result, evaluated_interviews_count, problem_score_avg, solution_score_avg
+     FROM interview_hypotheses
+     WHERE user_id = ? AND project_id = ?
+     ORDER BY updated_at DESC
+     LIMIT 5`,
+    [userId, projectId],
+  );
+
+  return {
+    counts: {
+      campaigns: await queryCount('campaigns'),
+      audiences: await queryCount('audiences'),
+      videos: await queryCount('videos'),
+      hypotheses: await queryCount('hypotheses'),
+      interview_hypotheses: await queryCount('interview_hypotheses'),
+      interviews: await queryCount('interview_sessions'),
+      interview_fragments: await queryCount('interview_semantic_fragments'),
+      comment_runs: await queryCount('comment_ingestion_runs'),
+      comment_records: await queryCount('comment_dataset_comments'),
+    },
+    top_comments: topCommentRows.map((row) => ({
+      author_name: row.author_name || 'Sin autor',
+      like_count: Number(row.like_count || 0),
+      published_at: row.published_at || null,
+      text: String(row.text || '').slice(0, 320),
+    })),
+    top_interview_hypotheses: topInterviewHypRows.map((row) => ({
+      title: row.title || 'Hipótesis sin título',
+      validation_result: row.validation_result || 'no evaluada',
+      evaluated_interviews_count: Number(row.evaluated_interviews_count || 0),
+      problem_score_avg: row.problem_score_avg == null ? null : Number(row.problem_score_avg),
+      solution_score_avg: row.solution_score_avg == null ? null : Number(row.solution_score_avg),
+    })),
+  };
+}
+
+function buildProjectScopedSystemPrompt(project, projectSummary) {
+  const summaryJson = JSON.stringify(projectSummary, null, 2);
+  return [
+    'Eres Tessa, una IA analista de investigación de mercado.',
+    `Contexto permitido: SOLO proyecto ${project.id} (${project.name || 'sin nombre'}).`,
+    'Prohibido usar o inferir información de otros proyectos.',
+    'Si la pregunta requiere otro proyecto, responde que tu alcance está restringido al proyecto activo.',
+    'Usa los datos del resumen como base factual y sé explícita cuando falte evidencia.',
+    'Responde en español, clara y accionable.',
+    `Resumen de datos del proyecto:\n${summaryJson}`,
+  ].join('\n');
+}
+
+async function requestAiChatCompletion(integration, payload) {
+  const provider = String(integration?.provider || '').trim().toLowerCase();
+  const model = String(integration?.model || '').trim();
+  const apiKey = String(integration?.api_key || '').trim();
+  const baseUrl = resolveAiBaseUrl(integration);
+
+  if (!model) throw new Error('La integración de IA no tiene modelo configurado.');
+  if (!baseUrl) throw new Error(`El proveedor ${provider || 'seleccionado'} requiere base_url compatible para chat.`);
+  if (provider !== 'ollama' && !apiKey) {
+    throw new Error('La integración de IA requiere API key para enviar mensajes.');
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (integration?.organization) headers['OpenAI-Organization'] = String(integration.organization);
+  if (provider === 'openrouter') {
+    headers['HTTP-Referer'] = 'https://marketclaw.local';
+    headers['X-Title'] = 'MarketClaw Chat IA';
+  }
+
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      temperature: 0.2,
+      messages: payload,
+    }),
+  });
+
+  const raw = await response.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
+  }
+
+  if (!response.ok) {
+    const apiError = json?.error?.message || json?.error || raw || `HTTP ${response.status}`;
+    throw new Error(`No se pudo completar el chat con IA: ${apiError}`);
+  }
+
+  const content = json?.choices?.[0]?.message?.content;
+  if (!content) throw new Error('El proveedor de IA no devolvió contenido de respuesta.');
+  return {
+    content: String(content).trim(),
+    usage: json?.usage || null,
+  };
 }
 
 const AI_PROVIDERS = new Set([
@@ -4376,6 +4522,109 @@ const server = http.createServer(async (req, res) => {
           } : null,
         },
       });
+    }
+
+    if (url.pathname === '/api/projects/chat/history' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      if (!projectId) return sendJson(req, res, 400, { error: 'projectId is required' });
+
+      const project = await ensureProjectAccess(user.id, projectId);
+      if (!project) return sendJson(req, res, 404, { error: 'Project not found' });
+
+      const [rows] = await pool.query(
+        `SELECT id, role, content, created_at
+         FROM ai_project_chat_messages
+         WHERE user_id = ? AND project_id = ?
+         ORDER BY created_at ASC
+         LIMIT 200`,
+        [user.id, projectId],
+      );
+      return sendJson(req, res, 200, { data: { items: rows } });
+    }
+
+    if (url.pathname === '/api/projects/chat/messages' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const projectId = String(body?.projectId || '').trim();
+      const message = String(body?.message || '').trim();
+
+      if (!projectId) return sendJson(req, res, 400, { error: 'projectId is required' });
+      if (!message) return sendJson(req, res, 400, { error: 'message is required' });
+
+      const project = await ensureProjectAccess(user.id, projectId);
+      if (!project) return sendJson(req, res, 404, { error: 'Project not found' });
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial antes de usar Chat IA.',
+        });
+      }
+
+      const [historyRows] = await pool.query(
+        `SELECT role, content
+         FROM ai_project_chat_messages
+         WHERE user_id = ? AND project_id = ?
+         ORDER BY created_at DESC
+         LIMIT 12`,
+        [user.id, projectId],
+      );
+      const orderedHistory = historyRows.reverse().map((row) => ({ role: row.role, content: row.content }));
+
+      const projectSummary = await getProjectScopeSummary(user.id, projectId);
+      const systemPrompt = buildProjectScopedSystemPrompt(project, projectSummary);
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...orderedHistory,
+        { role: 'user', content: message },
+      ];
+
+      const userMessageRow = {
+        id: buildEntityId('ai_chat_message'),
+        user_id: user.id,
+        project_id: projectId,
+        role: 'user',
+        content: message,
+        created_at: nowIso(),
+      };
+      await pool.query(
+        `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [userMessageRow.id, userMessageRow.user_id, userMessageRow.project_id, userMessageRow.role, userMessageRow.content, userMessageRow.created_at],
+      );
+
+      try {
+        const completion = await requestAiChatCompletion(integration, messages);
+        const assistantMessageRow = {
+          id: buildEntityId('ai_chat_message'),
+          user_id: user.id,
+          project_id: projectId,
+          role: 'assistant',
+          content: completion.content,
+          created_at: nowIso(),
+        };
+        await pool.query(
+          `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [assistantMessageRow.id, assistantMessageRow.user_id, assistantMessageRow.project_id, assistantMessageRow.role, assistantMessageRow.content, assistantMessageRow.created_at],
+        );
+
+        return sendJson(req, res, 200, {
+          data: {
+            project: { id: project.id, name: project.name },
+            user_message: userMessageRow,
+            assistant_message: assistantMessageRow,
+            usage: completion.usage,
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo generar respuesta de IA para este proyecto.',
+        });
+      }
     }
 
     if (url.pathname === '/api/youtube/auth/start' && req.method === 'POST') {
