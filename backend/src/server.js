@@ -2580,6 +2580,158 @@ async function requestAiChatCompletion(integration, payload) {
   };
 }
 
+function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText }) {
+  return [
+    'Eres un agente de fragmentación semántica robusta.',
+    'Tu única tarea es segmentar comentarios en unidades mínimas de significado psicológico o narrativo.',
+    'Reglas obligatorias:',
+    '1) Divide solo por unidades reales de significado.',
+    '2) No resumas, no reinterpretes, no inventes texto.',
+    '3) No fusiones ideas distintas ni cortes ideas incompletas.',
+    '4) Conserva exactamente las palabras originales y su orden.',
+    '5) Si hay una sola idea, devuelve un solo fragmento.',
+    '6) Ignora saludos, emojis sin significado psicológico y ruido de relleno.',
+    '7) Debes calcular semantic_confidence (0..1) según claridad, completitud y coherencia.',
+    'Respuesta requerida: JSON válido puro, sin markdown, con esta forma exacta:',
+    '{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0}]}',
+    `comment_id: ${commentId}`,
+    `source_id: ${sourceId}`,
+    `texto_completo_del_comentario: ${commentText}`,
+  ].join('\n');
+}
+
+function extractJsonObjectFromText(rawText = '') {
+  const text = String(rawText || '').trim();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(text.slice(start, end + 1));
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+}
+
+function clampConfidence(value, fallback = 0.75) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (parsed < 0) return 0;
+  if (parsed > 1) return 1;
+  return Number(parsed.toFixed(3));
+}
+
+function fallbackSemanticSplit(commentId, commentText = '') {
+  const text = String(commentText || '');
+  if (!text.trim()) {
+    return {
+      comment_id: String(commentId || ''),
+      fragments: [],
+    };
+  }
+
+  const fragments = [];
+  const sentenceRegex = /[^.!?\n]+[.!?]?|[^\n]+/g;
+  const matches = [...text.matchAll(sentenceRegex)];
+  for (const match of matches) {
+    const rawSegment = String(match[0] || '');
+    const startBase = Number(match.index || 0);
+    const trimmed = rawSegment.trim();
+    if (!trimmed) continue;
+
+    const leftTrim = rawSegment.length - rawSegment.trimStart().length;
+    const start = startBase + leftTrim;
+    const end = start + trimmed.length;
+
+    fragments.push({
+      fragment_id: uuid(),
+      fragment_text: trimmed,
+      start_char_index: start,
+      end_char_index: end,
+      semantic_confidence: 0.65,
+    });
+  }
+
+  if (!fragments.length) {
+    fragments.push({
+      fragment_id: uuid(),
+      fragment_text: text.trim(),
+      start_char_index: text.indexOf(text.trim()),
+      end_char_index: text.indexOf(text.trim()) + text.trim().length,
+      semantic_confidence: 0.6,
+    });
+  }
+
+  return {
+    comment_id: String(commentId || ''),
+    fragments,
+  };
+}
+
+function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, commentText }) {
+  const text = String(commentText || '');
+  const incoming = Array.isArray(parsed?.fragments) ? parsed.fragments : [];
+  const normalized = [];
+  let cursor = 0;
+
+  for (const item of incoming) {
+    const fragmentText = String(item?.fragment_text || '').trim();
+    if (!fragmentText) continue;
+
+    let start = Number(item?.start_char_index);
+    let end = Number(item?.end_char_index);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || start < 0 || end > text.length) {
+      const foundAt = text.indexOf(fragmentText, Math.max(0, cursor));
+      if (foundAt >= 0) {
+        start = foundAt;
+        end = foundAt + fragmentText.length;
+        cursor = end;
+      } else {
+        const fallbackAt = text.indexOf(fragmentText);
+        if (fallbackAt >= 0) {
+          start = fallbackAt;
+          end = fallbackAt + fragmentText.length;
+        } else {
+          continue;
+        }
+      }
+    }
+
+    normalized.push({
+      fragment_id: String(item?.fragment_id || uuid()),
+      comment_id: String(commentId || ''),
+      source_id: String(sourceId || ''),
+      fragment_text: fragmentText,
+      start_char_index: Math.max(0, Math.floor(start)),
+      end_char_index: Math.max(0, Math.floor(end)),
+      semantic_confidence: clampConfidence(item?.semantic_confidence, 0.75),
+    });
+  }
+
+  if (!normalized.length) {
+    const fallback = fallbackSemanticSplit(commentId, text);
+    return {
+      comment_id: String(commentId || ''),
+      fragments: fallback.fragments.map((fragment) => ({
+        ...fragment,
+        comment_id: String(commentId || ''),
+        source_id: String(sourceId || ''),
+      })),
+    };
+  }
+
+  return {
+    comment_id: String(commentId || ''),
+    fragments: normalized,
+  };
+}
+
 const AI_PROVIDERS = new Set([
   'openai',
   'openrouter',
@@ -4667,6 +4819,78 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         return sendJson(req, res, 502, {
           error: error?.message || 'No se pudo generar respuesta de IA para este proyecto.',
+        });
+      }
+    }
+
+    if (url.pathname === '/api/comment-base/semantic-fragment-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const commentId = String(body?.comment_id || '').trim();
+      const sourceId = String(body?.source_id || '').trim();
+      const commentText = String(body?.texto_completo_del_comentario || '').trim();
+
+      if (!commentId || !sourceId || !commentText) {
+        return sendJson(req, res, 400, {
+          error: 'comment_id, source_id y texto_completo_del_comentario son obligatorios.',
+        });
+      }
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial antes de usar el agente de fragmentación.',
+        });
+      }
+
+      const prompt = buildSemanticFragmentAgentPrompt({
+        commentId,
+        sourceId,
+        commentText,
+      });
+
+      try {
+        const completion = await requestAiChatCompletion(integration, [
+          {
+            role: 'system',
+            content: 'Responde exclusivamente con JSON válido, sin markdown ni texto adicional.',
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ]);
+
+        const parsed = extractJsonObjectFromText(completion.content);
+        const normalized = normalizeSemanticFragmentAgentOutput({
+          parsed,
+          commentId,
+          sourceId,
+          commentText,
+        });
+
+        return sendJson(req, res, 200, {
+          data: {
+            comment_id: normalized.comment_id,
+            fragments: normalized.fragments.map((fragment) => ({
+              fragment_id: fragment.fragment_id,
+              fragment_text: fragment.fragment_text,
+              start_char_index: fragment.start_char_index,
+              end_char_index: fragment.end_char_index,
+              semantic_confidence: fragment.semantic_confidence,
+            })),
+          },
+        });
+      } catch (error) {
+        const fallback = fallbackSemanticSplit(commentId, commentText);
+        return sendJson(req, res, 200, {
+          data: {
+            comment_id: fallback.comment_id,
+            fragments: fallback.fragments,
+          },
+          warning: error?.message || 'Se aplicó fallback de fragmentación.',
         });
       }
     }

@@ -79,6 +79,8 @@ const CommentsModePage = () => {
   const [ingestionError, setIngestionError] = useState('');
   const [ingestionInputs, setIngestionInputs] = useState([]);
   const [ingestionRuns, setIngestionRuns] = useState([]);
+  const [semanticAgentBusy, setSemanticAgentBusy] = useState(false);
+  const [semanticAgentError, setSemanticAgentError] = useState('');
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [readerSelection, setReaderSelection] = useState({ text: '', start: null, end: null, commentId: '' });
@@ -776,6 +778,73 @@ const CommentsModePage = () => {
     setReaderSelection({ text: '', start: null, end: null, commentId: '' });
   };
 
+  const runSemanticFragmentAgent = async () => {
+    if (!selectedReaderComment) return;
+    const sourceCommentId = String(selectedReaderComment.source_comment_id || selectedReaderComment.id || '').trim();
+    const sourceText = String(selectedReaderComment.text || '').trim();
+    if (!sourceCommentId || !sourceText) {
+      setSemanticAgentError('El comentario seleccionado no tiene contenido suficiente para fragmentar.');
+      return;
+    }
+
+    setSemanticAgentBusy(true);
+    setSemanticAgentError('');
+    try {
+      const response = await commentsIngestionApi.extractSemanticFragments({
+        comment_id: sourceCommentId,
+        source_id: String(selectedReaderComment.source || 'youtube'),
+        texto_completo_del_comentario: sourceText,
+      });
+
+      const generatedFragments = Array.isArray(response.fragments) ? response.fragments : [];
+      if (!generatedFragments.length) {
+        setSemanticAgentError('El agente no devolvió fragmentos para este comentario.');
+        return;
+      }
+
+      const timestamp = new Date().toISOString();
+      const nextFragments = generatedFragments
+        .map((fragment, index) => {
+          const text = String(fragment?.fragment_text || '').trim();
+          if (!text) return null;
+          return {
+            id: String(fragment?.fragment_id || `comment_fragment_${Date.now()}_${index}`),
+            title: '',
+            excerpt: text,
+            comment_id: sourceCommentId,
+            source_comment_id: sourceCommentId,
+            source_comment_text: sourceText,
+            selected_text: text,
+            selection_start: Number.isFinite(Number(fragment?.start_char_index)) ? Number(fragment.start_char_index) : null,
+            selection_end: Number.isFinite(Number(fragment?.end_char_index)) ? Number(fragment.end_char_index) : null,
+            semantic_confidence: Number.isFinite(Number(fragment?.semantic_confidence)) ? Number(fragment.semantic_confidence) : null,
+            source_type: 'semantic_agent',
+            source_run_id: selectedReaderComment.source_run_id || null,
+            author_name: selectedReaderComment.author_name || null,
+            video_id: selectedReaderComment.video_id || null,
+            code_slugs: [],
+            created_at: timestamp,
+          };
+        })
+        .filter(Boolean);
+
+      if (!nextFragments.length) {
+        setSemanticAgentError('El agente devolvió fragmentos vacíos.');
+        return;
+      }
+
+      persist({
+        ...store,
+        fragments: [...nextFragments, ...fragments],
+      });
+      setTab('fragments');
+    } catch (error) {
+      setSemanticAgentError(error?.message || 'No se pudo ejecutar el agente de fragmentación.');
+    } finally {
+      setSemanticAgentBusy(false);
+    }
+  };
+
   const loadInputs = async () => {
     try {
       const data = await commentsIngestionApi.listInputs({ projectId, campaignId });
@@ -1281,6 +1350,12 @@ const CommentsModePage = () => {
                 canCreateFragment={Boolean(readerSelection.text.trim() && selectedReaderComment && readerSelection.commentId === String(selectedReaderComment.id || ''))}
                 viewLabel={readerViewMode === 'focus' ? 'focus' : 'comentario'}
               />
+              <div className="flex flex-wrap items-center gap-2">
+                <Button className="bg-violet-600 text-white" disabled={!selectedReaderComment || semanticAgentBusy} onClick={runSemanticFragmentAgent}>
+                  {semanticAgentBusy ? 'Fragmentando…' : 'Auto-fragmentar con IA'}
+                </Button>
+                {semanticAgentError ? <p className="text-xs text-rose-600">{semanticAgentError}</p> : null}
+              </div>
               <div className="grid gap-3 lg:grid-cols-[260px_minmax(0,1fr)]">
                 <div className="rounded-xl border bg-white p-2 max-h-[560px] overflow-auto">
                   <p className="px-2 py-1 text-xs font-semibold text-slate-500">Comentarios ({readerComments.length})</p>
