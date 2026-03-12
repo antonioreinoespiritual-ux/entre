@@ -79,6 +79,30 @@ const schemaSql = [
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_youtube_integrations_user ON youtube_integrations(user_id)',
+  `CREATE TABLE IF NOT EXISTS ai_integrations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    provider TEXT,
+    model TEXT,
+    api_key TEXT,
+    base_url TEXT,
+    organization TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_ai_integrations_user ON ai_integrations(user_id)',
+  `CREATE TABLE IF NOT EXISTS openclaw_integrations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL UNIQUE,
+    endpoint_url TEXT,
+    workspace_id TEXT,
+    api_key TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_openclaw_integrations_user ON openclaw_integrations(user_id)',
   `CREATE TABLE IF NOT EXISTS youtube_oauth_states (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -2356,6 +2380,26 @@ async function getYouTubeConfigForUser(userId) {
   };
 }
 
+async function getAiIntegrationByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM ai_integrations WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+async function getOpenClawIntegrationByUserId(userId) {
+  const [rows] = await pool.query('SELECT * FROM openclaw_integrations WHERE user_id = ? LIMIT 1', [userId]);
+  return rows[0] || null;
+}
+
+const AI_PROVIDERS = new Set([
+  'openai',
+  'openrouter',
+  'anthropic',
+  'groq',
+  'gemini',
+  'ollama',
+  'custom_compatible_api',
+]);
+
 async function getYouTubeConnectionByUserId(userId) {
   const [rows] = await pool.query('SELECT * FROM youtube_connections WHERE user_id = ? LIMIT 1', [userId]);
   return rows[0] || null;
@@ -4210,6 +4254,125 @@ const server = http.createServer(async (req, res) => {
             client_secret: integration.client_secret || '',
             redirect_uri: integration.redirect_uri || '',
             scopes: integration.scopes || '',
+          } : null,
+        },
+      });
+    }
+
+
+    if (url.pathname === '/api/integrations/ai/config' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const integration = await getAiIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          enabled: Boolean(integration && integration.provider && integration.model),
+          integration: integration ? {
+            provider: integration.provider || '',
+            model: integration.model || '',
+            api_key: integration.api_key || '',
+            base_url: integration.base_url || '',
+            organization: integration.organization || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/integrations/ai/settings' && req.method === 'PUT') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const provider = String(body.provider || '').trim().toLowerCase();
+      const model = String(body.model || '').trim();
+      const apiKey = String(body.api_key || '').trim();
+      const baseUrl = String(body.base_url || '').trim();
+      const organization = String(body.organization || '').trim();
+
+      if (!AI_PROVIDERS.has(provider)) {
+        return sendJson(req, res, 400, { error: 'Proveedor de IA inválido.' });
+      }
+      if (!model) {
+        return sendJson(req, res, 400, { error: 'Debes especificar el modelo para la integración de IA.' });
+      }
+
+      const id = buildEntityId('ai_integration');
+      await pool.query(
+        `INSERT INTO ai_integrations (id, user_id, provider, model, api_key, base_url, organization, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           provider = excluded.provider,
+           model = excluded.model,
+           api_key = excluded.api_key,
+           base_url = excluded.base_url,
+           organization = excluded.organization,
+           updated_at = excluded.updated_at`,
+        [id, user.id, provider, model, apiKey, baseUrl, organization, nowIso(), nowIso()],
+      );
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          enabled: Boolean(integration && integration.provider && integration.model),
+          integration: integration ? {
+            provider: integration.provider || '',
+            model: integration.model || '',
+            api_key: integration.api_key || '',
+            base_url: integration.base_url || '',
+            organization: integration.organization || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/integrations/openclaw/config' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const integration = await getOpenClawIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          connected: Boolean(integration && integration.endpoint_url && integration.workspace_id),
+          integration: integration ? {
+            endpoint_url: integration.endpoint_url || '',
+            workspace_id: integration.workspace_id || '',
+            api_key: integration.api_key || '',
+          } : null,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/integrations/openclaw/settings' && req.method === 'PUT') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+
+      const endpointUrl = String(body.endpoint_url || '').trim();
+      const workspaceId = String(body.workspace_id || '').trim();
+      const apiKey = String(body.api_key || '').trim();
+
+      if (!endpointUrl || !workspaceId) {
+        return sendJson(req, res, 400, { error: 'Debes indicar endpoint y workspace para OpenClaw.' });
+      }
+
+      const id = buildEntityId('openclaw_integration');
+      await pool.query(
+        `INSERT INTO openclaw_integrations (id, user_id, endpoint_url, workspace_id, api_key, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET
+           endpoint_url = excluded.endpoint_url,
+           workspace_id = excluded.workspace_id,
+           api_key = excluded.api_key,
+           updated_at = excluded.updated_at`,
+        [id, user.id, endpointUrl, workspaceId, apiKey, nowIso(), nowIso()],
+      );
+
+      const integration = await getOpenClawIntegrationByUserId(user.id);
+      return sendJson(req, res, 200, {
+        data: {
+          connected: Boolean(integration && integration.endpoint_url && integration.workspace_id),
+          integration: integration ? {
+            endpoint_url: integration.endpoint_url || '',
+            workspace_id: integration.workspace_id || '',
+            api_key: integration.api_key || '',
           } : null,
         },
       });

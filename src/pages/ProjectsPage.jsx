@@ -3,13 +3,14 @@ import React, { useEffect, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { Plus, FolderOpen, Trash2, Edit, Eye, LogOut, Settings, Puzzle, Youtube, Link2, Unlink } from 'lucide-react';
+import { Plus, FolderOpen, Trash2, Edit, Eye, LogOut, Settings, Puzzle, Youtube, Link2, Unlink, BrainCircuit, Bot } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useProjects } from '@/contexts/ProjectContext';
 import ProjectForm from '@/components/ProjectForm';
 import { useAuth } from '@/contexts/SupabaseAuthContext';
 import BulkVideoUpdateModal from '@/components/BulkVideoUpdateModal';
 import { youtubeApi } from '@/services/youtubeApi';
+import { accountIntegrationsApi } from '@/services/accountIntegrationsApi';
 
 const ProjectsPage = () => {
   const navigate = useNavigate();
@@ -22,6 +23,20 @@ const ProjectsPage = () => {
   const [selectedIntegration, setSelectedIntegration] = useState('youtube');
   const [youtubeConfig, setYoutubeConfig] = useState({ loading: false, error: '', data: null, channelPreview: null });
   const [youtubeSettingsDraft, setYoutubeSettingsDraft] = useState({ api_key: '', client_id: '', client_secret: '', redirect_uri: '', scopes: '' });
+  const [aiConfig, setAiConfig] = useState({ loading: false, error: '', data: null });
+  const [aiSettingsDraft, setAiSettingsDraft] = useState({ provider: 'openai', model: '', api_key: '', base_url: '', organization: '' });
+  const [openClawConfig, setOpenClawConfig] = useState({ loading: false, error: '', data: null });
+  const [openClawDraft, setOpenClawDraft] = useState({ endpoint_url: '', workspace_id: '', api_key: '' });
+
+  const aiProviderOptions = [
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'anthropic', label: 'Anthropic' },
+    { value: 'groq', label: 'Groq' },
+    { value: 'gemini', label: 'Gemini' },
+    { value: 'ollama', label: 'Ollama' },
+    { value: 'custom_compatible_api', label: 'Custom Compatible API' },
+  ];
 
   const suggestedLocalRedirectUri = `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000'}`.replace(/\/$/, '') + '/api/youtube/auth/callback';
 
@@ -69,9 +84,9 @@ const ProjectsPage = () => {
     setSettingsOpen(true);
     setSettingsTab(tab);
     setSelectedIntegration(integration);
-    if (tab === 'integrations' && integration === 'youtube') {
-      await loadYouTubeConfig();
-    }
+    if (tab === 'integrations' && integration === 'youtube') await loadYouTubeConfig();
+    if (tab === 'integrations' && integration === 'ai') await loadAiConfig();
+    if (tab === 'integrations' && integration === 'openclaw') await loadOpenClawConfig();
   };
 
   const loadYouTubeConfig = async () => {
@@ -88,6 +103,60 @@ const ProjectsPage = () => {
       });
     } catch (error) {
       setYoutubeConfig((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar configuración de YouTube' }));
+    }
+  };
+
+  const loadAiConfig = async () => {
+    try {
+      setAiConfig((prev) => ({ ...prev, loading: true, error: '' }));
+      const data = await accountIntegrationsApi.getAiConfig();
+      setAiConfig((prev) => ({ ...prev, loading: false, data }));
+      setAiSettingsDraft({
+        provider: data?.integration?.provider || 'openai',
+        model: data?.integration?.model || '',
+        api_key: data?.integration?.api_key || '',
+        base_url: data?.integration?.base_url || '',
+        organization: data?.integration?.organization || '',
+      });
+    } catch (error) {
+      setAiConfig((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar configuración de IA' }));
+    }
+  };
+
+  const saveAiSettings = async () => {
+    try {
+      setAiConfig((prev) => ({ ...prev, error: '' }));
+      const data = await accountIntegrationsApi.saveAiSettings(aiSettingsDraft);
+      setAiConfig((prev) => ({ ...prev, data }));
+      await loadAiConfig();
+    } catch (error) {
+      setAiConfig((prev) => ({ ...prev, error: error.message || 'No se pudo guardar configuración de IA' }));
+    }
+  };
+
+  const loadOpenClawConfig = async () => {
+    try {
+      setOpenClawConfig((prev) => ({ ...prev, loading: true, error: '' }));
+      const data = await accountIntegrationsApi.getOpenClawConfig();
+      setOpenClawConfig((prev) => ({ ...prev, loading: false, data }));
+      setOpenClawDraft({
+        endpoint_url: data?.integration?.endpoint_url || '',
+        workspace_id: data?.integration?.workspace_id || '',
+        api_key: data?.integration?.api_key || '',
+      });
+    } catch (error) {
+      setOpenClawConfig((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar configuración de OpenClaw' }));
+    }
+  };
+
+  const saveOpenClawSettings = async () => {
+    try {
+      setOpenClawConfig((prev) => ({ ...prev, error: '' }));
+      const data = await accountIntegrationsApi.saveOpenClawSettings(openClawDraft);
+      setOpenClawConfig((prev) => ({ ...prev, data }));
+      await loadOpenClawConfig();
+    } catch (error) {
+      setOpenClawConfig((prev) => ({ ...prev, error: error.message || 'No se pudo guardar configuración de OpenClaw' }));
     }
   };
 
@@ -330,7 +399,7 @@ const ProjectsPage = () => {
                           <p className="text-sm text-slate-600">Conecta servicios externos y gestiona credenciales de forma centralizada.</p>
                         </div>
 
-                        <div className="grid gap-3 md:grid-cols-2">
+                        <div className="grid gap-3 md:grid-cols-3">
                           <button
                             type="button"
                             className={`rounded-xl border bg-white p-4 text-left transition ${selectedIntegration === 'youtube' ? 'border-indigo-300 ring-2 ring-indigo-100' : 'hover:border-slate-300'}`}
@@ -345,6 +414,38 @@ const ProjectsPage = () => {
                                 <p className="mt-1 text-xs text-slate-600">API oficial para canal, videos, playlists y comentarios.</p>
                               </div>
                               <span className="text-[11px] rounded-full px-2 py-1 bg-slate-100 text-slate-700">{youtubeConfig.data?.connected ? 'Conectado' : 'Disponible'}</span>
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            className={`rounded-xl border bg-white p-4 text-left transition ${selectedIntegration === 'ai' ? 'border-indigo-300 ring-2 ring-indigo-100' : 'hover:border-slate-300'}`}
+                            onClick={async () => {
+                              setSelectedIntegration('ai');
+                              await loadAiConfig();
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="font-semibold text-slate-900 inline-flex items-center gap-2"><BrainCircuit className="h-5 w-5 text-indigo-600" /> Inteligencia Artificial</p>
+                                <p className="mt-1 text-xs text-slate-600">Proveedor de IA y modelo base para capacidades del sistema.</p>
+                              </div>
+                              <span className="text-[11px] rounded-full px-2 py-1 bg-slate-100 text-slate-700">{aiConfig.data?.enabled ? 'Configurado' : 'Disponible'}</span>
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            className={`rounded-xl border bg-white p-4 text-left transition ${selectedIntegration === 'openclaw' ? 'border-indigo-300 ring-2 ring-indigo-100' : 'hover:border-slate-300'}`}
+                            onClick={async () => {
+                              setSelectedIntegration('openclaw');
+                              await loadOpenClawConfig();
+                            }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <p className="font-semibold text-slate-900 inline-flex items-center gap-2"><Bot className="h-5 w-5 text-emerald-600" /> OpenClaw</p>
+                                <p className="mt-1 text-xs text-slate-600">Integración separada para conexión con workspace de OpenClaw.</p>
+                              </div>
+                              <span className="text-[11px] rounded-full px-2 py-1 bg-slate-100 text-slate-700">{openClawConfig.data?.connected ? 'Conectado' : 'Disponible'}</span>
                             </div>
                           </button>
                         </div>
@@ -412,6 +513,85 @@ const ProjectsPage = () => {
                                 <p className="text-xs text-slate-500">{youtubeConfig.channelPreview.title} · videos: {youtubeConfig.channelPreview.videoCount} · subs: {youtubeConfig.channelPreview.subscriberCount}</p>
                               </div>
                             ) : null}
+                          </div>
+                        ) : null}
+
+
+                        {selectedIntegration === 'ai' ? (
+                          <div className="rounded-xl border p-4 bg-white space-y-3">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div>
+                                <h4 className="font-semibold text-slate-900 inline-flex items-center gap-2"><BrainCircuit className="h-5 w-5 text-indigo-600" /> Inteligencia Artificial</h4>
+                                <p className="text-xs text-slate-600">Configura un proveedor de IA y el modelo principal asociado.</p>
+                              </div>
+                              <div className="text-xs text-slate-600">Estado: {aiConfig.data?.enabled ? 'Configurado' : 'No configurado'}</div>
+                            </div>
+
+                            {aiConfig.loading ? <p className="text-sm text-slate-500">Cargando configuración...</p> : null}
+                            {aiConfig.error ? <p className="text-sm text-rose-600">{aiConfig.error}</p> : null}
+
+                            <div className="grid md:grid-cols-2 gap-3">
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">Proveedor</p>
+                                <select className="mt-1 w-full rounded border px-2 py-1.5" value={aiSettingsDraft.provider} onChange={(e) => setAiSettingsDraft((prev) => ({ ...prev, provider: e.target.value }))}>
+                                  {aiProviderOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                                </select>
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">Modelo</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={aiSettingsDraft.model} onChange={(e) => setAiSettingsDraft((prev) => ({ ...prev, model: e.target.value }))} placeholder="gpt-4.1-mini / claude-3-5-sonnet / llama3.1:8b..." />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                                <p className="text-xs text-slate-500">API key</p>
+                                <input type="password" className="mt-1 w-full rounded border px-2 py-1.5" value={aiSettingsDraft.api_key} onChange={(e) => setAiSettingsDraft((prev) => ({ ...prev, api_key: e.target.value }))} placeholder="sk-..." />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">Base URL (opcional)</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={aiSettingsDraft.base_url} onChange={(e) => setAiSettingsDraft((prev) => ({ ...prev, base_url: e.target.value }))} placeholder="https://api.openai.com/v1" />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">Organization / Workspace (opcional)</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={aiSettingsDraft.organization} onChange={(e) => setAiSettingsDraft((prev) => ({ ...prev, organization: e.target.value }))} placeholder="org_..." />
+                              </label>
+                            </div>
+
+                            <div className="flex flex-wrap gap-2">
+                              <Button className="bg-indigo-600 text-white" onClick={saveAiSettings}>Guardar integración IA</Button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {selectedIntegration === 'openclaw' ? (
+                          <div className="rounded-xl border p-4 bg-white space-y-3">
+                            <div className="flex items-center justify-between gap-3 flex-wrap">
+                              <div>
+                                <h4 className="font-semibold text-slate-900 inline-flex items-center gap-2"><Bot className="h-5 w-5 text-emerald-600" /> OpenClaw</h4>
+                                <p className="text-xs text-slate-600">Configura la conexión de OpenClaw como integración independiente.</p>
+                              </div>
+                              <div className="text-xs text-slate-600">Estado: {openClawConfig.data?.connected ? 'Conectado' : 'No conectado'}</div>
+                            </div>
+
+                            {openClawConfig.loading ? <p className="text-sm text-slate-500">Cargando configuración...</p> : null}
+                            {openClawConfig.error ? <p className="text-sm text-rose-600">{openClawConfig.error}</p> : null}
+
+                            <div className="grid md:grid-cols-2 gap-3">
+                              <label className="rounded-lg border bg-white p-3 text-sm md:col-span-2">
+                                <p className="text-xs text-slate-500">Endpoint URL</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={openClawDraft.endpoint_url} onChange={(e) => setOpenClawDraft((prev) => ({ ...prev, endpoint_url: e.target.value }))} placeholder="https://api.openclaw.ai" />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">Workspace ID</p>
+                                <input className="mt-1 w-full rounded border px-2 py-1.5" value={openClawDraft.workspace_id} onChange={(e) => setOpenClawDraft((prev) => ({ ...prev, workspace_id: e.target.value }))} placeholder="workspace_123" />
+                              </label>
+                              <label className="rounded-lg border bg-white p-3 text-sm">
+                                <p className="text-xs text-slate-500">API key</p>
+                                <input type="password" className="mt-1 w-full rounded border px-2 py-1.5" value={openClawDraft.api_key} onChange={(e) => setOpenClawDraft((prev) => ({ ...prev, api_key: e.target.value }))} placeholder="oc_..." />
+                              </label>
+                            </div>
+
+                            <div className="flex flex-wrap gap-2">
+                              <Button className="bg-emerald-600 text-white" onClick={saveOpenClawSettings}>Guardar integración OpenClaw</Button>
+                            </div>
                           </div>
                         ) : null}
                       </>
