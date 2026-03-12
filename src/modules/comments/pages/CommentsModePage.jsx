@@ -80,6 +80,7 @@ const CommentsModePage = () => {
   const [ingestionError, setIngestionError] = useState('');
   const [ingestionInputs, setIngestionInputs] = useState([]);
   const [ingestionRuns, setIngestionRuns] = useState([]);
+  const [proposalFeedbackSummary, setProposalFeedbackSummary] = useState({});
   const [semanticAgentBusy, setSemanticAgentBusy] = useState(false);
   const [semanticAgentError, setSemanticAgentError] = useState('');
   const [semanticAgentProgress, setSemanticAgentProgress] = useState({ done: 0, total: 0 });
@@ -296,7 +297,37 @@ const CommentsModePage = () => {
 
     const overlapRatio = overlap / Math.max(fragmentTokens.size, 1);
     const usageBonus = Math.min(0.2, Number(codeUsageCount.get(String(code.slug)) || 0) * 0.02);
-    return Math.max(0, Math.min(1, overlapRatio + usageBonus));
+    const feedback = proposalFeedbackSummary[String(code.slug)] || {};
+    const accepted = Number(feedback.accepted || 0);
+    const rejected = Number(feedback.rejected || 0);
+    const reviewedTotal = Math.max(1, Number(feedback.total || 0));
+    const feedbackDelta = ((accepted - rejected) / reviewedTotal) * 0.18;
+    return Math.max(0, Math.min(1, overlapRatio + usageBonus + feedbackDelta));
+  };
+
+  const saveProposalReviewToDatabase = async ({ proposal, action, finalCodeSlug = '', finalCodeName = '', decisionStatus = '' }) => {
+    try {
+      await commentsIngestionApi.saveCodeProposalReview({
+        project_id: projectId,
+        campaign_id: campaignId,
+        proposal_id: String(proposal?.id || '').trim(),
+        fragment_id: String(proposal?.fragment_id || '').trim(),
+        action: String(action || '').trim() || 'revision',
+        decision_status: String(decisionStatus || proposal?.status || '').trim() || null,
+        decision_type: String(proposal?.decision_type || '').trim() || null,
+        confidence: Number.isFinite(Number(proposal?.confidence)) ? Number(proposal.confidence) : null,
+        justification: String(proposal?.justification || '').trim() || null,
+        suggested_code_slug: String(proposal?.original_suggested_code_slug || proposal?.suggested_code_slug || '').trim() || null,
+        suggested_code_name: String(proposal?.original_suggested_code_name || proposal?.suggested_code_name || '').trim() || null,
+        final_code_slug: String(finalCodeSlug || '').trim() || null,
+        final_code_name: String(finalCodeName || '').trim() || null,
+        metadata: {
+          review_log_size: Array.isArray(proposal?.review_log) ? proposal.review_log.length : 0,
+        },
+      });
+    } catch {
+      // No bloquear la UX local; la trazabilidad principal sigue en la propuesta local.
+    }
   };
 
   const buildCandidateCodeFromFragment = (fragment) => {
@@ -524,14 +555,33 @@ const CommentsModePage = () => {
       fragments: nextFragments,
       codeProposals: nextCodeProposals,
     });
+    saveProposalReviewToDatabase({
+      proposal,
+      action: 'aceptar',
+      finalCodeSlug,
+      finalCodeName,
+      decisionStatus: 'aceptado',
+    }).finally(() => {
+      loadProposalReviews();
+    });
   };
 
   const rejectCodeProposal = (proposalId) => {
+    const targetProposal = codeProposals.find((proposal) => String(proposal.id) === String(proposalId));
     const nextCodeProposals = codeProposals.map((proposal) => {
       if (String(proposal.id) !== String(proposalId)) return proposal;
       return appendProposalReviewLog({ ...proposal, status: 'rechazado' }, 'rechazar');
     });
     persist({ ...store, codeProposals: nextCodeProposals });
+    if (targetProposal) {
+      saveProposalReviewToDatabase({
+        proposal: targetProposal,
+        action: 'rechazar',
+        decisionStatus: 'rechazado',
+      }).finally(() => {
+        loadProposalReviews();
+      });
+    }
   };
 
   const assignExistingCodeToProposal = (proposal) => {
@@ -554,6 +604,15 @@ const CommentsModePage = () => {
     });
 
     persist({ ...store, fragments: nextFragments, codeProposals: nextCodeProposals });
+    saveProposalReviewToDatabase({
+      proposal,
+      action: 'reasignar',
+      finalCodeSlug: targetSlug,
+      finalCodeName: targetCode.name,
+      decisionStatus: 'reasignado',
+    }).finally(() => {
+      loadProposalReviews();
+    });
   };
 
   const createManualCodeForProposal = (proposal) => {
@@ -580,6 +639,15 @@ const CommentsModePage = () => {
     });
 
     persist({ ...store, codes: [newCode, ...codes], fragments: nextFragments, codeProposals: nextCodeProposals });
+    saveProposalReviewToDatabase({
+      proposal,
+      action: 'crear_manual',
+      finalCodeSlug: newCode.slug,
+      finalCodeName: newCode.name,
+      decisionStatus: 'corregido',
+    }).finally(() => {
+      loadProposalReviews();
+    });
   };
 
   const renameSuggestedProposalCode = (proposal) => {
@@ -607,6 +675,13 @@ const CommentsModePage = () => {
       return appendProposalReviewLog(updated, 'renombrar_sugerido', nextSlug, renamed);
     });
     persist({ ...store, codeProposals: nextCodeProposals });
+    saveProposalReviewToDatabase({
+      proposal,
+      action: 'renombrar_sugerido',
+      finalCodeSlug: nextSlug,
+      finalCodeName: renamed,
+      decisionStatus: 'corregido',
+    });
   };
 
   const splitSuggestedProposalCode = (proposal) => {
@@ -629,6 +704,11 @@ const CommentsModePage = () => {
       return appendProposalReviewLog(updated, 'dividir_sugerido', '', '', { split_candidates: splitCandidates });
     });
     persist({ ...store, codeProposals: nextCodeProposals });
+    saveProposalReviewToDatabase({
+      proposal,
+      action: 'dividir_sugerido',
+      decisionStatus: 'corregido',
+    });
   };
 
   const mergeSuggestedWithExistingCode = (proposal) => {
@@ -656,6 +736,15 @@ const CommentsModePage = () => {
       return appendProposalReviewLog(updated, 'fusionar', targetSlug, targetCode.name);
     });
     persist({ ...store, fragments: nextFragments, codeProposals: nextCodeProposals });
+    saveProposalReviewToDatabase({
+      proposal,
+      action: 'fusionar',
+      finalCodeSlug: targetSlug,
+      finalCodeName: targetCode.name,
+      decisionStatus: 'fusionado',
+    }).finally(() => {
+      loadProposalReviews();
+    });
   };
 
   const fragmentById = useMemo(() => {
@@ -1524,6 +1613,15 @@ const CommentsModePage = () => {
     }
   };
 
+  const loadProposalReviews = async () => {
+    try {
+      const data = await commentsIngestionApi.listCodeProposalReviews({ projectId, campaignId, limit: 2000 });
+      setProposalFeedbackSummary(data?.summaryByCode && typeof data.summaryByCode === 'object' ? data.summaryByCode : {});
+    } catch {
+      setProposalFeedbackSummary({});
+    }
+  };
+
   const deleteRun = async (runId) => {
     if (!runId) return;
     if (!window.confirm('¿Eliminar este run? También se eliminarán su input asociado y sus comentarios de la base total.')) return;
@@ -1544,6 +1642,11 @@ const CommentsModePage = () => {
       loadInputs();
     }
   }, [tab, commentsSubtab]);
+
+  useEffect(() => {
+    if (tab !== 'codes') return;
+    loadProposalReviews();
+  }, [tab, projectId, campaignId]);
 
   useEffect(() => {
     if (!selectedReaderCommentId && readerComments.length) {

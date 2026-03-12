@@ -489,6 +489,31 @@ const schemaSql = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, published_at DESC, created_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)',
+  `CREATE TABLE IF NOT EXISTS comment_code_proposal_reviews (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    proposal_id TEXT NOT NULL,
+    fragment_id TEXT,
+    action TEXT NOT NULL,
+    decision_status TEXT,
+    decision_type TEXT,
+    confidence REAL,
+    justification TEXT,
+    suggested_code_slug TEXT,
+    suggested_code_name TEXT,
+    final_code_slug TEXT,
+    final_code_name TEXT,
+    metadata_json TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_code_reviews_campaign ON comment_code_proposal_reviews(user_id, project_id, campaign_id, created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_code_reviews_slug ON comment_code_proposal_reviews(user_id, project_id, campaign_id, suggested_code_slug, final_code_slug)',
   `CREATE TABLE IF NOT EXISTS cloud_nodes (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
@@ -551,6 +576,7 @@ const ENTITY_ID_PREFIX = {
   comment_ingestion_run: 'crun_',
   comment_ingestion_input: 'cinp_',
   comment_record: 'com_',
+  comment_code_review: 'ccrev_',
   ai_chat_message: 'aicm_',
 };
 
@@ -5149,6 +5175,106 @@ const server = http.createServer(async (req, res) => {
         })(),
       }));
       return sendJson(req, res, 200, { data: { items } });
+    }
+
+    if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const proposalId = String(body.proposal_id || '').trim();
+      const action = String(body.action || '').trim();
+      if (!projectId || !campaignId || !proposalId || !action) {
+        return sendJson(req, res, 400, { error: 'project_id, campaign_id, proposal_id and action are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const reviewId = buildEntityId('comment_code_review');
+      const createdAt = nowIso();
+      const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
+      await pool.query(
+        `INSERT INTO comment_code_proposal_reviews
+          (id, user_id, project_id, campaign_id, proposal_id, fragment_id, action, decision_status, decision_type, confidence, justification, suggested_code_slug, suggested_code_name, final_code_slug, final_code_name, metadata_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          reviewId,
+          user.id,
+          projectId,
+          campaignId,
+          proposalId,
+          String(body.fragment_id || '').trim() || null,
+          action,
+          String(body.decision_status || '').trim() || null,
+          String(body.decision_type || '').trim() || null,
+          Number.isFinite(Number(body.confidence)) ? Number(body.confidence) : null,
+          String(body.justification || '').trim() || null,
+          String(body.suggested_code_slug || '').trim() || null,
+          String(body.suggested_code_name || '').trim() || null,
+          String(body.final_code_slug || '').trim() || null,
+          String(body.final_code_name || '').trim() || null,
+          JSON.stringify(metadata),
+          createdAt,
+          createdAt,
+        ],
+      );
+
+      return sendJson(req, res, 200, {
+        data: {
+          id: reviewId,
+          proposal_id: proposalId,
+          action,
+          created_at: createdAt,
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      const limit = Math.max(1, Math.min(5000, Number(url.searchParams.get('limit') || 500)));
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_code_proposal_reviews
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [user.id, projectId, campaignId, limit],
+      );
+
+      const items = rows.map((row) => ({
+        ...row,
+        metadata: (() => {
+          try { return JSON.parse(row.metadata_json || '{}'); } catch { return {}; }
+        })(),
+      }));
+
+      const summaryByCode = {};
+      items.forEach((item) => {
+        const slug = String(item.final_code_slug || item.suggested_code_slug || '').trim();
+        if (!slug) return;
+        if (!summaryByCode[slug]) {
+          summaryByCode[slug] = { code_slug: slug, accepted: 0, rejected: 0, reassigned: 0, corrected: 0, fused: 0, total: 0 };
+        }
+        summaryByCode[slug].total += 1;
+        const status = String(item.decision_status || '').trim();
+        if (status === 'aceptado') summaryByCode[slug].accepted += 1;
+        if (status === 'rechazado') summaryByCode[slug].rejected += 1;
+        if (status === 'reasignado') summaryByCode[slug].reassigned += 1;
+        if (status === 'corregido') summaryByCode[slug].corrected += 1;
+        if (status === 'fusionado') summaryByCode[slug].fused += 1;
+      });
+
+      return sendJson(req, res, 200, { data: { items, summaryByCode } });
     }
 
     if (url.pathname === '/api/comment-base/ingest' && req.method === 'POST') {
