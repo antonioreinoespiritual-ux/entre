@@ -107,6 +107,7 @@ const CommentsModePage = () => {
   const [proposalComparisonCode, setProposalComparisonCode] = useState('');
   const [proposalComparisonPage, setProposalComparisonPage] = useState(0);
   const [proposalActionDrafts, setProposalActionDrafts] = useState({});
+  const [selectedProposalIds, setSelectedProposalIds] = useState([]);
   const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
   const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
   const [codeMenuSlug, setCodeMenuSlug] = useState('');
@@ -700,6 +701,11 @@ const CommentsModePage = () => {
     return sorted;
   }, [codeProposals, proposalStatusAllowed, proposalTypeFilter, proposalQuery, proposalSortBy, fragmentById]);
 
+  useEffect(() => {
+    const visible = new Set(humanPanelProposals.map((proposal) => String(proposal.id || '')).filter(Boolean));
+    setSelectedProposalIds((prev) => prev.filter((id) => visible.has(String(id || ''))));
+  }, [humanPanelProposals]);
+
   const proposalComparisonRows = useMemo(() => {
     const slug = String(proposalComparisonCode || '').trim();
     if (!slug) return [];
@@ -711,6 +717,49 @@ const CommentsModePage = () => {
     const start = proposalComparisonPage * proposalComparisonPageSize;
     return proposalComparisonRows.slice(start, start + proposalComparisonPageSize);
   }, [proposalComparisonRows, proposalComparisonPage]);
+
+  const toggleProposalSelection = (proposalId) => {
+    const key = String(proposalId || '');
+    if (!key) return;
+    setSelectedProposalIds((prev) => (
+      prev.includes(key)
+        ? prev.filter((id) => id !== key)
+        : [...prev, key]
+    ));
+  };
+
+  const selectAllVisibleProposals = () => {
+    const visibleIds = humanPanelProposals.map((proposal) => String(proposal.id || '')).filter(Boolean);
+    setSelectedProposalIds(visibleIds);
+  };
+
+  const clearProposalSelection = () => {
+    setSelectedProposalIds([]);
+  };
+
+  const deleteProposalById = (proposalId) => {
+    const key = String(proposalId || '');
+    if (!key) return;
+    const target = codeProposals.find((proposal) => String(proposal.id) === key);
+    if (!target) return;
+    if (!window.confirm(`¿Eliminar la propuesta ${key}? Esta acción no se puede deshacer.`)) return;
+
+    const nextCodeProposals = codeProposals.filter((proposal) => String(proposal.id) !== key);
+    persist({ ...store, codeProposals: nextCodeProposals });
+    setSelectedProposalIds((prev) => prev.filter((id) => id !== key));
+    setActiveProposalId((prev) => (String(prev) === key ? '' : prev));
+  };
+
+  const deleteSelectedProposals = () => {
+    const selected = new Set(selectedProposalIds.map((id) => String(id || '')).filter(Boolean));
+    if (!selected.size) return;
+    if (!window.confirm(`¿Eliminar ${selected.size} propuesta(s) seleccionada(s)? Esta acción no se puede deshacer.`)) return;
+
+    const nextCodeProposals = codeProposals.filter((proposal) => !selected.has(String(proposal.id || '')));
+    persist({ ...store, codeProposals: nextCodeProposals });
+    setSelectedProposalIds([]);
+    setActiveProposalId('');
+  };
 
   const openCodeEditor = (mode = 'create', code = null, parentSlug = '') => {
     setCodeMenuSlug('');
@@ -2230,6 +2279,17 @@ const CommentsModePage = () => {
                   </select>
                 </div>
 
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-slate-50 px-3 py-2 text-xs">
+                  <div className="text-slate-600">
+                    Seleccionadas: <span className="font-semibold text-slate-900">{selectedProposalIds.length}</span> de {humanPanelProposals.length} visibles
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button className="bg-white border text-slate-700" disabled={!humanPanelProposals.length} onClick={selectAllVisibleProposals}>Seleccionar todo (visible)</Button>
+                    <Button className="bg-white border text-slate-700" disabled={!selectedProposalIds.length} onClick={clearProposalSelection}>Limpiar selección</Button>
+                    <Button className="bg-white border text-rose-700" disabled={!selectedProposalIds.length} onClick={deleteSelectedProposals}>Eliminar seleccionadas</Button>
+                  </div>
+                </div>
+
                 {proposalComparisonCode ? (
                   <div className="rounded-lg border bg-slate-50 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -2261,6 +2321,7 @@ const CommentsModePage = () => {
                       const linkedFragment = fragmentById.get(String(proposal.fragment_id || ''));
                       const proposalStatus = String(proposal.status || 'pendiente');
                       const draft = getDraftForProposal(proposal.id);
+                      const isSelected = selectedProposalIds.includes(String(proposal.id));
                       const similarExistingCodes = codes
                         .map((code) => ({ code, score: scoreCodeReuse(String(linkedFragment?.excerpt || proposal.fragment_excerpt || ''), code) }))
                         .filter((item) => item.score > 0.08)
@@ -2279,6 +2340,10 @@ const CommentsModePage = () => {
                         <article key={proposal.id} className={`rounded-lg border p-3 ${statusClass}`}>
                           <div className="flex flex-wrap items-center justify-between gap-2">
                             <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <label className="inline-flex items-center gap-1 rounded border bg-white px-2 py-0.5 text-slate-700">
+                                <input type="checkbox" checked={isSelected} onChange={() => toggleProposalSelection(proposal.id)} />
+                                Seleccionar
+                              </label>
                               <span className={`rounded-full border px-2 py-0.5 ${decisionClass}`}>
                                 {proposal.decision_type === 'reutilizacion' ? 'Reutilización código existente' : 'Código nuevo candidato'}
                               </span>
@@ -2288,6 +2353,7 @@ const CommentsModePage = () => {
                             <div className="flex items-center gap-2">
                               <div className="text-[11px] text-slate-500">Fragmento: {proposal.fragment_id}</div>
                               <Button className="bg-white border text-slate-700" onClick={() => setActiveProposalId(isExpanded ? '' : String(proposal.id))}>{isExpanded ? 'Cerrar panel' : 'Revisar propuesta'}</Button>
+                              <Button className="bg-white border text-rose-700" onClick={() => deleteProposalById(proposal.id)}>Eliminar</Button>
                             </div>
                           </div>
 
