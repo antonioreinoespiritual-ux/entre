@@ -5,6 +5,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
+import { loadCommentsModeStore, saveCommentsModeStore } from '@/modules/comments/services/commentsModeStore';
 
 const defaultCodeEditor = {
   mode: 'create',
@@ -147,8 +148,36 @@ const CommentsModePage = () => {
 
   const persist = (next) => {
     setStore(next);
-    localStorage.setItem(storageKey, JSON.stringify(next));
+    try {
+      localStorage.setItem(storageKey, JSON.stringify(next));
+    } catch {
+      // Fallback para datasets grandes: el guardado principal vive en IndexedDB.
+    }
+    saveCommentsModeStore(storageKey, next).catch(() => {
+      // Silencio controlado: no bloquear UX si IndexedDB falla en navegador restringido.
+    });
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const hydrateStore = async () => {
+      try {
+        const indexedState = await loadCommentsModeStore(storageKey);
+        if (cancelled || !indexedState || typeof indexedState !== 'object') return;
+        setStore({
+          fragments: Array.isArray(indexedState.fragments) ? indexedState.fragments : [],
+          codes: Array.isArray(indexedState.codes) ? indexedState.codes : [],
+          codeProposals: Array.isArray(indexedState.codeProposals) ? indexedState.codeProposals : [],
+        });
+      } catch {
+        // Si no se puede leer IndexedDB, se mantiene fallback de localStorage.
+      }
+    };
+    hydrateStore();
+    return () => {
+      cancelled = true;
+    };
+  }, [storageKey]);
 
   const fragments = store.fragments || [];
   const codes = store.codes || [];
