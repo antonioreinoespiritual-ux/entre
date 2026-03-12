@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -74,8 +74,21 @@ const CommentsModePage = () => {
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [readerSelectionText, setReaderSelectionText] = useState('');
   const [selectedReaderCommentId, setSelectedReaderCommentId] = useState('');
-  const [fragmentTitleDrafts, setFragmentTitleDrafts] = useState({});
   const [selectedFragmentIds, setSelectedFragmentIds] = useState([]);
+  const [selectedFragmentId, setSelectedFragmentId] = useState('');
+  const [fragmentQuery, setFragmentQuery] = useState('');
+  const [fragmentCodeFilter, setFragmentCodeFilter] = useState('');
+  const [fragmentClientFilter, setFragmentClientFilter] = useState('');
+  const [fragmentInterviewFilter, setFragmentInterviewFilter] = useState('');
+  const [fragmentMenuId, setFragmentMenuId] = useState('');
+  const [fragmentEditor, setFragmentEditor] = useState({
+    open: false,
+    mode: 'edit',
+    fragmentId: '',
+    title: '',
+    excerpt: '',
+    linkedCode: '',
+  });
 
   const [store, setStore] = useState(() => {
     try {
@@ -106,18 +119,8 @@ const CommentsModePage = () => {
 
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
 
-  useEffect(() => {
-    setFragmentTitleDrafts((prev) => {
-      const next = { ...prev };
-      fragments.forEach((fragment) => {
-        const fragmentId = String(fragment.id);
-        if (!(fragmentId in next)) {
-          next[fragmentId] = fragment.title || '';
-        }
-      });
-      return next;
-    });
-  }, [fragments]);
+  const fragmentClientOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.client_id || '').trim()).filter(Boolean))), [fragments]);
+  const fragmentInterviewOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.interview_id || '').trim()).filter(Boolean))), [fragments]);
 
   const addCode = () => {
     const name = codeDraft.name.trim();
@@ -131,15 +134,6 @@ const CommentsModePage = () => {
     setCodeDraft(defaultCodeDraft);
   };
 
-  const toggleFragmentCode = (fragmentId, slug) => {
-    const nextFragments = fragments.map((fragment) => {
-      if (fragment.id !== fragmentId) return fragment;
-      const has = (fragment.code_slugs || []).includes(slug);
-      return { ...fragment, code_slugs: has ? fragment.code_slugs.filter((item) => item !== slug) : [...(fragment.code_slugs || []), slug] };
-    });
-    persist({ ...store, fragments: nextFragments });
-  };
-
   const updateFragment = (fragmentId, patch) => {
     const nextFragments = fragments.map((fragment) => {
       if (String(fragment.id) !== String(fragmentId)) return fragment;
@@ -148,9 +142,62 @@ const CommentsModePage = () => {
     persist({ ...store, fragments: nextFragments });
   };
 
-  const saveFragmentTitle = (fragmentId) => {
-    const draft = String(fragmentTitleDrafts[String(fragmentId)] || '').trim();
-    updateFragment(fragmentId, { title: draft });
+  const openFragmentEditor = (fragment = null, mode = 'edit') => {
+    setFragmentMenuId('');
+    if (!fragment || mode === 'create') {
+      setFragmentEditor({
+        open: true,
+        mode: 'create',
+        fragmentId: '',
+        title: '',
+        excerpt: '',
+        linkedCode: '',
+      });
+      return;
+    }
+    setFragmentEditor({
+      open: true,
+      mode: 'edit',
+      fragmentId: String(fragment.id),
+      title: String(fragment.title || ''),
+      excerpt: String(fragment.excerpt || ''),
+      linkedCode: Array.isArray(fragment.code_slugs) ? String(fragment.code_slugs[0] || '') : '',
+    });
+  };
+
+  const closeFragmentEditor = () => {
+    setFragmentEditor((prev) => ({ ...prev, open: false }));
+  };
+
+  const saveFragmentEditor = () => {
+    const title = String(fragmentEditor.title || '').trim();
+    const excerpt = String(fragmentEditor.excerpt || '').trim();
+    const linkedCode = String(fragmentEditor.linkedCode || '').trim();
+    const codeSlugs = linkedCode ? [linkedCode] : [];
+
+    if (!excerpt) return;
+
+    if (fragmentEditor.mode === 'create') {
+      const nextFragment = {
+        id: `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        title,
+        excerpt,
+        code_slugs: codeSlugs,
+        created_at: new Date().toISOString(),
+      };
+      persist({ ...store, fragments: [nextFragment, ...fragments] });
+      setSelectedFragmentId(String(nextFragment.id));
+      closeFragmentEditor();
+      return;
+    }
+
+    updateFragment(fragmentEditor.fragmentId, {
+      title,
+      excerpt,
+      code_slugs: codeSlugs,
+    });
+    setSelectedFragmentId(String(fragmentEditor.fragmentId));
+    closeFragmentEditor();
   };
 
   const toggleFragmentSelection = (fragmentId) => {
@@ -177,6 +224,19 @@ const CommentsModePage = () => {
     if (!window.confirm(`¿Eliminar ${selectedFragmentIds.length} fragmento(s) seleccionados?`)) return;
     deleteFragments(selectedFragmentIds);
   };
+
+  const filteredFragments = useMemo(() => {
+    const query = fragmentQuery.trim().toLowerCase();
+    return fragments.filter((fragment) => {
+      const title = String(fragment.title || '').toLowerCase();
+      const excerpt = String(fragment.excerpt || '').toLowerCase();
+      const matchesQuery = !query || title.includes(query) || excerpt.includes(query);
+      const matchesCode = !fragmentCodeFilter || (fragment.code_slugs || []).includes(fragmentCodeFilter);
+      const matchesClient = !fragmentClientFilter || String(fragment.client_id || '') === fragmentClientFilter;
+      const matchesInterview = !fragmentInterviewFilter || String(fragment.interview_id || '') === fragmentInterviewFilter;
+      return matchesQuery && matchesCode && matchesClient && matchesInterview;
+    });
+  }, [fragments, fragmentCodeFilter, fragmentClientFilter, fragmentInterviewFilter, fragmentQuery]);
 
   const evolveFragmentToCode = (fragment) => {
     const baseName = String(fragment.title || fragment.excerpt || '').trim();
@@ -663,83 +723,161 @@ const CommentsModePage = () => {
           )}
 
           {tab === 'fragments' && (
-            <div className="rounded-xl border bg-white p-4 space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="font-semibold text-slate-900">Fragmentos</h2>
-                <div className="flex items-center gap-2">
-                  <p className="text-xs text-slate-500">Edita título, vincula código, evoluciona a código o elimina fragmentos.</p>
+            <div className="rounded-xl border bg-slate-50 p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold text-slate-900">Fragmentos</h2>
+                  <p className="text-xs text-slate-500">Consola semántica de entidades para comentarios.</p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
                   <Button className="bg-white border text-rose-700" disabled={!selectedFragmentIds.length} onClick={deleteSelectedFragments}>
                     Eliminar seleccionados ({selectedFragmentIds.length})
                   </Button>
+                  <Button className="bg-indigo-600 text-white" onClick={() => openFragmentEditor(null, 'create')}>
+                    <Plus className="mr-1 h-4 w-4" /> Crear fragmento
+                  </Button>
                 </div>
               </div>
-              {fragments.length === 0 ? <p className="text-sm text-slate-500">No hay fragmentos todavía.</p> : fragments.map((fragment) => (
-                <div key={fragment.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
-                  <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_220px_auto_auto] md:items-center">
-                    <input
-                      className="rounded-lg border bg-white px-3 py-2 text-sm"
-                      placeholder="Título del fragmento"
-                      value={fragmentTitleDrafts[String(fragment.id)] ?? fragment.title ?? ''}
-                      onChange={(e) => setFragmentTitleDrafts((prev) => ({ ...prev, [String(fragment.id)]: e.target.value }))}
-                      onBlur={() => saveFragmentTitle(fragment.id)}
-                    />
-                    <select
-                      className="rounded-lg border bg-white px-3 py-2 text-sm"
-                      value=""
-                      onChange={(e) => {
-                        const slug = String(e.target.value || '').trim();
-                        if (!slug) return;
-                        const current = Array.isArray(fragment.code_slugs) ? fragment.code_slugs : [];
-                        if (!current.includes(slug)) {
-                          updateFragment(fragment.id, { code_slugs: [...current, slug] });
-                        }
-                        e.target.value = '';
-                      }}
+
+              <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                <label className="relative block">
+                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                  <input
+                    className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm"
+                    placeholder="Buscar título o extracto"
+                    value={fragmentQuery}
+                    onChange={(e) => setFragmentQuery(e.target.value)}
+                  />
+                </label>
+                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={fragmentCodeFilter} onChange={(e) => setFragmentCodeFilter(e.target.value)}>
+                  <option value="">Filtrar por código</option>
+                  {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+                </select>
+                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={fragmentClientFilter} onChange={(e) => setFragmentClientFilter(e.target.value)}>
+                  <option value="">Filtrar por cliente</option>
+                  {fragmentClientOptions.map((clientId) => <option key={clientId} value={clientId}>{clientId}</option>)}
+                </select>
+                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={fragmentInterviewFilter} onChange={(e) => setFragmentInterviewFilter(e.target.value)}>
+                  <option value="">Filtrar por entrevista</option>
+                  {fragmentInterviewOptions.map((interviewId) => <option key={interviewId} value={interviewId}>{interviewId}</option>)}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                {!filteredFragments.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay fragmentos para los filtros aplicados.</p> : filteredFragments.map((fragment) => {
+                  const fragmentId = String(fragment.id);
+                  const selected = selectedFragmentId === fragmentId;
+                  const linkedCode = codes.find((code) => (fragment.code_slugs || []).includes(code.slug));
+
+                  return (
+                    <article
+                      key={fragment.id}
+                      className={`group relative rounded-xl border bg-white p-4 shadow-sm transition ${selected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'}`}
+                      onClick={() => setSelectedFragmentId(fragmentId)}
                     >
-                      <option value="">Vincular a código…</option>
-                      {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
-                    </select>
-                    <Button className="bg-white border text-slate-700" onClick={() => saveFragmentTitle(fragment.id)}>Guardar</Button>
-                    <Button className="bg-indigo-600 text-white" onClick={() => evolveFragmentToCode(fragment)}>Evolucionar a código</Button>
-                  </div>
+                      <div className="absolute left-0 top-0 h-full w-1 rounded-l-xl bg-transparent group-hover:bg-indigo-200" />
+                      {selected ? <div className="absolute left-0 top-0 h-full w-1 rounded-l-xl bg-indigo-500" /> : null}
 
-                  <div className="flex items-center justify-between gap-2">
-                    <label className="inline-flex items-center gap-2 text-xs text-slate-600">
-                      <input
-                        type="checkbox"
-                        checked={selectedFragmentIds.includes(String(fragment.id))}
-                        onChange={() => toggleFragmentSelection(fragment.id)}
-                      />
-                      Seleccionar para eliminación masiva
-                    </label>
-                    <Button className="bg-white border text-rose-700" onClick={() => deleteSingleFragment(fragment.id)}>
-                      Eliminar fragmento
-                    </Button>
-                  </div>
-
-                  <p className="text-sm text-slate-800">{fragment.excerpt}</p>
-
-                  <div className="flex flex-wrap gap-2">
-                    {(fragment.code_slugs || []).length === 0 ? <span className="text-xs text-slate-500">Sin códigos vinculados.</span> : null}
-                    {(fragment.code_slugs || []).map((slug) => {
-                      const linkedCode = codes.find((code) => code.slug === slug);
-                      return (
-                        <span key={`${fragment.id}_${slug}`} className="inline-flex items-center gap-1 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs text-indigo-700">
-                          {linkedCode?.name || slug}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <h3 className="truncate text-sm font-semibold text-slate-900">{fragment.title || 'Fragmento sin título'}</h3>
+                          <p className="mt-1 line-clamp-2 text-sm text-slate-600">{fragment.excerpt}</p>
+                        </div>
+                        <div className="relative flex items-center gap-2">
+                          <label className="inline-flex items-center">
+                            <input
+                              type="checkbox"
+                              checked={selectedFragmentIds.includes(fragmentId)}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                toggleFragmentSelection(fragmentId);
+                              }}
+                            />
+                          </label>
                           <button
                             type="button"
-                            className="rounded-full px-1 text-indigo-600 hover:bg-indigo-100"
-                            title="Desvincular código"
-                            onClick={() => updateFragment(fragment.id, { code_slugs: (fragment.code_slugs || []).filter((item) => item !== slug) })}
+                            className="rounded-md border bg-white p-1.5 text-slate-500 opacity-0 transition group-hover:opacity-100 hover:text-slate-800"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setFragmentMenuId((prev) => (prev === fragmentId ? '' : fragmentId));
+                            }}
                           >
-                            ×
+                            <MoreHorizontal className="h-4 w-4" />
                           </button>
-                        </span>
-                      );
-                    })}
+
+                          {fragmentMenuId === fragmentId ? (
+                            <div className="absolute right-0 top-9 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Editar fragmento</button>
+                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Vincular código</button>
+                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { evolveFragmentToCode(fragment); setFragmentMenuId(''); }}>Evolucionar a código</button>
+                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => { deleteSingleFragment(fragmentId); setFragmentMenuId(''); }}>Eliminar fragmento</button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                        {linkedCode ? <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-indigo-700">{linkedCode.name}</span> : <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5">Sin código</span>}
+                        <span>Cliente: {fragment.client_id || '—'}</span>
+                        <span>Entrevista: {fragment.interview_id || '—'}</span>
+                        <span>Fecha: {fragment.created_at ? new Date(fragment.created_at).toLocaleDateString() : '—'}</span>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+
+              {fragmentEditor.open ? (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
+                  <div className="w-full max-w-2xl rounded-xl border bg-white shadow-xl">
+                    <div className="border-b px-5 py-4">
+                      <h3 className="text-sm font-semibold text-slate-900">{fragmentEditor.mode === 'create' ? 'Crear fragmento' : 'Editar fragmento'}</h3>
+                      <p className="text-xs text-slate-500">Completa los campos semánticos del fragmento.</p>
+                    </div>
+                    <div className="space-y-3 px-5 py-4">
+                      <input
+                        className="w-full rounded-lg border px-3 py-2 text-sm"
+                        placeholder="Título del fragmento"
+                        value={fragmentEditor.title}
+                        onChange={(e) => setFragmentEditor((prev) => ({ ...prev, title: e.target.value }))}
+                      />
+                      <textarea
+                        className="h-36 w-full rounded-lg border px-3 py-2 text-sm"
+                        placeholder="Texto del fragmento"
+                        value={fragmentEditor.excerpt}
+                        onChange={(e) => setFragmentEditor((prev) => ({ ...prev, excerpt: e.target.value }))}
+                      />
+                      <select
+                        className="w-full rounded-lg border px-3 py-2 text-sm"
+                        value={fragmentEditor.linkedCode}
+                        onChange={(e) => setFragmentEditor((prev) => ({ ...prev, linkedCode: e.target.value }))}
+                      >
+                        <option value="">Sin código vinculado</option>
+                        {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex items-center justify-between border-t px-5 py-3">
+                      <Button
+                        className="bg-white border text-slate-700"
+                        onClick={() => {
+                          if (fragmentEditor.mode !== 'edit') return;
+                          const target = fragments.find((fragment) => String(fragment.id) === String(fragmentEditor.fragmentId));
+                          if (!target) return;
+                          evolveFragmentToCode({ ...target, title: fragmentEditor.title || target.title, excerpt: fragmentEditor.excerpt || target.excerpt });
+                          closeFragmentEditor();
+                        }}
+                        disabled={fragmentEditor.mode !== 'edit'}
+                      >
+                        Evolucionar a código
+                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button className="bg-white border text-slate-700" onClick={closeFragmentEditor}>Cancelar</Button>
+                        <Button className="bg-indigo-600 text-white" onClick={saveFragmentEditor}>Guardar</Button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              ))}
+              ) : null}
             </div>
           )}
 
