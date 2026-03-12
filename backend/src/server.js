@@ -3394,98 +3394,146 @@ function rankAndSelectFragmentsForCoding(fragments = []) {
 
 function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], existingCodes = [] }) {
   const MIN_FRAGMENTS_PER_FINAL_CODE = 10;
-  const tokensToIgnore = new Set(['pero', 'aunque', 'porque', 'para', 'esto', 'esta', 'este', 'muy', 'mas', 'solo', 'como', 'cuando']);
-  const codeBySlug = new Map();
-  const semanticGroups = new Map();
-  const sourceSetsBySlug = new Map();
+  const NAME_SIMILARITY_FOR_REUSE = 0.26;
+  const CLUSTER_ASSIGNMENT_THRESHOLD = 0.34;
+  const CLUSTER_MERGE_THRESHOLD = 0.22;
+  const MAX_TARGET_CODES = 40;
+  const MIN_TARGET_CODES = 12;
 
   const existing = Array.isArray(existingCodes) ? existingCodes : [];
   const existingBySlug = new Map(existing.map((code) => [String(code.slug), code]));
 
-  const buildGroupKey = (fragment) => {
-    const text = String(fragment.excerpt || '').toLowerCase();
-    const tokens = tokenizeFragment(text).filter((token) => !tokensToIgnore.has(token));
-    const anchor = tokens.slice(0, 3).join('-') || String(fragment.semantic_hash || '').slice(0, 8) || `cluster-${Math.floor(Math.random() * 1000)}`;
-    return anchor;
-  };
+  const aiCommentReaderAgent = (fragments = []) => (
+    (Array.isArray(fragments) ? fragments : []).map((fragment, index) => {
+      const excerpt = String(fragment.excerpt || '').trim();
+      return {
+        ...fragment,
+        id: String(fragment.id || `comment_fragment_${Date.now()}_${index}`),
+        excerpt,
+        semanticTokenSet: buildSemanticTokenSet([{ excerpt }]),
+      };
+    }).filter((fragment) => fragment.excerpt.length >= 8)
+  );
 
-  selectedFragments.forEach((fragment) => {
-    const key = buildGroupKey(fragment);
-    if (!semanticGroups.has(key)) semanticGroups.set(key, []);
-    semanticGroups.get(key).push(fragment);
-  });
-
-  let clusters = Array.from(semanticGroups.entries()).map(([key, items]) => ({
-    key,
-    items,
-    strength: items.reduce((acc, item) => acc + Number(item.ai_candidate_score || 0), 0),
-    tokenSet: buildSemanticTokenSet(items),
-  }));
-
-  clusters.sort((a, b) => b.strength - a.strength);
-
-  const strongClusters = clusters.filter((cluster) => cluster.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE);
-  const weakClusters = clusters.filter((cluster) => cluster.items.length < MIN_FRAGMENTS_PER_FINAL_CODE);
-
-  if (!strongClusters.length && weakClusters.length) {
-    const pending = weakClusters.slice().sort((a, b) => b.items.length - a.items.length);
-    while (pending.length) {
-      const candidate = pending.shift();
-      if (!candidate) break;
-      for (let i = pending.length - 1; i >= 0 && candidate.items.length < MIN_FRAGMENTS_PER_FINAL_CODE; i -= 1) {
-        const neighbor = pending[i];
-        const score = jaccardSimilarity(candidate.tokenSet, neighbor.tokenSet);
-        if (score >= 0.2) {
-          candidate.items.push(...neighbor.items);
-          candidate.strength += neighbor.strength;
-          candidate.tokenSet = buildSemanticTokenSet(candidate.items);
-          pending.splice(i, 1);
+  const aiSemanticGroupingAgent = (fragments = []) => {
+    const groups = [];
+    fragments.forEach((fragment) => {
+      let bestGroup = null;
+      let bestScore = 0;
+      groups.forEach((group) => {
+        const score = jaccardSimilarity(fragment.semanticTokenSet, group.tokenSet);
+        if (score > bestScore) {
+          bestScore = score;
+          bestGroup = group;
         }
-      }
-      if (candidate.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE) strongClusters.push(candidate);
-    }
-  }
+      });
 
-  weakClusters.forEach((weakCluster) => {
-    if (!strongClusters.length) return;
-    let bestTarget = null;
-    let bestScore = 0;
-    strongClusters.forEach((targetCluster) => {
-      const score = jaccardSimilarity(weakCluster.tokenSet, targetCluster.tokenSet);
-      if (score > bestScore) {
-        bestScore = score;
-        bestTarget = targetCluster;
+      if (bestGroup && bestScore >= CLUSTER_ASSIGNMENT_THRESHOLD) {
+        bestGroup.items.push(fragment);
+        bestGroup.strength += Number(fragment.ai_candidate_score || 0);
+        bestGroup.tokenSet = buildSemanticTokenSet(bestGroup.items);
+      } else {
+        groups.push({
+          key: `cluster_${groups.length + 1}`,
+          items: [fragment],
+          strength: Number(fragment.ai_candidate_score || 0),
+          tokenSet: buildSemanticTokenSet([fragment]),
+        });
       }
     });
-    if (bestTarget && bestScore >= 0.18) {
-      bestTarget.items.push(...weakCluster.items);
-      bestTarget.strength += weakCluster.strength;
-      bestTarget.tokenSet = buildSemanticTokenSet(bestTarget.items);
-      weakCluster.merged_into = bestTarget.key;
-      weakCluster.merge_score = Number(bestScore.toFixed(4));
+
+    return groups.sort((a, b) => b.strength - a.strength);
+  };
+
+  const aiClusterFusionAgent = (clusters = []) => {
+    const strong = clusters
+      .filter((cluster) => cluster.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE)
+      .map((cluster) => ({ ...cluster }));
+    const weak = clusters
+      .filter((cluster) => cluster.items.length < MIN_FRAGMENTS_PER_FINAL_CODE)
+      .map((cluster) => ({ ...cluster }));
+
+    if (!strong.length && weak.length) {
+      const pending = weak.slice().sort((a, b) => b.items.length - a.items.length);
+      while (pending.length) {
+        const candidate = pending.shift();
+        if (!candidate) break;
+        for (let i = pending.length - 1; i >= 0 && candidate.items.length < MIN_FRAGMENTS_PER_FINAL_CODE; i -= 1) {
+          const neighbor = pending[i];
+          const score = jaccardSimilarity(candidate.tokenSet, neighbor.tokenSet);
+          if (score >= CLUSTER_MERGE_THRESHOLD) {
+            candidate.items.push(...neighbor.items);
+            candidate.strength += neighbor.strength;
+            candidate.tokenSet = buildSemanticTokenSet(candidate.items);
+            pending.splice(i, 1);
+          }
+        }
+        if (candidate.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE) strong.push(candidate);
+      }
     }
-  });
 
-  let finalClusters = strongClusters
-    .filter((cluster) => cluster.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE)
-    .sort((a, b) => b.strength - a.strength);
+    weak.forEach((weakCluster) => {
+      if (!strong.length) return;
+      let bestTarget = null;
+      let bestScore = 0;
+      strong.forEach((targetCluster) => {
+        const score = jaccardSimilarity(weakCluster.tokenSet, targetCluster.tokenSet);
+        if (score > bestScore) {
+          bestScore = score;
+          bestTarget = targetCluster;
+        }
+      });
+      if (bestTarget && bestScore >= CLUSTER_MERGE_THRESHOLD) {
+        bestTarget.items.push(...weakCluster.items);
+        bestTarget.strength += weakCluster.strength;
+        bestTarget.tokenSet = buildSemanticTokenSet(bestTarget.items);
+      }
+    });
 
-  const targetCodes = clamp(12, finalClusters.length, 30);
-  const hardMaxCodes = 40;
-  if (finalClusters.length > hardMaxCodes) finalClusters = finalClusters.slice(0, hardMaxCodes);
+    return strong
+      .filter((cluster) => cluster.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE)
+      .sort((a, b) => b.strength - a.strength);
+  };
 
-  finalClusters.slice(0, targetCodes).forEach((cluster, index) => {
-    let label = buildAbstractCodeLabel(cluster.items);
-    if (isLiteralLikeCodeName(label, cluster.items)) {
+  const aiCodeNamingAgent = (clusterItems = [], index = 0) => {
+    let label = buildAbstractCodeLabel(clusterItems);
+    if (isLiteralLikeCodeName(label, clusterItems)) {
       label = `patrón semántico ${index + 1}`;
     }
+    return label;
+  };
 
-    // Reutilización disciplinada: primero intentar código existente más cercano.
+  const aiCodeOptimizerAgent = (cluster, index) => {
+    const optimizedName = aiCodeNamingAgent(cluster.items, index);
+    const optimizedTokenSet = buildSemanticTokenSet(cluster.items);
+    const summary = `Patrón agregado de ${cluster.items.length} fragmentos semánticamente relacionados.`;
+    return {
+      ...cluster,
+      optimizedName,
+      optimizedTokenSet,
+      summary,
+    };
+  };
+
+  const analyzedFragments = aiCommentReaderAgent(selectedFragments);
+  const semanticClusters = aiSemanticGroupingAgent(analyzedFragments);
+  let finalClusters = aiClusterFusionAgent(semanticClusters).map(aiCodeOptimizerAgent);
+
+  const targetCodes = clamp(MIN_TARGET_CODES, finalClusters.length, 30);
+  if (finalClusters.length > MAX_TARGET_CODES) finalClusters = finalClusters.slice(0, MAX_TARGET_CODES);
+
+  const sourceSetsBySlug = new Map();
+  const codeBySlug = new Map();
+  const slugByName = new Map();
+
+  finalClusters.slice(0, targetCodes).forEach((cluster, index) => {
+    const label = String(cluster.optimizedName || `patrón semántico ${index + 1}`);
+
     let chosenCode = null;
     let bestScore = 0;
     existing.forEach((code) => {
       const score = (() => {
-        const fragTokens = buildSemanticTokenSet(cluster.items);
+        const fragTokens = cluster.optimizedTokenSet;
         const codeTokens = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
         const inter = [...fragTokens].filter((t) => codeTokens.has(t)).length;
         const union = new Set([...fragTokens, ...codeTokens]).size;
@@ -3497,14 +3545,19 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
       }
     });
 
-    const shouldReuse = Boolean(chosenCode) && bestScore >= 0.26;
+    const shouldReuse = Boolean(chosenCode) && bestScore >= NAME_SIMILARITY_FOR_REUSE;
     let slug;
     let name;
     let decisionType;
+
     if (shouldReuse) {
       slug = String(chosenCode.slug);
       name = String(chosenCode.name || chosenCode.slug || 'Código');
       decisionType = 'reutilizacion';
+    } else if (slugByName.has(label)) {
+      slug = String(slugByName.get(label));
+      name = label;
+      decisionType = 'fusion_semantica';
     } else {
       const baseSlug = slugify(label).slice(0, 64) || `code-${Date.now()}-${index}`;
       let candidate = baseSlug;
@@ -3516,6 +3569,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
       slug = candidate;
       name = label;
       decisionType = 'nuevo';
+      slugByName.set(label, slug);
     }
 
     if (!codeBySlug.has(slug)) {
@@ -3525,7 +3579,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
         decision_type: decisionType,
         cluster_strength: Number(cluster.strength.toFixed(4)),
         fragments: [],
-        pattern_summary: `Patrón agregado de ${cluster.items.length} fragmentos semánticamente relacionados.`,
+        pattern_summary: String(cluster.summary || ''),
       });
       sourceSetsBySlug.set(slug, new Set());
     }
@@ -3543,6 +3597,8 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
 
   codeBySlug.forEach((bucket, slug) => {
     const fragmentsForCode = Array.isArray(bucket.fragments) ? bucket.fragments : [];
+    if (fragmentsForCode.length < MIN_FRAGMENTS_PER_FINAL_CODE) return;
+
     const codeFrequency = fragmentsForCode.length;
     const sourceDispersion = Number(sourceSetsBySlug.get(slug)?.size || 0);
     const consistency = (() => {
@@ -3551,7 +3607,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
       return clamp(0, 1 - avgRedundancy, 1);
     })();
     const intensity = fragmentsForCode.reduce((acc, f) => acc + Number(f.density_score || 0), 0) / Math.max(1, fragmentsForCode.length);
-    const scoreIa = clamp(0, (0.35 * clamp(0, codeFrequency / Math.max(1, selectedFragments.length), 1)) + (0.3 * clamp(0, sourceDispersion / Math.max(1, selectedFragments.length), 1)) + (0.2 * consistency) + (0.15 * intensity), 1);
+    const scoreIa = clamp(0, (0.35 * clamp(0, codeFrequency / Math.max(1, analyzedFragments.length), 1)) + (0.3 * clamp(0, sourceDispersion / Math.max(1, analyzedFragments.length), 1)) + (0.2 * consistency) + (0.15 * intensity), 1);
 
     fragmentsForCode.forEach((fragment) => {
       proposalCounter += 1;
@@ -3564,8 +3620,8 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
         decision_type: bucket.decision_type,
         confidence: Number(clamp(0.05, (Number(fragment.ai_candidate_score || 0) * 0.65) + (scoreIa * 0.35), 0.99).toFixed(2)),
         justification: bucket.decision_type === 'reutilizacion'
-          ? `Compresión semántica: fragmento asignado a código existente con narrativa compartida.`
-          : 'Compresión semántica: no hubo código existente suficientemente cercano; se propone núcleo nuevo.',
+          ? 'Compresión semántica multinivel: fragmento asignado a código existente con patrón compartido.'
+          : 'Compresión semántica multinivel: código optimizado sobre patrón agregado de múltiples fragmentos.',
         alternatives: [],
         status: 'propuesto',
         created_at: nowIso(),
@@ -3583,19 +3639,22 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
     });
   });
 
-  const generatedCodes = Array.from(codeBySlug.values()).map((bucket) => ({
-    suggested_code_slug: bucket.suggested_code_slug,
-    suggested_code_name: bucket.suggested_code_name,
-    decision_type: bucket.decision_type,
-    fragments_count: Array.isArray(bucket.fragments) ? bucket.fragments.length : 0,
-    description: String(bucket.pattern_summary || ''),
-  }));
+  const generatedCodes = Array.from(codeBySlug.values())
+    .filter((bucket) => Array.isArray(bucket.fragments) && bucket.fragments.length >= MIN_FRAGMENTS_PER_FINAL_CODE)
+    .map((bucket) => ({
+      suggested_code_slug: bucket.suggested_code_slug,
+      suggested_code_name: bucket.suggested_code_name,
+      decision_type: bucket.decision_type,
+      fragments_count: Array.isArray(bucket.fragments) ? bucket.fragments.length : 0,
+      description: String(bucket.pattern_summary || ''),
+    }));
 
   return {
     proposals,
     generatedCodes,
   };
 }
+
 
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
