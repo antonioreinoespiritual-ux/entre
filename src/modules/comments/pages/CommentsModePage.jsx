@@ -99,6 +99,14 @@ const CommentsModePage = () => {
   const [codeClusterFilter, setCodeClusterFilter] = useState('');
   const [codeClientFilter, setCodeClientFilter] = useState('');
   const [codeSortBy, setCodeSortBy] = useState('score_total_desc');
+  const [proposalStatusFilter, setProposalStatusFilter] = useState('pendiente,propuesto');
+  const [proposalTypeFilter, setProposalTypeFilter] = useState('');
+  const [proposalSortBy, setProposalSortBy] = useState('confidence_desc');
+  const [proposalQuery, setProposalQuery] = useState('');
+  const [activeProposalId, setActiveProposalId] = useState('');
+  const [proposalComparisonCode, setProposalComparisonCode] = useState('');
+  const [proposalComparisonPage, setProposalComparisonPage] = useState(0);
+  const [proposalActionDrafts, setProposalActionDrafts] = useState({});
   const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
   const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
   const [codeMenuSlug, setCodeMenuSlug] = useState('');
@@ -304,6 +312,87 @@ const CommentsModePage = () => {
     return { candidateName, candidateSlug };
   };
 
+  const getCurrentReviewer = () => {
+    try {
+      const fromStorage = JSON.parse(localStorage.getItem('auth_user') || '{}');
+      const email = String(fromStorage?.email || '').trim();
+      const name = String(fromStorage?.name || '').trim();
+      return email || name || 'usuario_humano';
+    } catch {
+      return 'usuario_humano';
+    }
+  };
+
+  const getDraftForProposal = (proposalId) => {
+    const key = String(proposalId || '');
+    const existing = proposalActionDrafts[key] || {};
+    return {
+      assignExistingSlug: String(existing.assignExistingSlug || ''),
+      manualCodeName: String(existing.manualCodeName || ''),
+      manualCodeDescription: String(existing.manualCodeDescription || ''),
+      renameSuggestedName: String(existing.renameSuggestedName || ''),
+      mergeTargetSlug: String(existing.mergeTargetSlug || ''),
+      splitNameA: String(existing.splitNameA || ''),
+      splitNameB: String(existing.splitNameB || ''),
+    };
+  };
+
+  const updateProposalDraft = (proposalId, patch) => {
+    const key = String(proposalId || '');
+    setProposalActionDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        ...getDraftForProposal(key),
+        ...patch,
+      },
+    }));
+  };
+
+  const createUniqueCode = ({ name, description = '', parentSlug = null, createdManual = false }) => {
+    const safeName = String(name || '').trim() || `Código ${new Date().toLocaleTimeString()}`;
+    const baseSlug = slugify(safeName).slice(0, 64) || `code-${Date.now()}`;
+    let nextSlug = baseSlug;
+    let suffix = 1;
+    while (codes.some((code) => String(code.slug) === String(nextSlug))) {
+      suffix += 1;
+      nextSlug = `${baseSlug}-${suffix}`;
+    }
+    return {
+      id: `code_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      name: safeName,
+      slug: nextSlug,
+      parent_slug: parentSlug || null,
+      description: String(description || ''),
+      tags: [],
+      created_manually: createdManual,
+      created_by: getCurrentReviewer(),
+      created_at: new Date().toISOString(),
+    };
+  };
+
+  const appendProposalReviewLog = (proposal, action, finalCodeSlug = '', finalCodeName = '', extra = {}) => {
+    const now = new Date().toISOString();
+    const originalSuggestedCodeSlug = String(proposal.original_suggested_code_slug || proposal.suggested_code_slug || '');
+    const originalSuggestedCodeName = String(proposal.original_suggested_code_name || proposal.suggested_code_name || '');
+    const entry = {
+      action,
+      actor: getCurrentReviewer(),
+      acted_at: now,
+      final_code_slug: String(finalCodeSlug || ''),
+      final_code_name: String(finalCodeName || ''),
+      original_suggested_code_slug: originalSuggestedCodeSlug,
+      original_suggested_code_name: originalSuggestedCodeName,
+      ...extra,
+    };
+    return {
+      ...proposal,
+      original_suggested_code_slug: originalSuggestedCodeSlug,
+      original_suggested_code_name: originalSuggestedCodeName,
+      review_log: [...(Array.isArray(proposal.review_log) ? proposal.review_log : []), entry],
+      updated_at: now,
+    };
+  };
+
   const runCodeProposalAgent = () => {
     const acceptedByFragment = new Map();
     codeProposals.forEach((proposal) => {
@@ -359,6 +448,7 @@ const CommentsModePage = () => {
           status: 'propuesto',
           created_at: now,
           updated_at: now,
+          review_log: [],
           parent_candidate_slug: null,
         });
         return;
@@ -378,6 +468,7 @@ const CommentsModePage = () => {
         status: 'propuesto',
         created_at: now,
         updated_at: now,
+        review_log: [],
         parent_candidate_slug: null,
       });
     });
@@ -388,51 +479,41 @@ const CommentsModePage = () => {
     });
   };
 
-  const updateProposalStatus = (proposalId, status) => {
-    const now = new Date().toISOString();
-    const nextCodeProposals = codeProposals.map((proposal) => (
-      String(proposal.id) === String(proposalId)
-        ? { ...proposal, status, updated_at: now }
-        : proposal
-    ));
-    persist({ ...store, codeProposals: nextCodeProposals });
-  };
-
   const acceptCodeProposal = (proposal) => {
     if (!proposal) return;
     const fragmentId = String(proposal.fragment_id || '');
     if (!fragmentId) return;
 
     let nextCodes = [...codes];
+    let finalCodeSlug = String(proposal.suggested_code_slug || '');
+    let finalCodeName = String(proposal.suggested_code_name || '');
     const nextFragments = fragments.map((fragment) => {
       if (String(fragment.id) !== fragmentId) return fragment;
 
       const previous = Array.isArray(fragment.code_slugs) ? fragment.code_slugs : [];
-      const merged = Array.from(new Set([...previous, String(proposal.suggested_code_slug || '')].filter(Boolean)));
+      const merged = Array.from(new Set([...previous, finalCodeSlug].filter(Boolean)));
       return { ...fragment, code_slugs: merged };
     });
 
     if (proposal.decision_type === 'nuevo') {
       const exists = nextCodes.some((code) => String(code.slug) === String(proposal.suggested_code_slug));
       if (!exists) {
-        nextCodes = [
-          {
-            id: `code_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-            name: String(proposal.suggested_code_name || 'Código nuevo'),
-            slug: String(proposal.suggested_code_slug || `code-${Date.now()}`),
-            parent_slug: null,
-            description: 'Creado desde aceptación de propuesta del Agente 2.',
-            tags: [],
-          },
-          ...nextCodes,
-        ];
+        const newCode = createUniqueCode({
+          name: String(proposal.suggested_code_name || 'Código nuevo'),
+          description: 'Creado desde aceptación de propuesta del Agente 2.',
+          parentSlug: proposal.parent_candidate_slug || null,
+          createdManual: false,
+        });
+        finalCodeSlug = String(newCode.slug);
+        finalCodeName = String(newCode.name);
+        nextCodes = [newCode, ...nextCodes];
       }
     }
 
     const now = new Date().toISOString();
     const nextCodeProposals = codeProposals.map((item) => (
       String(item.id) === String(proposal.id)
-        ? { ...item, status: 'aceptado', updated_at: now }
+        ? appendProposalReviewLog({ ...item, status: 'aceptado' }, 'aceptar', finalCodeSlug, finalCodeName)
         : item
     ));
 
@@ -445,8 +526,191 @@ const CommentsModePage = () => {
   };
 
   const rejectCodeProposal = (proposalId) => {
-    updateProposalStatus(proposalId, 'rechazado');
+    const nextCodeProposals = codeProposals.map((proposal) => {
+      if (String(proposal.id) !== String(proposalId)) return proposal;
+      return appendProposalReviewLog({ ...proposal, status: 'rechazado' }, 'rechazar');
+    });
+    persist({ ...store, codeProposals: nextCodeProposals });
   };
+
+  const assignExistingCodeToProposal = (proposal) => {
+    if (!proposal) return;
+    const draft = getDraftForProposal(proposal.id);
+    const targetSlug = String(draft.assignExistingSlug || '').trim();
+    if (!targetSlug) return;
+    const targetCode = codes.find((code) => String(code.slug) === targetSlug);
+    if (!targetCode) return;
+
+    const nextFragments = fragments.map((fragment) => {
+      if (String(fragment.id) !== String(proposal.fragment_id || '')) return fragment;
+      const merged = Array.from(new Set([...(fragment.code_slugs || []), targetSlug]));
+      return { ...fragment, code_slugs: merged };
+    });
+
+    const nextCodeProposals = codeProposals.map((item) => {
+      if (String(item.id) !== String(proposal.id)) return item;
+      return appendProposalReviewLog({ ...item, status: 'reasignado' }, 'reasignar', targetSlug, targetCode.name);
+    });
+
+    persist({ ...store, fragments: nextFragments, codeProposals: nextCodeProposals });
+  };
+
+  const createManualCodeForProposal = (proposal) => {
+    if (!proposal) return;
+    const draft = getDraftForProposal(proposal.id);
+    const manualName = String(draft.manualCodeName || '').trim();
+    if (!manualName) return;
+    const newCode = createUniqueCode({
+      name: manualName,
+      description: String(draft.manualCodeDescription || '').trim() || 'Creado manualmente desde Panel Humano.',
+      parentSlug: proposal.parent_candidate_slug || null,
+      createdManual: true,
+    });
+
+    const nextFragments = fragments.map((fragment) => {
+      if (String(fragment.id) !== String(proposal.fragment_id || '')) return fragment;
+      const merged = Array.from(new Set([...(fragment.code_slugs || []), String(newCode.slug)]));
+      return { ...fragment, code_slugs: merged };
+    });
+
+    const nextCodeProposals = codeProposals.map((item) => {
+      if (String(item.id) !== String(proposal.id)) return item;
+      return appendProposalReviewLog({ ...item, status: 'corregido' }, 'crear_manual', newCode.slug, newCode.name, { created_manually: true });
+    });
+
+    persist({ ...store, codes: [newCode, ...codes], fragments: nextFragments, codeProposals: nextCodeProposals });
+  };
+
+  const renameSuggestedProposalCode = (proposal) => {
+    if (!proposal) return;
+    const draft = getDraftForProposal(proposal.id);
+    const renamed = String(draft.renameSuggestedName || '').trim();
+    if (!renamed) return;
+    const now = new Date().toISOString();
+    const nextSlugBase = slugify(renamed).slice(0, 64) || `code-${Date.now()}`;
+    let nextSlug = nextSlugBase;
+    let suffix = 1;
+    while (codes.some((code) => String(code.slug) === String(nextSlug))) {
+      suffix += 1;
+      nextSlug = `${nextSlugBase}-${suffix}`;
+    }
+    const nextCodeProposals = codeProposals.map((item) => {
+      if (String(item.id) !== String(proposal.id)) return item;
+      const updated = {
+        ...item,
+        suggested_code_name: renamed,
+        suggested_code_slug: nextSlug,
+        status: 'corregido',
+        updated_at: now,
+      };
+      return appendProposalReviewLog(updated, 'renombrar_sugerido', nextSlug, renamed);
+    });
+    persist({ ...store, codeProposals: nextCodeProposals });
+  };
+
+  const splitSuggestedProposalCode = (proposal) => {
+    if (!proposal) return;
+    const draft = getDraftForProposal(proposal.id);
+    const nameA = String(draft.splitNameA || '').trim();
+    const nameB = String(draft.splitNameB || '').trim();
+    if (!nameA || !nameB) return;
+    const now = new Date().toISOString();
+    const splitCandidates = [nameA, nameB].map((name) => ({ code_name: name, confidence: 0.5 }));
+    const nextCodeProposals = codeProposals.map((item) => {
+      if (String(item.id) !== String(proposal.id)) return item;
+      const updated = {
+        ...item,
+        status: 'corregido',
+        split_candidates: splitCandidates,
+        alternatives: [...(Array.isArray(item.alternatives) ? item.alternatives : []), ...splitCandidates],
+        updated_at: now,
+      };
+      return appendProposalReviewLog(updated, 'dividir_sugerido', '', '', { split_candidates: splitCandidates });
+    });
+    persist({ ...store, codeProposals: nextCodeProposals });
+  };
+
+  const mergeSuggestedWithExistingCode = (proposal) => {
+    if (!proposal) return;
+    const draft = getDraftForProposal(proposal.id);
+    const targetSlug = String(draft.mergeTargetSlug || '').trim();
+    if (!targetSlug) return;
+    const targetCode = codes.find((code) => String(code.slug) === targetSlug);
+    if (!targetCode) return;
+
+    const nextFragments = fragments.map((fragment) => {
+      if (String(fragment.id) !== String(proposal.fragment_id || '')) return fragment;
+      const merged = Array.from(new Set([...(fragment.code_slugs || []), targetSlug]));
+      return { ...fragment, code_slugs: merged };
+    });
+
+    const nextCodeProposals = codeProposals.map((item) => {
+      if (String(item.id) !== String(proposal.id)) return item;
+      const updated = {
+        ...item,
+        status: 'fusionado',
+        merged_into_slug: targetSlug,
+        merged_into_name: targetCode.name,
+      };
+      return appendProposalReviewLog(updated, 'fusionar', targetSlug, targetCode.name);
+    });
+    persist({ ...store, fragments: nextFragments, codeProposals: nextCodeProposals });
+  };
+
+  const fragmentById = useMemo(() => {
+    const map = new Map();
+    fragments.forEach((fragment) => {
+      map.set(String(fragment.id), fragment);
+    });
+    return map;
+  }, [fragments]);
+
+  const proposalStatusAllowed = useMemo(() => {
+    const raw = String(proposalStatusFilter || '').trim();
+    if (!raw) return null;
+    return new Set(raw.split(',').map((item) => item.trim()).filter(Boolean));
+  }, [proposalStatusFilter]);
+
+  const humanPanelProposals = useMemo(() => {
+    const query = String(proposalQuery || '').toLowerCase().trim();
+    const list = codeProposals.filter((proposal) => {
+      const status = String(proposal.status || 'pendiente');
+      if (proposalStatusAllowed && !proposalStatusAllowed.has(status)) return false;
+      if (proposalTypeFilter && String(proposal.decision_type || '') !== proposalTypeFilter) return false;
+      if (!query) return true;
+      const fragment = fragmentById.get(String(proposal.fragment_id || ''));
+      const haystack = [
+        proposal.fragment_excerpt,
+        proposal.suggested_code_name,
+        proposal.suggested_code_slug,
+        fragment?.excerpt,
+        fragment?.source_comment_text,
+      ].map((item) => String(item || '').toLowerCase()).join(' ');
+      return haystack.includes(query);
+    });
+
+    const sorted = [...list].sort((a, b) => {
+      if (proposalSortBy === 'confidence_asc') return Number(a.confidence || 0) - Number(b.confidence || 0);
+      if (proposalSortBy === 'date_asc') return String(a.created_at || '').localeCompare(String(b.created_at || ''));
+      if (proposalSortBy === 'type') return String(a.decision_type || '').localeCompare(String(b.decision_type || ''));
+      if (proposalSortBy === 'date_desc') return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+      return Number(b.confidence || 0) - Number(a.confidence || 0);
+    });
+
+    return sorted;
+  }, [codeProposals, proposalStatusAllowed, proposalTypeFilter, proposalQuery, proposalSortBy, fragmentById]);
+
+  const proposalComparisonRows = useMemo(() => {
+    const slug = String(proposalComparisonCode || '').trim();
+    if (!slug) return [];
+    return fragments.filter((fragment) => Array.isArray(fragment.code_slugs) && fragment.code_slugs.includes(slug));
+  }, [proposalComparisonCode, fragments]);
+
+  const proposalComparisonPageSize = 8;
+  const paginatedProposalComparisonRows = useMemo(() => {
+    const start = proposalComparisonPage * proposalComparisonPageSize;
+    return proposalComparisonRows.slice(start, start + proposalComparisonPageSize);
+  }, [proposalComparisonRows, proposalComparisonPage]);
 
   const openCodeEditor = (mode = 'create', code = null, parentSlug = '') => {
     setCodeMenuSlug('');
@@ -1928,27 +2192,89 @@ const CommentsModePage = () => {
               <div className="rounded-xl border bg-white p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-900">Propuestas de codificación (Agente 2)</h3>
-                    <p className="text-xs text-slate-500">Reutilización prioritaria de códigos existentes antes de proponer códigos nuevos.</p>
+                    <h3 className="text-sm font-semibold text-slate-900">Panel Humano · Propuestas de codificación (Agente 2)</h3>
+                    <p className="text-xs text-slate-500">Control humano consciente: aceptar, corregir, fusionar o rechazar sin automatización opaca.</p>
                   </div>
                   <div className="text-xs text-slate-600">
-                    Total: {codeProposals.length} · Propuestas: {codeProposals.filter((item) => item.status === 'propuesto').length}
+                    Total: {codeProposals.length} · Pendientes/Propuestas: {codeProposals.filter((item) => ['pendiente', 'propuesto'].includes(String(item.status || 'pendiente'))).length}
                   </div>
                 </div>
+
+                <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_repeat(4,minmax(0,1fr))]">
+                  <label className="relative block">
+                    <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                    <input className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar por texto de fragmento o código" value={proposalQuery} onChange={(e) => setProposalQuery(e.target.value)} />
+                  </label>
+                  <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={proposalStatusFilter} onChange={(e) => setProposalStatusFilter(e.target.value)}>
+                    <option value="pendiente,propuesto">Estados: pendiente + propuesto</option>
+                    <option value="propuesto">Estado: propuesto</option>
+                    <option value="pendiente">Estado: pendiente</option>
+                    <option value="aceptado,corregido,fusionado,reasignado,rechazado">Estados revisados</option>
+                    <option value="">Todos los estados</option>
+                  </select>
+                  <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={proposalTypeFilter} onChange={(e) => setProposalTypeFilter(e.target.value)}>
+                    <option value="">Tipo: todos</option>
+                    <option value="reutilizacion">Solo reutilización</option>
+                    <option value="nuevo">Solo nuevo candidato</option>
+                  </select>
+                  <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={proposalSortBy} onChange={(e) => setProposalSortBy(e.target.value)}>
+                    <option value="confidence_desc">Orden: confianza (desc)</option>
+                    <option value="confidence_asc">Orden: confianza (asc)</option>
+                    <option value="date_desc">Orden: fecha (más reciente)</option>
+                    <option value="date_asc">Orden: fecha (más antiguo)</option>
+                    <option value="type">Orden: tipo</option>
+                  </select>
+                  <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={proposalComparisonCode} onChange={(e) => { setProposalComparisonCode(e.target.value); setProposalComparisonPage(0); }}>
+                    <option value="">Vista comparativa por código</option>
+                    {codes.map((code) => <option key={`comparison-${code.slug}`} value={code.slug}>{code.name}</option>)}
+                  </select>
+                </div>
+
+                {proposalComparisonCode ? (
+                  <div className="rounded-lg border bg-slate-50 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-slate-700">Vista comparativa · {codes.find((code) => String(code.slug) === String(proposalComparisonCode))?.name || proposalComparisonCode}</p>
+                        <p className="text-[11px] text-slate-500">Ocurrencias: {proposalComparisonRows.length} · Relación con propuestas actuales visible en la lista.</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button className="bg-white border text-slate-700" disabled={proposalComparisonPage <= 0} onClick={() => setProposalComparisonPage((prev) => Math.max(0, prev - 1))}>Anterior</Button>
+                        <Button className="bg-white border text-slate-700" disabled={(proposalComparisonPage + 1) * proposalComparisonPageSize >= proposalComparisonRows.length} onClick={() => setProposalComparisonPage((prev) => prev + 1)}>Siguiente</Button>
+                      </div>
+                    </div>
+                    <div className="mt-2 space-y-1.5">
+                      {!paginatedProposalComparisonRows.length ? <p className="text-xs text-slate-500">Sin fragmentos asociados en esta página.</p> : paginatedProposalComparisonRows.map((fragment) => (
+                        <div key={`compare-fragment-${fragment.id}`} className="rounded border bg-white px-2 py-1.5 text-xs text-slate-700">
+                          <p className="font-medium text-slate-800">{fragment.title || 'Fragmento sin título'}</p>
+                          <p className="line-clamp-2 text-slate-600">{fragment.excerpt || 'Sin extracto'}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 {!codeProposals.length ? (
                   <p className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">Sin propuestas aún. Ejecuta “Agente 2 · Proponer códigos”.</p>
                 ) : (
                   <div className="space-y-2 max-h-[380px] overflow-auto pr-1">
-                    {codeProposals.map((proposal) => {
+                    {humanPanelProposals.map((proposal) => {
+                      const linkedFragment = fragmentById.get(String(proposal.fragment_id || ''));
+                      const proposalStatus = String(proposal.status || 'pendiente');
+                      const draft = getDraftForProposal(proposal.id);
+                      const similarExistingCodes = codes
+                        .map((code) => ({ code, score: scoreCodeReuse(String(linkedFragment?.excerpt || proposal.fragment_excerpt || ''), code) }))
+                        .filter((item) => item.score > 0.08)
+                        .sort((a, b) => b.score - a.score)
+                        .slice(0, 4);
                       const statusClass = proposal.status === 'aceptado'
                         ? 'bg-emerald-50 border-emerald-200'
-                        : proposal.status === 'rechazado'
+                        : ['rechazado'].includes(proposalStatus)
                           ? 'bg-rose-50 border-rose-200'
                           : 'bg-amber-50 border-amber-200';
                       const decisionClass = proposal.decision_type === 'reutilizacion'
                         ? 'bg-blue-100 text-blue-700 border-blue-200'
                         : 'bg-violet-100 text-violet-700 border-violet-200';
+                      const isExpanded = String(activeProposalId) === String(proposal.id);
                       return (
                         <article key={proposal.id} className={`rounded-lg border p-3 ${statusClass}`}>
                           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1956,13 +2282,17 @@ const CommentsModePage = () => {
                               <span className={`rounded-full border px-2 py-0.5 ${decisionClass}`}>
                                 {proposal.decision_type === 'reutilizacion' ? 'Reutilización código existente' : 'Código nuevo candidato'}
                               </span>
-                              <span className="rounded-full border bg-white px-2 py-0.5">Estado: {proposal.status || 'pendiente'}</span>
+                              <span className="rounded-full border bg-white px-2 py-0.5">Estado: {proposalStatus}</span>
                               <span className="rounded-full border bg-white px-2 py-0.5">Confianza: {proposal.confidence ?? '—'}</span>
                             </div>
-                            <div className="text-[11px] text-slate-500">Fragmento: {proposal.fragment_id}</div>
+                            <div className="flex items-center gap-2">
+                              <div className="text-[11px] text-slate-500">Fragmento: {proposal.fragment_id}</div>
+                              <Button className="bg-white border text-slate-700" onClick={() => setActiveProposalId(isExpanded ? '' : String(proposal.id))}>{isExpanded ? 'Cerrar panel' : 'Revisar propuesta'}</Button>
+                            </div>
                           </div>
 
-                          <p className="mt-2 text-sm text-slate-800">{proposal.fragment_excerpt || 'Sin texto de fragmento'}</p>
+                          <p className="mt-2 text-sm text-slate-800">{proposal.fragment_excerpt || linkedFragment?.excerpt || 'Sin texto de fragmento'}</p>
+                          {linkedFragment?.source_comment_text ? <p className="mt-1 rounded border bg-white px-2 py-1 text-xs text-slate-600">Origen: {linkedFragment.source_comment_text}</p> : null}
                           <div className="mt-2 text-xs text-slate-700">
                             <span className="font-semibold">Código sugerido:</span> {proposal.suggested_code_name} <span className="text-slate-500">({proposal.suggested_code_slug})</span>
                           </div>
@@ -1981,10 +2311,83 @@ const CommentsModePage = () => {
                             </div>
                           ) : null}
 
+                          {(proposal.decision_type === 'nuevo' && similarExistingCodes.length) ? (
+                            <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2">
+                              <p className="text-[11px] font-semibold text-amber-800">Prevención de caos: códigos similares existentes antes de aceptar nuevo</p>
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {similarExistingCodes.map((row) => (
+                                  <span key={`${proposal.id}-similar-${row.code.slug}`} className="rounded-full border bg-white px-2 py-0.5 text-[11px] text-slate-600">
+                                    {row.code.name} ({Number(row.score).toFixed(2)})
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          ) : null}
+
                           <div className="mt-3 flex flex-wrap items-center gap-2">
                             <Button className="bg-emerald-600 text-white" disabled={proposal.status === 'aceptado'} onClick={() => acceptCodeProposal(proposal)}>Aceptar</Button>
                             <Button className="bg-white border text-rose-700" disabled={proposal.status === 'rechazado'} onClick={() => rejectCodeProposal(proposal.id)}>Rechazar</Button>
                           </div>
+
+                          {isExpanded ? (
+                            <div className="mt-3 space-y-2 rounded-lg border bg-white p-3">
+                              <p className="text-xs font-semibold text-slate-700">Acciones humanas de revisión</p>
+                              <div className="grid gap-2 md:grid-cols-2">
+                                <div className="rounded border p-2 text-xs">
+                                  <p className="mb-1 font-semibold text-slate-700">Asignar otro código existente</p>
+                                  <select className="w-full rounded border px-2 py-1" value={draft.assignExistingSlug} onChange={(e) => updateProposalDraft(proposal.id, { assignExistingSlug: e.target.value })}>
+                                    <option value="">Seleccionar código existente</option>
+                                    {codes.map((code) => <option key={`${proposal.id}-assign-${code.slug}`} value={code.slug}>{code.name}</option>)}
+                                  </select>
+                                  <Button className="mt-2 bg-white border text-slate-700" onClick={() => assignExistingCodeToProposal(proposal)}>Reasignar</Button>
+                                </div>
+
+                                <div className="rounded border p-2 text-xs">
+                                  <p className="mb-1 font-semibold text-slate-700">Crear código manual y asignar</p>
+                                  <input className="mb-1 w-full rounded border px-2 py-1" placeholder="Nombre código manual" value={draft.manualCodeName} onChange={(e) => updateProposalDraft(proposal.id, { manualCodeName: e.target.value })} />
+                                  <input className="w-full rounded border px-2 py-1" placeholder="Descripción opcional" value={draft.manualCodeDescription} onChange={(e) => updateProposalDraft(proposal.id, { manualCodeDescription: e.target.value })} />
+                                  <Button className="mt-2 bg-white border text-slate-700" onClick={() => createManualCodeForProposal(proposal)}>Crear manual</Button>
+                                </div>
+
+                                <div className="rounded border p-2 text-xs">
+                                  <p className="mb-1 font-semibold text-slate-700">Corregir / renombrar código sugerido</p>
+                                  <input className="w-full rounded border px-2 py-1" placeholder="Nuevo nombre sugerido" value={draft.renameSuggestedName} onChange={(e) => updateProposalDraft(proposal.id, { renameSuggestedName: e.target.value })} />
+                                  <Button className="mt-2 bg-white border text-slate-700" onClick={() => renameSuggestedProposalCode(proposal)}>Aplicar corrección</Button>
+                                </div>
+
+                                <div className="rounded border p-2 text-xs">
+                                  <p className="mb-1 font-semibold text-slate-700">Fusionar sugerido con código existente</p>
+                                  <select className="w-full rounded border px-2 py-1" value={draft.mergeTargetSlug} onChange={(e) => updateProposalDraft(proposal.id, { mergeTargetSlug: e.target.value })}>
+                                    <option value="">Seleccionar código destino</option>
+                                    {codes.map((code) => <option key={`${proposal.id}-merge-${code.slug}`} value={code.slug}>{code.name}</option>)}
+                                  </select>
+                                  <Button className="mt-2 bg-white border text-slate-700" onClick={() => mergeSuggestedWithExistingCode(proposal)}>Fusionar</Button>
+                                </div>
+
+                                <div className="rounded border p-2 text-xs md:col-span-2">
+                                  <p className="mb-1 font-semibold text-slate-700">Dividir sugerencia antes de aceptar</p>
+                                  <div className="grid gap-2 md:grid-cols-2">
+                                    <input className="w-full rounded border px-2 py-1" placeholder="Nombre división A" value={draft.splitNameA} onChange={(e) => updateProposalDraft(proposal.id, { splitNameA: e.target.value })} />
+                                    <input className="w-full rounded border px-2 py-1" placeholder="Nombre división B" value={draft.splitNameB} onChange={(e) => updateProposalDraft(proposal.id, { splitNameB: e.target.value })} />
+                                  </div>
+                                  <Button className="mt-2 bg-white border text-slate-700" onClick={() => splitSuggestedProposalCode(proposal)}>Aplicar división</Button>
+                                </div>
+                              </div>
+
+                              {Array.isArray(proposal.review_log) && proposal.review_log.length ? (
+                                <div className="rounded border bg-slate-50 p-2">
+                                  <p className="mb-1 text-[11px] font-semibold text-slate-700">Trazabilidad de decisiones humanas</p>
+                                  <div className="max-h-28 space-y-1 overflow-auto pr-1">
+                                    {proposal.review_log.slice().reverse().map((entry, idx) => (
+                                      <p key={`${proposal.id}-log-${idx}`} className="text-[11px] text-slate-600">
+                                        {entry.acted_at} · {entry.actor} · {entry.action} · final: {entry.final_code_name || entry.final_code_slug || '—'} · original: {entry.original_suggested_code_name || entry.original_suggested_code_slug || '—'}
+                                      </p>
+                                    ))}
+                                  </div>
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
                         </article>
                       );
                     })}
