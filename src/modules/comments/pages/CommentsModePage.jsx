@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
@@ -108,6 +108,7 @@ const CommentsModePage = () => {
   const [selectedCodeMapEdge, setSelectedCodeMapEdge] = useState('');
   const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
   const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
+  const codeMapCanvasRef = useRef(null);
   const [codeEditor, setCodeEditor] = useState({
     open: false,
     ...defaultCodeEditor,
@@ -343,6 +344,34 @@ const CommentsModePage = () => {
       };
     });
     persist({ ...store, codes: nextCodes });
+  };
+
+  const isDescendantCode = (targetSlug, candidateAncestorSlug) => {
+    const target = String(targetSlug || '');
+    const candidate = String(candidateAncestorSlug || '');
+    if (!target || !candidate || target === candidate) return false;
+    let parent = String(codes.find((code) => String(code.slug) === target)?.parent_slug || '');
+    const guard = new Set();
+    while (parent && !guard.has(parent)) {
+      if (parent === candidate) return true;
+      guard.add(parent);
+      parent = String(codes.find((code) => String(code.slug) === parent)?.parent_slug || '');
+    }
+    return false;
+  };
+
+  const connectCodeFromSource = (targetSlug) => {
+    const sourceSlug = String(codeMapConnectSource || '');
+    const normalizedTarget = String(targetSlug || '');
+    if (!sourceSlug || !normalizedTarget || sourceSlug === normalizedTarget) return;
+    if (isDescendantCode(normalizedTarget, sourceSlug)) {
+      window.alert('No se puede conectar porque generaría un ciclo en la jerarquía.');
+      return;
+    }
+    setCodeParent(sourceSlug, normalizedTarget);
+    setSelectedCodeMapNode(normalizedTarget);
+    setSelectedCodeMapEdge('');
+    setCodeMapConnectSource('');
   };
 
   const filteredCodes = useMemo(() => {
@@ -1448,12 +1477,13 @@ const CommentsModePage = () => {
                     </div>
 
                     <div
+                      ref={codeMapCanvasRef}
                       className={`relative h-full overflow-hidden bg-slate-50 ${isCodeMapPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
                       onMouseDown={handleCodeMapCanvasMouseDown}
                     >
                       {codeMapConnectSource ? (
                         <div className="absolute left-3 top-3 z-20 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs text-indigo-700">
-                          Conectando desde <b>{codes.find((item) => String(item.slug) === String(codeMapConnectSource))?.name || codeMapConnectSource}</b>. Haz clic en otro nodo para completar.
+                          Conectando desde <b>{codes.find((item) => String(item.slug) === String(codeMapConnectSource))?.name || codeMapConnectSource}</b>. Haz clic en otro nodo para asignarlo como padre.
                         </div>
                       ) : null}
 
@@ -1500,8 +1530,8 @@ const CommentsModePage = () => {
                               onClick={(event) => {
                                 event.stopPropagation();
                                 if (codeMapConnectSource && codeMapConnectSource !== code.slug) {
-                                  setCodeParent(code.slug, codeMapConnectSource);
-                                  setCodeMapConnectSource('');
+                                  connectCodeFromSource(code.slug);
+                                  return;
                                 }
                                 setSelectedCodeMapEdge('');
                                 setSelectedCodeMapNode(code.slug);
@@ -1510,7 +1540,18 @@ const CommentsModePage = () => {
                                 event.preventDefault();
                                 event.stopPropagation();
                                 setSelectedCodeMapNode(code.slug);
-                                setCodeMapContextMenu({ open: true, x: event.clientX, y: event.clientY, slug: code.slug });
+                                const canvasRect = codeMapCanvasRef.current?.getBoundingClientRect();
+                                if (!canvasRect) {
+                                  setCodeMapContextMenu({ open: true, x: event.clientX, y: event.clientY, slug: code.slug });
+                                  return;
+                                }
+                                const menuWidth = 220;
+                                const menuHeight = 220;
+                                const relativeX = event.clientX - canvasRect.left;
+                                const relativeY = event.clientY - canvasRect.top;
+                                const clampedX = Math.max(8, Math.min(relativeX, canvasRect.width - menuWidth - 8));
+                                const clampedY = Math.max(8, Math.min(relativeY, canvasRect.height - menuHeight - 8));
+                                setCodeMapContextMenu({ open: true, x: clampedX, y: clampedY, slug: code.slug });
                               }}
                             >
                               <p className="truncate">{code.name}</p>
