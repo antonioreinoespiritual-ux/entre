@@ -100,7 +100,7 @@ const CommentsModePage = () => {
   const [codeClusterFilter, setCodeClusterFilter] = useState('');
   const [codeClientFilter, setCodeClientFilter] = useState('');
   const [codeSortBy, setCodeSortBy] = useState('score_total_desc');
-  const [proposalStatusFilter, setProposalStatusFilter] = useState('pendiente,propuesto');
+  const [proposalStatusFilter, setProposalStatusFilter] = useState('');
   const [proposalTypeFilter, setProposalTypeFilter] = useState('');
   const [proposalSortBy, setProposalSortBy] = useState('confidence_desc');
   const [proposalQuery, setProposalQuery] = useState('');
@@ -2358,11 +2358,11 @@ const CommentsModePage = () => {
                     <input className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar por texto de fragmento o código" value={proposalQuery} onChange={(e) => setProposalQuery(e.target.value)} />
                   </label>
                   <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={proposalStatusFilter} onChange={(e) => setProposalStatusFilter(e.target.value)}>
+                    <option value="">Estados: todos</option>
                     <option value="pendiente,propuesto">Estados: pendiente + propuesto</option>
                     <option value="propuesto">Estado: propuesto</option>
                     <option value="pendiente">Estado: pendiente</option>
                     <option value="aceptado,corregido,fusionado,reasignado,rechazado">Estados revisados</option>
-                    <option value="">Todos los estados</option>
                   </select>
                   <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={proposalTypeFilter} onChange={(e) => setProposalTypeFilter(e.target.value)}>
                     <option value="">Tipo: todos</option>
@@ -2418,6 +2418,21 @@ const CommentsModePage = () => {
 
                 {!codeProposals.length ? (
                   <p className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">Sin propuestas aún. Ejecuta “Agente 2 · Proponer códigos”.</p>
+                ) : !humanPanelProposals.length ? (
+                  <div className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">
+                    <p>No hay propuestas para los filtros actuales.</p>
+                    <button
+                      type="button"
+                      className="mt-2 text-indigo-600 hover:underline"
+                      onClick={() => {
+                        setProposalStatusFilter('');
+                        setProposalTypeFilter('');
+                        setProposalQuery('');
+                      }}
+                    >
+                      Limpiar filtros y mostrar todas
+                    </button>
+                  </div>
                 ) : (
                   <div className="space-y-2 max-h-[380px] overflow-auto pr-1">
                     {humanPanelProposals.map((proposal) => {
