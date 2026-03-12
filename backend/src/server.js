@@ -3245,6 +3245,86 @@ function safeNumber(input, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function jaccardSimilarity(setA, setB) {
+  const a = setA instanceof Set ? setA : new Set();
+  const b = setB instanceof Set ? setB : new Set();
+  if (!a.size && !b.size) return 0;
+  let intersection = 0;
+  a.forEach((token) => {
+    if (b.has(token)) intersection += 1;
+  });
+  const union = new Set([...a, ...b]).size;
+  return union ? intersection / union : 0;
+}
+
+function buildSemanticTokenSet(fragments = []) {
+  const stopwords = new Set([
+    'pero', 'aunque', 'porque', 'para', 'esto', 'esta', 'este', 'muy', 'mas', 'solo', 'como', 'cuando', 'donde',
+    'sobre', 'entre', 'desde', 'hasta', 'tambien', 'también', 'entonces', 'igual', 'siempre', 'nunca', 'cada',
+    'tengo', 'tener', 'hace', 'hacer', 'dice', 'dijo', 'digan', 'siento', 'sentir', 'estar', 'ser', 'fue', 'era',
+    'han', 'hay', 'del', 'las', 'los', 'una', 'uno', 'unos', 'unas', 'que', 'con', 'sin', 'por', 'sus', 'nos', 'les',
+  ]);
+  const counts = new Map();
+  fragments.forEach((fragment) => {
+    tokenizeFragment(String(fragment.excerpt || ''))
+      .filter((token) => token.length >= 4 && !stopwords.has(token))
+      .forEach((token) => counts.set(token, Number(counts.get(token) || 0) + 1));
+  });
+  return new Set(
+    Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([token]) => token),
+  );
+}
+
+function buildAbstractCodeLabel(clusterItems = []) {
+  const combined = clusterItems.map((item) => String(item.excerpt || '')).join(' ').toLowerCase();
+  const tokenSet = buildSemanticTokenSet(clusterItems);
+  const hasAny = (tokens) => tokens.some((token) => tokenSet.has(token) || combined.includes(token));
+
+  const semanticRules = [
+    { test: () => hasAny(['necesita', 'utiliza', 'interesa', 'conveniencia']), label: 'interacción instrumental' },
+    { test: () => hasAny(['miedo', 'temor', 'ansiedad', 'inseguridad']), label: 'ansiedad vincular' },
+    { test: () => hasAny(['distancia', 'frio', 'frío', 'indiferencia', 'desinteres']), label: 'distanciamiento afectivo' },
+    { test: () => hasAny(['discusion', 'pelea', 'conflicto', 'tension']), label: 'escalada de conflicto' },
+    { test: () => hasAny(['espera', 'demora', 'tarda', 'responde']), label: 'desfase comunicacional' },
+    { test: () => hasAny(['control', 'celos', 'vigilancia', 'prohibe']), label: 'dinámica de control' },
+    { test: () => hasAny(['culpa', 'culpable', 'responsable', 'reproche']), label: 'carga de culpa relacional' },
+    { test: () => hasAny(['cansancio', 'agotamiento', 'desgaste', 'fatiga']), label: 'desgaste emocional sostenido' },
+    { test: () => hasAny(['apoyo', 'escucha', 'contencion', 'acompaña']), label: 'búsqueda de sostén emocional' },
+  ];
+
+  const matched = semanticRules.find((rule) => rule.test());
+  if (matched) return matched.label;
+
+  const topTokens = Array.from(tokenSet).slice(0, 2);
+  if (topTokens.length === 2) return `patrón relacional ${topTokens[0]}-${topTokens[1]}`;
+  if (topTokens.length === 1) return `patrón relacional ${topTokens[0]}`;
+  return 'patrón relacional emergente';
+}
+
+function isLiteralLikeCodeName(name, fragments = []) {
+  const normalizedName = String(name || '').toLowerCase().trim();
+  if (!normalizedName) return true;
+  if (normalizedName.length > 48) return true;
+  if (normalizedName.split(/\s+/).filter(Boolean).length > 6) return true;
+  if (/[,.;:!?"'()]/.test(normalizedName)) return true;
+
+  const nameTokens = new Set(tokenizeFragment(normalizedName));
+  if (!nameTokens.size) return true;
+
+  return fragments.some((fragment) => {
+    const excerpt = String(fragment.excerpt || '').toLowerCase().trim();
+    if (!excerpt) return false;
+    if (excerpt.includes(normalizedName)) return true;
+    const fragmentTokens = new Set(tokenizeFragment(excerpt));
+    const overlap = [...nameTokens].filter((token) => fragmentTokens.has(token)).length;
+    const ratio = overlap / Math.max(1, nameTokens.size);
+    return ratio >= 0.8;
+  });
+}
+
 function rankAndSelectFragmentsForCoding(fragments = []) {
   const analyzed = (Array.isArray(fragments) ? fragments : [])
     .map((fragment) => {
@@ -3313,6 +3393,7 @@ function rankAndSelectFragmentsForCoding(fragments = []) {
 }
 
 function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], existingCodes = [] }) {
+  const MIN_FRAGMENTS_PER_FINAL_CODE = 10;
   const tokensToIgnore = new Set(['pero', 'aunque', 'porque', 'para', 'esto', 'esta', 'este', 'muy', 'mas', 'solo', 'como', 'cuando']);
   const codeBySlug = new Map();
   const semanticGroups = new Map();
@@ -3338,27 +3419,73 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
     key,
     items,
     strength: items.reduce((acc, item) => acc + Number(item.ai_candidate_score || 0), 0),
+    tokenSet: buildSemanticTokenSet(items),
   }));
 
   clusters.sort((a, b) => b.strength - a.strength);
 
-  const targetCodes = clamp(25, clusters.length, 30);
-  const hardMaxCodes = 40;
-  if (clusters.length > hardMaxCodes) {
-    clusters = clusters.slice(0, hardMaxCodes);
+  const strongClusters = clusters.filter((cluster) => cluster.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE);
+  const weakClusters = clusters.filter((cluster) => cluster.items.length < MIN_FRAGMENTS_PER_FINAL_CODE);
+
+  if (!strongClusters.length && weakClusters.length) {
+    const pending = weakClusters.slice().sort((a, b) => b.items.length - a.items.length);
+    while (pending.length) {
+      const candidate = pending.shift();
+      if (!candidate) break;
+      for (let i = pending.length - 1; i >= 0 && candidate.items.length < MIN_FRAGMENTS_PER_FINAL_CODE; i -= 1) {
+        const neighbor = pending[i];
+        const score = jaccardSimilarity(candidate.tokenSet, neighbor.tokenSet);
+        if (score >= 0.2) {
+          candidate.items.push(...neighbor.items);
+          candidate.strength += neighbor.strength;
+          candidate.tokenSet = buildSemanticTokenSet(candidate.items);
+          pending.splice(i, 1);
+        }
+      }
+      if (candidate.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE) strongClusters.push(candidate);
+    }
   }
 
-  const compressed = clusters.slice(0, targetCodes).map((cluster, index) => {
-    const representative = cluster.items[0] || {};
-    const text = String(representative.excerpt || '').trim();
-    const label = text.split(/[.!?\n]/)[0].trim().slice(0, 72) || `Código ${index + 1}`;
+  weakClusters.forEach((weakCluster) => {
+    if (!strongClusters.length) return;
+    let bestTarget = null;
+    let bestScore = 0;
+    strongClusters.forEach((targetCluster) => {
+      const score = jaccardSimilarity(weakCluster.tokenSet, targetCluster.tokenSet);
+      if (score > bestScore) {
+        bestScore = score;
+        bestTarget = targetCluster;
+      }
+    });
+    if (bestTarget && bestScore >= 0.18) {
+      bestTarget.items.push(...weakCluster.items);
+      bestTarget.strength += weakCluster.strength;
+      bestTarget.tokenSet = buildSemanticTokenSet(bestTarget.items);
+      weakCluster.merged_into = bestTarget.key;
+      weakCluster.merge_score = Number(bestScore.toFixed(4));
+    }
+  });
+
+  let finalClusters = strongClusters
+    .filter((cluster) => cluster.items.length >= MIN_FRAGMENTS_PER_FINAL_CODE)
+    .sort((a, b) => b.strength - a.strength);
+
+  const targetCodes = clamp(12, finalClusters.length, 30);
+  const hardMaxCodes = 40;
+  if (finalClusters.length > hardMaxCodes) finalClusters = finalClusters.slice(0, hardMaxCodes);
+
+  finalClusters.slice(0, targetCodes).forEach((cluster, index) => {
+    let label = buildAbstractCodeLabel(cluster.items);
+    if (isLiteralLikeCodeName(label, cluster.items)) {
+      label = `patrón semántico ${index + 1}`;
+    }
 
     // Reutilización disciplinada: primero intentar código existente más cercano.
     let chosenCode = null;
     let bestScore = 0;
     existing.forEach((code) => {
       const score = (() => {
-        const fragTokens = new Set(tokenizeFragment(text));
+        const fragTokens = buildSemanticTokenSet(cluster.items);
         const codeTokens = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
         const inter = [...fragTokens].filter((t) => codeTokens.has(t)).length;
         const union = new Set([...fragTokens, ...codeTokens]).size;
@@ -3398,6 +3525,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
         decision_type: decisionType,
         cluster_strength: Number(cluster.strength.toFixed(4)),
         fragments: [],
+        pattern_summary: `Patrón agregado de ${cluster.items.length} fragmentos semánticamente relacionados.`,
       });
       sourceSetsBySlug.set(slug, new Set());
     }
@@ -3408,8 +3536,6 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
       const sourceKey = `${item.source_video_id || item.video_id || ''}|${item.source_run_id || ''}|${item.source_comment_id || ''}`;
       if (sourceKey !== '||') sourceSetsBySlug.get(slug).add(sourceKey);
     });
-
-    return bucket;
   });
 
   const proposals = [];
@@ -3462,6 +3588,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
     suggested_code_name: bucket.suggested_code_name,
     decision_type: bucket.decision_type,
     fragments_count: Array.isArray(bucket.fragments) ? bucket.fragments.length : 0,
+    description: String(bucket.pattern_summary || ''),
   }));
 
   return {
