@@ -2418,6 +2418,36 @@ function resolveAiBaseUrl(integration) {
   return '';
 }
 
+const AI_PROVIDER_DEFAULT_MODEL = {
+  openai: 'gpt-4o-mini',
+  openrouter: 'openai/gpt-4o-mini',
+  anthropic: 'claude-3-5-sonnet-latest',
+  groq: 'llama-3.1-8b-instant',
+  gemini: 'gemini-1.5-flash',
+  ollama: 'llama3.1:8b',
+};
+
+function normalizeAiModel(provider, modelValue) {
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+  const rawModel = String(modelValue || '').trim();
+  if (!rawModel) return '';
+
+  const genericInputs = new Set([
+    normalizedProvider,
+    normalizedProvider.replace(/_/g, '-'),
+    'model',
+    'default',
+    'ia',
+    'ai',
+  ]);
+
+  if (genericInputs.has(rawModel.toLowerCase()) && AI_PROVIDER_DEFAULT_MODEL[normalizedProvider]) {
+    return AI_PROVIDER_DEFAULT_MODEL[normalizedProvider];
+  }
+
+  return rawModel;
+}
+
 async function getProjectScopeSummary(userId, projectId) {
   const countByProjectColumn = async (tableName) => {
     const [rows] = await pool.query(
@@ -2499,11 +2529,11 @@ function buildProjectScopedSystemPrompt(project, projectSummary) {
 
 async function requestAiChatCompletion(integration, payload) {
   const provider = String(integration?.provider || '').trim().toLowerCase();
-  const model = String(integration?.model || '').trim();
+  const model = normalizeAiModel(provider, integration?.model);
   const apiKey = String(integration?.api_key || '').trim();
   const baseUrl = resolveAiBaseUrl(integration);
 
-  if (!model) throw new Error('La integración de IA no tiene modelo configurado.');
+  if (!model) throw new Error('La integración de IA no tiene un modelo válido configurado.');
   if (!baseUrl) throw new Error(`El proveedor ${provider || 'seleccionado'} requiere base_url compatible para chat.`);
   if (provider !== 'ollama' && !apiKey) {
     throw new Error('La integración de IA requiere API key para enviar mensajes.');
@@ -4443,7 +4473,7 @@ const server = http.createServer(async (req, res) => {
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const body = await readBody(req);
       const provider = String(body.provider || '').trim().toLowerCase();
-      const model = String(body.model || '').trim();
+      const model = normalizeAiModel(provider, body.model);
       const apiKey = String(body.api_key || '').trim();
       const baseUrl = String(body.base_url || '').trim();
       const organization = String(body.organization || '').trim();
