@@ -5534,8 +5534,6 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const projectId = String(body.project_id || '').trim();
       const campaignId = String(body.campaign_id || '').trim();
-      const fragments = Array.isArray(body.fragments) ? body.fragments : [];
-      const existingCodes = Array.isArray(body.existing_codes) ? body.existing_codes : [];
 
       if (!projectId || !campaignId) {
         return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
@@ -5547,29 +5545,21 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
 
-      const ranked = rankAndSelectFragmentsForCoding(fragments);
-      const compressed = buildCompressedCodesFromSelectedFragments({
-        selectedFragments: ranked.selected,
-        existingCodes,
-      });
-
-      const totalAnalyzed = ranked.analyzed.length;
-      const totalSelected = ranked.selected.length;
-      const finalCodeCount = compressed.generatedCodes.length;
-      const compressionRatio = totalAnalyzed > 0 ? Number((totalSelected / totalAnalyzed).toFixed(4)) : 0;
-
+      // Hard-disable global: eliminar cualquier evolución de fragmentos a códigos desde Modo Comentarios.
       return sendJson(req, res, 200, {
         data: {
-          selected_fragments: ranked.selected,
-          clusters_internal: compressed.generatedCodes,
-          final_code_proposals: compressed.proposals,
+          selected_fragments: [],
+          clusters_internal: [],
+          final_code_proposals: [],
           metrics: {
-            total_fragments_analyzed: totalAnalyzed,
-            total_fragments_selected: totalSelected,
-            compression_ratio: compressionRatio,
-            final_codes_count: finalCodeCount,
-            code_budget_target: 30,
-            code_budget_max: 40,
+            total_fragments_analyzed: 0,
+            total_fragments_selected: 0,
+            compression_ratio: 0,
+            final_codes_count: 0,
+            code_budget_target: 0,
+            code_budget_max: 0,
+            code_generation_disabled: true,
+            reason: 'comment_mode_fragment_to_code_disabled',
           },
         },
       });
@@ -5578,101 +5568,26 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
-
-      const body = await readBody(req);
-      const projectId = String(body.project_id || '').trim();
-      const campaignId = String(body.campaign_id || '').trim();
-      const proposalId = String(body.proposal_id || '').trim();
-      const action = String(body.action || '').trim();
-      if (!projectId || !campaignId || !proposalId || !action) {
-        return sendJson(req, res, 400, { error: 'project_id, campaign_id, proposal_id and action are required' });
-      }
-
-      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
-      const campaign = campaignRows[0] || null;
-      if (!campaign || String(campaign.project_id) !== String(projectId)) {
-        return sendJson(req, res, 404, { error: 'Campaign not found' });
-      }
-
-      const reviewId = buildEntityId('comment_code_review');
-      const createdAt = nowIso();
-      const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
-      await pool.query(
-        `INSERT INTO comment_code_proposal_reviews
-          (id, user_id, project_id, campaign_id, proposal_id, fragment_id, action, decision_status, decision_type, confidence, justification, suggested_code_slug, suggested_code_name, final_code_slug, final_code_name, metadata_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          reviewId,
-          user.id,
-          projectId,
-          campaignId,
-          proposalId,
-          String(body.fragment_id || '').trim() || null,
-          action,
-          String(body.decision_status || '').trim() || null,
-          String(body.decision_type || '').trim() || null,
-          Number.isFinite(Number(body.confidence)) ? Number(body.confidence) : null,
-          String(body.justification || '').trim() || null,
-          String(body.suggested_code_slug || '').trim() || null,
-          String(body.suggested_code_name || '').trim() || null,
-          String(body.final_code_slug || '').trim() || null,
-          String(body.final_code_name || '').trim() || null,
-          JSON.stringify(metadata),
-          createdAt,
-          createdAt,
-        ],
-      );
-
-      return sendJson(req, res, 200, {
-        data: {
-          id: reviewId,
-          proposal_id: proposalId,
-          action,
-          created_at: createdAt,
-        },
+      return sendJson(req, res, 410, {
+        error: 'Code proposal reviews are disabled in comments mode.',
+        code_generation_disabled: true,
+        reason: 'comment_mode_fragment_to_code_disabled',
       });
     }
 
     if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'GET') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
-      const projectId = String(url.searchParams.get('projectId') || '').trim();
-      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
-      const limit = Math.max(1, Math.min(5000, Number(url.searchParams.get('limit') || 500)));
-      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
-
-      const [rows] = await pool.query(
-        `SELECT * FROM comment_code_proposal_reviews
-         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
-         ORDER BY created_at DESC
-         LIMIT ?`,
-        [user.id, projectId, campaignId, limit],
-      );
-
-      const items = rows.map((row) => ({
-        ...row,
-        metadata: (() => {
-          try { return JSON.parse(row.metadata_json || '{}'); } catch { return {}; }
-        })(),
-      }));
-
-      const summaryByCode = {};
-      items.forEach((item) => {
-        const slug = String(item.final_code_slug || item.suggested_code_slug || '').trim();
-        if (!slug) return;
-        if (!summaryByCode[slug]) {
-          summaryByCode[slug] = { code_slug: slug, accepted: 0, rejected: 0, reassigned: 0, corrected: 0, fused: 0, total: 0 };
-        }
-        summaryByCode[slug].total += 1;
-        const status = String(item.decision_status || '').trim();
-        if (status === 'aceptado') summaryByCode[slug].accepted += 1;
-        if (status === 'rechazado') summaryByCode[slug].rejected += 1;
-        if (status === 'reasignado') summaryByCode[slug].reassigned += 1;
-        if (status === 'corregido') summaryByCode[slug].corrected += 1;
-        if (status === 'fusionado') summaryByCode[slug].fused += 1;
+      return sendJson(req, res, 200, {
+        data: {
+          items: [],
+          summaryByCode: {},
+          meta: {
+            code_generation_disabled: true,
+            reason: 'comment_mode_fragment_to_code_disabled',
+          },
+        },
       });
-
-      return sendJson(req, res, 200, { data: { items, summaryByCode } });
     }
 
     if (url.pathname === '/api/comment-base/ingest' && req.method === 'POST') {

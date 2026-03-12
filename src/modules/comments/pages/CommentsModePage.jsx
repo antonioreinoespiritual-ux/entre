@@ -69,6 +69,8 @@ const buildClusters = (codes = [], fragments = []) => {
     .sort((a, b) => b.fragments_count - a.fragments_count);
 };
 
+const COMMENT_CODE_EVOLUTION_DISABLED = true;
+
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
   const storageKey = `comments-mode:${projectId}:${campaignId}`;
@@ -167,6 +169,12 @@ const CommentsModePage = () => {
     saveCommentsModeStore(storageKey, next).catch(() => {
       // Silencio controlado: no bloquear UX si IndexedDB falla en navegador restringido.
     });
+  };
+
+  const guardCodeEvolution = () => {
+    if (!COMMENT_CODE_EVOLUTION_DISABLED) return false;
+    setSemanticAgentError('La evolución de fragmentos a códigos está deshabilitada en Modo Comentarios.');
+    return true;
   };
 
   useEffect(() => {
@@ -443,6 +451,7 @@ const CommentsModePage = () => {
   };
 
   const runCodeProposalAgent = async () => {
+    if (guardCodeEvolution()) return;
     const acceptedByFragment = new Map();
     codeProposals.forEach((proposal) => {
       if (proposal.status !== 'aceptado') return;
@@ -522,6 +531,7 @@ const CommentsModePage = () => {
   };
 
   const acceptCodeProposal = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const fragmentId = String(proposal.fragment_id || '');
     if (!fragmentId) return;
@@ -595,6 +605,7 @@ const CommentsModePage = () => {
   };
 
   const assignExistingCodeToProposal = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const targetSlug = String(draft.assignExistingSlug || '').trim();
@@ -626,6 +637,7 @@ const CommentsModePage = () => {
   };
 
   const createManualCodeForProposal = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const manualName = String(draft.manualCodeName || '').trim();
@@ -661,6 +673,7 @@ const CommentsModePage = () => {
   };
 
   const renameSuggestedProposalCode = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const renamed = String(draft.renameSuggestedName || '').trim();
@@ -695,6 +708,7 @@ const CommentsModePage = () => {
   };
 
   const splitSuggestedProposalCode = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const nameA = String(draft.splitNameA || '').trim();
@@ -722,6 +736,7 @@ const CommentsModePage = () => {
   };
 
   const mergeSuggestedWithExistingCode = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const targetSlug = String(draft.mergeTargetSlug || '').trim();
@@ -1212,7 +1227,7 @@ const CommentsModePage = () => {
   const saveFragmentEditor = async () => {
     const title = String(fragmentEditor.title || '').trim();
     const excerpt = String(fragmentEditor.excerpt || '').trim();
-    const linkedCode = String(fragmentEditor.linkedCode || '').trim();
+    const linkedCode = COMMENT_CODE_EVOLUTION_DISABLED ? '' : String(fragmentEditor.linkedCode || '').trim();
     const codeSlugs = linkedCode ? [linkedCode] : [];
 
     if (!excerpt) return;
@@ -1354,31 +1369,8 @@ const CommentsModePage = () => {
     );
   };
 
-  const evolveFragmentToCode = (fragment) => {
-    const baseName = String(fragment.title || fragment.excerpt || '').trim();
-    if (!baseName) return;
-    const baseSlug = slugify(baseName).slice(0, 50) || `code-${Date.now()}`;
-    let candidate = baseSlug;
-    let suffix = 1;
-    while (codes.some((code) => code.slug === candidate)) {
-      suffix += 1;
-      candidate = `${baseSlug}-${suffix}`;
-    }
-
-    const nextCode = {
-      id: `code_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      name: baseName,
-      slug: candidate,
-      parent_slug: null,
-    };
-
-    const mergedCodeSlugs = Array.from(new Set([...(fragment.code_slugs || []), candidate]));
-
-    persist({
-      ...store,
-      codes: [nextCode, ...codes],
-      fragments: fragments.map((item) => (String(item.id) === String(fragment.id) ? { ...item, code_slugs: mergedCodeSlugs } : item)),
-    });
+  const evolveFragmentToCode = () => {
+    guardCodeEvolution();
   };
 
   const createCommentFragment = async ({ text, comment, sourceType = 'selection', selectionStart = null, selectionEnd = null }) => {
@@ -1629,6 +1621,10 @@ const CommentsModePage = () => {
   };
 
   const loadProposalReviews = async () => {
+    if (COMMENT_CODE_EVOLUTION_DISABLED) {
+      setProposalFeedbackSummary({});
+      return;
+    }
     try {
       const data = await commentsIngestionApi.listCodeProposalReviews({ projectId, campaignId, limit: 2000 });
       setProposalFeedbackSummary(data?.summaryByCode && typeof data.summaryByCode === 'object' ? data.summaryByCode : {});
@@ -2209,7 +2205,7 @@ const CommentsModePage = () => {
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Editar fragmento</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { goToFragmentOrigin(fragment); setFragmentMenuId(''); }}>Ir a origen</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Vincular código</button>
-                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { evolveFragmentToCode(fragment); setFragmentMenuId(''); }}>Evolucionar a código</button>
+                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { if (!COMMENT_CODE_EVOLUTION_DISABLED) evolveFragmentToCode(fragment); setFragmentMenuId(''); }} disabled={COMMENT_CODE_EVOLUTION_DISABLED}>Evolución deshabilitada</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => { deleteSingleFragment(fragmentId); setFragmentMenuId(''); }}>Eliminar fragmento</button>
                             </div>
                           ) : null}
@@ -2286,12 +2282,12 @@ const CommentsModePage = () => {
                           if (fragmentEditor.mode !== 'edit') return;
                           const target = fragments.find((fragment) => String(fragment.id) === String(fragmentEditor.fragmentId));
                           if (!target) return;
-                          evolveFragmentToCode({ ...target, title: fragmentEditor.title || target.title, excerpt: fragmentEditor.excerpt || target.excerpt });
+                          if (!COMMENT_CODE_EVOLUTION_DISABLED) evolveFragmentToCode({ ...target, title: fragmentEditor.title || target.title, excerpt: fragmentEditor.excerpt || target.excerpt });
                           closeFragmentEditor();
                         }}
                         disabled={fragmentEditor.mode !== 'edit'}
                       >
-                        Evolucionar a código
+                        Evolución deshabilitada
                       </Button>
                       <div className="flex items-center gap-2">
                         <Button className="bg-white border text-slate-700" onClick={closeFragmentEditor}>Cancelar</Button>
