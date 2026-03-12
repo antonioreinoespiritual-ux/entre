@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, MessageSquareText, Tags, Network, Scissors } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
+import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 
 const defaultCodeDraft = { name: '', slug: '', parent_slug: '' };
 const defaultIngestionDraft = {
@@ -70,18 +71,19 @@ const CommentsModePage = () => {
   const [ingestionInputs, setIngestionInputs] = useState([]);
   const [ingestionRuns, setIngestionRuns] = useState([]);
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
+  const [readerViewMode, setReaderViewMode] = useState('document');
+  const [readerSelectionText, setReaderSelectionText] = useState('');
+  const [selectedReaderCommentId, setSelectedReaderCommentId] = useState('');
 
   const [store, setStore] = useState(() => {
     try {
       const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
       return {
-        comments: Array.isArray(parsed.comments) ? parsed.comments : [],
         fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
         codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-        youtube_datasets: Array.isArray(parsed.youtube_datasets) ? parsed.youtube_datasets : [],
       };
     } catch {
-      return { comments: [], fragments: [], codes: [], youtube_datasets: [] };
+      return { fragments: [], codes: [] };
     }
   });
 
@@ -90,9 +92,15 @@ const CommentsModePage = () => {
     localStorage.setItem(storageKey, JSON.stringify(next));
   };
 
-  const comments = store.comments || [];
   const fragments = store.fragments || [];
   const codes = store.codes || [];
+  const readerComments = commentsTable.items || [];
+
+  const selectedReaderComment = useMemo(() => {
+    if (!readerComments.length) return null;
+    const selected = readerComments.find((item) => String(item.id) === String(selectedReaderCommentId));
+    return selected || readerComments[0] || null;
+  }, [readerComments, selectedReaderCommentId]);
 
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
 
@@ -115,6 +123,25 @@ const CommentsModePage = () => {
       return { ...fragment, code_slugs: has ? fragment.code_slugs.filter((item) => item !== slug) : [...(fragment.code_slugs || []), slug] };
     });
     persist({ ...store, fragments: nextFragments });
+  };
+
+  const createCommentFragment = ({ text, comment }) => {
+    const excerpt = String(text || '').trim();
+    if (!excerpt || !comment) return;
+    const nextFragment = {
+      id: `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      excerpt,
+      comment_id: comment.id,
+      source_comment_id: comment.source_comment_id,
+      video_id: comment.video_id || null,
+      code_slugs: [],
+      created_at: new Date().toISOString(),
+    };
+    persist({
+      ...store,
+      fragments: [nextFragment, ...fragments],
+    });
+    setReaderSelectionText('');
   };
 
   const loadInputs = async () => {
@@ -210,7 +237,7 @@ const CommentsModePage = () => {
   };
 
   useEffect(() => {
-    if (tab !== 'comments') return;
+    if (tab !== 'comments' && tab !== 'reader') return;
     loadCommentsTable({ offset: commentsTable.offset, q: commentsTable.q });
     if (commentsSubtab === 'table') loadCommentsTable({ offset: 0, q: commentsTable.q });
     if (commentsSubtab === 'ingestion') {
@@ -218,6 +245,22 @@ const CommentsModePage = () => {
       loadInputs();
     }
   }, [tab, commentsSubtab]);
+
+  useEffect(() => {
+    if (!selectedReaderCommentId && readerComments.length) {
+      setSelectedReaderCommentId(String(readerComments[0].id));
+      return;
+    }
+    if (selectedReaderCommentId && !readerComments.some((item) => String(item.id) === String(selectedReaderCommentId))) {
+      setSelectedReaderCommentId(readerComments[0] ? String(readerComments[0].id) : '');
+    }
+  }, [readerComments, selectedReaderCommentId]);
+
+  const captureReaderSelection = () => {
+    const selection = window.getSelection?.();
+    const text = String(selection?.toString() || '').trim();
+    setReaderSelectionText(text);
+  };
 
   const runYouTubeIngestion = async () => {
     setIngestionError('');
@@ -271,6 +314,7 @@ const CommentsModePage = () => {
 
   const tabs = [
     { id: 'comments', label: 'Base de comentarios', icon: MessageSquareText },
+    { id: 'reader', label: 'Lector', icon: BookOpenText },
     { id: 'fragments', label: 'Fragmentos', icon: Scissors },
     { id: 'codes', label: 'Códigos', icon: Tags },
     { id: 'clusters', label: 'Clusters', icon: Network },
@@ -291,7 +335,7 @@ const CommentsModePage = () => {
               <p className="text-xs text-slate-500">Proyecto {projectId} · Campaña {campaignId}</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <Button className="bg-indigo-600 text-white" onClick={() => setTab('comments')}>Agregar comentario</Button>
+              <Button className="bg-indigo-600 text-white" onClick={() => setTab('reader')}>Abrir lector</Button>
               <Button className="bg-white border text-indigo-700" onClick={() => setTab('codes')}>Crear código</Button>
             </div>
           </div>
@@ -459,6 +503,81 @@ const CommentsModePage = () => {
                 </div>
               ) : null}
 
+            </div>
+          )}
+
+          {tab === 'reader' && (
+            <div className="rounded-xl border bg-[#f8fafc] p-4 space-y-3">
+              <div>
+                <h2 className="font-semibold text-slate-900">Lector</h2>
+                <p className="text-xs text-slate-500">Lector semántico de comentarios para extraer fragmentos desde la base de comentarios.</p>
+              </div>
+              <Toolbar
+                collapsed={false}
+                onBackToCloud={() => setTab('comments')}
+                onDownloadDocument={() => loadCommentsTable({ offset: 0, q: commentsTable.q })}
+                onCreateFragment={() => createCommentFragment({ text: readerSelectionText, comment: selectedReaderComment })}
+                onCreateManualFragment={() => {
+                  const manualText = window.prompt('Nuevo fragmento manual');
+                  if (!manualText) return;
+                  createCommentFragment({ text: manualText, comment: selectedReaderComment || readerComments[0] });
+                }}
+                onViewFragments={() => setTab('fragments')}
+                onViewCodes={() => setTab('codes')}
+                onLinkCode={() => setTab('codes')}
+                onViewClusters={() => setTab('clusters')}
+                onActivateAnalysis={() => setTab('comments')}
+                onCreateMemo={() => {
+                  const memoText = window.prompt('Memo de lectura');
+                  if (!memoText) return;
+                  createCommentFragment({ text: memoText, comment: selectedReaderComment || readerComments[0] });
+                }}
+                onToggleView={() => setReaderViewMode((prev) => (prev === 'document' ? 'focus' : 'document'))}
+                canCreateFragment={Boolean(readerSelectionText && selectedReaderComment)}
+                viewLabel={readerViewMode === 'focus' ? 'focus' : 'comentario'}
+              />
+              <div className="grid gap-3 lg:grid-cols-[260px_minmax(0,1fr)]">
+                <div className="rounded-xl border bg-white p-2 max-h-[560px] overflow-auto">
+                  <p className="px-2 py-1 text-xs font-semibold text-slate-500">Comentarios ({readerComments.length})</p>
+                  <div className="space-y-1.5">
+                    {readerComments.length === 0 ? <p className="px-2 py-3 text-xs text-slate-500">No hay comentarios cargados.</p> : readerComments.map((comment) => (
+                      <button
+                        type="button"
+                        key={comment.id}
+                        className={`w-full rounded-lg border p-2 text-left text-xs ${String(selectedReaderComment?.id) === String(comment.id) ? 'border-indigo-300 bg-indigo-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                        onClick={() => {
+                          setSelectedReaderCommentId(String(comment.id));
+                          setReaderSelectionText('');
+                        }}
+                      >
+                        <p className="line-clamp-2 text-slate-700">{comment.text || 'Sin texto'}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">{comment.author_name || 'Autor desconocido'} · {comment.video_id || 'sin video'}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border bg-white shadow-sm">
+                  <div className="border-b px-4 py-3">
+                    <p className="text-sm font-semibold text-slate-900">Comentario seleccionado</p>
+                    <p className="text-xs text-slate-500">Selecciona texto y usa “Crear fragmento” en la barra de tareas.</p>
+                  </div>
+                  <div
+                    className={`min-h-[320px] max-h-[560px] overflow-auto text-slate-800 whitespace-pre-wrap ${readerViewMode === 'focus' ? 'px-10 py-8 text-[16px] leading-8' : 'px-6 py-5 text-[14px] leading-7'}`}
+                    onMouseUp={captureReaderSelection}
+                  >
+                    {selectedReaderComment?.text || 'Selecciona un comentario de la lista para comenzar.'}
+                  </div>
+                  <div className="border-t px-4 py-2 text-xs text-slate-600 flex flex-wrap items-center gap-2">
+                    <span>Fuente: {selectedReaderComment?.source || 'youtube'}</span>
+                    <span>·</span>
+                    <span>Autor: {selectedReaderComment?.author_name || '—'}</span>
+                    <span>·</span>
+                    <span>Video: {selectedReaderComment?.video_id || '—'}</span>
+                    {readerSelectionText ? <span className="ml-auto rounded bg-indigo-50 px-2 py-0.5 text-indigo-700">Selección lista ({readerSelectionText.length} chars)</span> : null}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
