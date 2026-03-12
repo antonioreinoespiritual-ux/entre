@@ -330,6 +330,36 @@ const CommentsModePage = () => {
     }
   };
 
+  const enrichFragmentsForIaSelection = async (incomingFragments = []) => {
+    const preparedIncoming = (Array.isArray(incomingFragments) ? incomingFragments : [])
+      .map((fragment) => ({ ...fragment, excerpt: String(fragment?.excerpt || '').trim() }))
+      .filter((fragment) => fragment.excerpt.length >= 8);
+
+    if (!preparedIncoming.length) return [];
+
+    try {
+      const response = await commentsIngestionApi.enrichFragments({
+        project_id: projectId,
+        campaign_id: campaignId,
+        fragments: preparedIncoming,
+        existing_fragments: fragments.slice(0, 5000).map((fragment) => ({
+          id: fragment.id,
+          excerpt: fragment.excerpt,
+          source_comment_id: fragment.source_comment_id || fragment.comment_id,
+          source_video_id: fragment.source_video_id || fragment.video_id,
+          source_run_id: fragment.source_run_id,
+          source_type: fragment.source_type,
+          semantic_hash: fragment.semantic_hash,
+        })),
+      });
+      const items = Array.isArray(response?.items) ? response.items : [];
+      if (items.length) return items;
+      return preparedIncoming;
+    } catch {
+      return preparedIncoming;
+    }
+  };
+
   const buildCandidateCodeFromFragment = (fragment) => {
     const raw = String(fragment.title || fragment.excerpt || '').trim();
     const short = raw.split(/[.!?\n]/)[0]?.trim() || raw;
@@ -1199,7 +1229,7 @@ const CommentsModePage = () => {
     setFragmentEditor((prev) => ({ ...prev, open: false }));
   };
 
-  const saveFragmentEditor = () => {
+  const saveFragmentEditor = async () => {
     const title = String(fragmentEditor.title || '').trim();
     const excerpt = String(fragmentEditor.excerpt || '').trim();
     const linkedCode = String(fragmentEditor.linkedCode || '').trim();
@@ -1213,9 +1243,12 @@ const CommentsModePage = () => {
         title,
         excerpt,
         code_slugs: codeSlugs,
+        source_type: 'manual',
         created_at: new Date().toISOString(),
       };
-      persist({ ...store, fragments: [nextFragment, ...fragments] });
+      const [enrichedFragment] = await enrichFragmentsForIaSelection([nextFragment]);
+      const fragmentToStore = enrichedFragment || nextFragment;
+      persist({ ...store, fragments: [fragmentToStore, ...fragments] });
       setSelectedFragmentId(String(nextFragment.id));
       closeFragmentEditor();
       return;
@@ -1368,7 +1401,7 @@ const CommentsModePage = () => {
     });
   };
 
-  const createCommentFragment = ({ text, comment, sourceType = 'selection', selectionStart = null, selectionEnd = null }) => {
+  const createCommentFragment = async ({ text, comment, sourceType = 'selection', selectionStart = null, selectionEnd = null }) => {
     const excerpt = String(text || '');
     if (!excerpt.trim() || !comment) return;
     const resolvedSourceCommentId = String(comment.source_comment_id || comment.id || '').trim();
@@ -1390,9 +1423,10 @@ const CommentsModePage = () => {
       code_slugs: [],
       created_at: new Date().toISOString(),
     };
+    const [enrichedFragment] = await enrichFragmentsForIaSelection([nextFragment]);
     persist({
       ...store,
-      fragments: [nextFragment, ...fragments],
+      fragments: [enrichedFragment || nextFragment, ...fragments],
     });
     setReaderSelection({ text: '', start: null, end: null, commentId: '' });
   };
@@ -1517,9 +1551,10 @@ const CommentsModePage = () => {
         return;
       }
 
+      const enrichedBatch = await enrichFragmentsForIaSelection(createdFragments);
       persist({
         ...store,
-        fragments: [...createdFragments, ...fragments],
+        fragments: [...(enrichedBatch.length ? enrichedBatch : createdFragments), ...fragments],
       });
       if (failed > 0) {
         setSemanticAgentError(`Fragmentación completada con incidencias: ${failed} comentario(s) no pudieron procesarse.`);

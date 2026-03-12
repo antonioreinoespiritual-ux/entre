@@ -3104,6 +3104,129 @@ async function ingestCommentsFromResolvedVideos({ resolvedVideos, normalizedInpu
   return { rows, stats };
 }
 
+function normalizeFragmentTextForHash(input = '') {
+  return String(input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function tokenizeFragment(input = '') {
+  return normalizeFragmentTextForHash(input)
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .map((token) => token.trim())
+    .filter((token) => token.length > 2);
+}
+
+function buildSemanticHash(input = '') {
+  return crypto.createHash('sha1').update(normalizeFragmentTextForHash(input)).digest('hex');
+}
+
+function scoreDensity(text = '') {
+  const tokens = tokenizeFragment(text);
+  if (!tokens.length) return 0;
+  const unique = new Set(tokens);
+  const ratio = unique.size / Math.max(tokens.length, 1);
+  const emotionalHints = ['miedo', 'dolor', 'ansiedad', 'problema', 'necesito', 'quiero', 'bloqueo', 'frustracion', 'urgente', 'rechazo'];
+  const hintHits = tokens.reduce((acc, token) => (emotionalHints.includes(token) ? acc + 1 : acc), 0);
+  const hintBoost = Math.min(0.25, hintHits * 0.04);
+  return Math.max(0, Math.min(1, (ratio * 0.75) + hintBoost));
+}
+
+function scoreExtractionQuality(text = '') {
+  const clean = String(text || '').trim();
+  const length = clean.length;
+  if (!length) return 0;
+  const minIdeal = 30;
+  const maxIdeal = 420;
+  if (length < 8) return 0.08;
+  if (length < minIdeal) return Math.max(0.2, length / minIdeal);
+  if (length <= maxIdeal) return 0.95;
+  const overflowPenalty = Math.min(0.75, (length - maxIdeal) / 1000);
+  return Math.max(0.2, 0.95 - overflowPenalty);
+}
+
+function scoreRedundancy({ semanticHash, corpusHashCounts, tokenSet = new Set(), corpusTokenSets = [] }) {
+  const exactCount = Number(corpusHashCounts.get(semanticHash) || 0);
+  let nearDuplicate = 0;
+  const sample = corpusTokenSets.slice(0, 120);
+  for (const other of sample) {
+    const inter = [...tokenSet].filter((token) => other.has(token)).length;
+    const union = new Set([...tokenSet, ...other]).size;
+    const jaccard = union ? inter / union : 0;
+    if (jaccard >= 0.82) {
+      nearDuplicate += 1;
+      if (nearDuplicate >= 6) break;
+    }
+  }
+  const score = Math.min(1, (exactCount > 0 ? 0.55 : 0) + (Math.min(nearDuplicate, 6) * 0.075));
+  return score;
+}
+
+function enrichCommentFragments({ fragments = [], existingFragments = [] }) {
+  const now = nowIso();
+  const safeIncoming = Array.isArray(fragments) ? fragments : [];
+  const safeExisting = Array.isArray(existingFragments) ? existingFragments : [];
+  const corpus = [...safeExisting, ...safeIncoming];
+
+  const corpusHashCounts = new Map();
+  const corpusTokenSets = [];
+  const sourceMarkerCount = new Map();
+
+  corpus.forEach((fragment) => {
+    const excerpt = String(fragment.excerpt || fragment.text || '').trim();
+    if (!excerpt) return;
+    const semanticHash = String(fragment.semantic_hash || buildSemanticHash(excerpt));
+    corpusHashCounts.set(semanticHash, Number(corpusHashCounts.get(semanticHash) || 0) + 1);
+    corpusTokenSets.push(new Set(tokenizeFragment(excerpt)));
+    const sourceKey = `${fragment.source_comment_id || fragment.comment_id || ''}|${fragment.video_id || fragment.source_video_id || ''}|${fragment.source_run_id || ''}`;
+    sourceMarkerCount.set(sourceKey, Number(sourceMarkerCount.get(sourceKey) || 0) + 1);
+  });
+
+  return safeIncoming.map((fragment) => {
+    const excerpt = String(fragment.excerpt || fragment.text || '').trim();
+    const semanticHash = String(fragment.semantic_hash || buildSemanticHash(excerpt));
+    const tokenSet = new Set(tokenizeFragment(excerpt));
+    const redundancyScore = scoreRedundancy({ semanticHash, corpusHashCounts, tokenSet, corpusTokenSets });
+    const extractionQualityScore = scoreExtractionQuality(excerpt);
+    const densityScore = scoreDensity(excerpt);
+    const noveltyScore = Math.max(0, Math.min(1, (1 - redundancyScore) * 0.72 + densityScore * 0.28));
+    const sourceMarker = `${fragment.source_comment_id || fragment.comment_id || ''}|${fragment.video_id || fragment.source_video_id || ''}|${fragment.source_run_id || ''}`;
+    const sourceDispersionMarker = sourceMarkerCount.get(sourceMarker) > 1 ? 'repeated_source_pattern' : 'isolated_source_pattern';
+
+    return {
+      ...fragment,
+      id: String(fragment.id || `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`),
+      source_comment_id: String(fragment.source_comment_id || fragment.comment_id || ''),
+      source_video_id: String(fragment.source_video_id || fragment.video_id || ''),
+      source_run_id: String(fragment.source_run_id || ''),
+      excerpt,
+      source_comment_text: String(fragment.source_comment_text || ''),
+      selection_start: Number.isFinite(Number(fragment.selection_start)) ? Number(fragment.selection_start) : null,
+      selection_end: Number.isFinite(Number(fragment.selection_end)) ? Number(fragment.selection_end) : null,
+      fragment_length: excerpt.length,
+      source_type: String(fragment.source_type || 'manual'),
+      hypothesis_id: fragment.hypothesis_id || null,
+      audience_id: fragment.audience_id || null,
+      semantic_hash: semanticHash,
+      redundancy_score: Number(redundancyScore.toFixed(4)),
+      novelty_score: Number(noveltyScore.toFixed(4)),
+      density_score: Number(densityScore.toFixed(4)),
+      extraction_quality_score: Number(extractionQualityScore.toFixed(4)),
+      source_dispersion_marker: sourceDispersionMarker,
+      ai_candidate_score: fragment.ai_candidate_score == null ? null : Number(fragment.ai_candidate_score),
+      fragment_status: String(fragment.fragment_status || 'raw'),
+      created_at: fragment.created_at || now,
+      updated_at: now,
+      coding_budget_target: 30,
+      coding_budget_max: 40,
+    };
+  });
+}
+
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
   const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
@@ -5175,6 +5298,47 @@ const server = http.createServer(async (req, res) => {
         })(),
       }));
       return sendJson(req, res, 200, { data: { items } });
+    }
+
+    if (url.pathname === '/api/comment-base/fragments/enrich' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const fragments = Array.isArray(body.fragments) ? body.fragments : [];
+      const existingFragments = Array.isArray(body.existing_fragments) ? body.existing_fragments : [];
+
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const cleaned = fragments
+        .map((fragment) => ({ ...fragment, excerpt: String(fragment?.excerpt || fragment?.text || '').trim() }))
+        .filter((fragment) => fragment.excerpt && fragment.excerpt.length >= 8);
+
+      const enriched = enrichCommentFragments({
+        fragments: cleaned,
+        existingFragments: existingFragments.slice(0, 5000),
+      });
+
+      return sendJson(req, res, 200, {
+        data: {
+          items: enriched,
+          meta: {
+            coding_budget_target: 30,
+            coding_budget_max: 40,
+            dropped_as_noise: Math.max(0, fragments.length - cleaned.length),
+          },
+        },
+      });
     }
 
     if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
