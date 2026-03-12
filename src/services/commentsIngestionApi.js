@@ -31,6 +31,7 @@ export const commentsIngestionApi = {
   listRuns: ({ projectId, campaignId }) => request(`/api/comment-base/runs?${new URLSearchParams({ projectId, campaignId }).toString()}`).then((r) => r.data || { items: [] }),
   deleteRun: ({ runId, projectId, campaignId }) => request(`/api/comment-base/runs/${encodeURIComponent(runId)}?${new URLSearchParams({ projectId, campaignId }).toString()}`, { method: 'DELETE' }).then((r) => r.data || {}),
   enrichFragments: (payload) => request('/api/comment-base/fragments/enrich', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || { items: [], meta: {} }),
+  runCodeSelectionAgent: (payload) => request('/api/comment-base/code-selection-agent', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || { selected_fragments: [], clusters_internal: [], final_code_proposals: [], metrics: {} }),
   saveCodeProposalReview: (payload) => request('/api/comment-base/code-proposal-reviews', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || {}),
   listCodeProposalReviews: ({ projectId, campaignId, limit = 500 }) => request(`/api/comment-base/code-proposal-reviews?${new URLSearchParams({ projectId, campaignId, limit: String(limit) }).toString()}`).then((r) => r.data || { items: [] }),
   extractSemanticFragments: ({ comment_id, source_id, texto_completo_del_comentario }) => request('/api/comment-base/semantic-fragment-agent', {

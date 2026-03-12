@@ -81,6 +81,7 @@ const CommentsModePage = () => {
   const [ingestionInputs, setIngestionInputs] = useState([]);
   const [ingestionRuns, setIngestionRuns] = useState([]);
   const [proposalFeedbackSummary, setProposalFeedbackSummary] = useState({});
+  const [codeSelectionMetrics, setCodeSelectionMetrics] = useState(null);
   const [semanticAgentBusy, setSemanticAgentBusy] = useState(false);
   const [semanticAgentError, setSemanticAgentError] = useState('');
   const [semanticAgentProgress, setSemanticAgentProgress] = useState({ done: 0, total: 0 });
@@ -360,20 +361,6 @@ const CommentsModePage = () => {
     }
   };
 
-  const buildCandidateCodeFromFragment = (fragment) => {
-    const raw = String(fragment.title || fragment.excerpt || '').trim();
-    const short = raw.split(/[.!?\n]/)[0]?.trim() || raw;
-    const candidateName = short.slice(0, 72) || `Código ${new Date().toLocaleTimeString()}`;
-    const baseSlug = slugify(candidateName).slice(0, 64) || `code-${Date.now()}`;
-    let candidateSlug = baseSlug;
-    let suffix = 1;
-    while (codes.some((code) => String(code.slug) === String(candidateSlug))) {
-      suffix += 1;
-      candidateSlug = `${baseSlug}-${suffix}`;
-    }
-    return { candidateName, candidateSlug };
-  };
-
   const getCurrentReviewer = () => {
     try {
       const fromStorage = JSON.parse(localStorage.getItem('auth_user') || '{}');
@@ -455,7 +442,7 @@ const CommentsModePage = () => {
     };
   };
 
-  const runCodeProposalAgent = () => {
+  const runCodeProposalAgent = async () => {
     const acceptedByFragment = new Map();
     codeProposals.forEach((proposal) => {
       if (proposal.status !== 'aceptado') return;
@@ -471,74 +458,67 @@ const CommentsModePage = () => {
 
     if (!targetFragments.length) return;
 
-    const now = new Date().toISOString();
-    const nextProposals = [...codeProposals.filter((proposal) => proposal.status === 'aceptado')];
+    try {
+      const response = await commentsIngestionApi.runCodeSelectionAgent({
+        project_id: projectId,
+        campaign_id: campaignId,
+        fragments: targetFragments,
+        existing_codes: codes,
+      });
 
-    targetFragments.forEach((fragment) => {
-      const fragmentText = String(fragment.excerpt || '').trim();
-      if (!fragmentText) return;
+      const generatedProposals = Array.isArray(response?.final_code_proposals) ? response.final_code_proposals : [];
+      const selectedFragments = Array.isArray(response?.selected_fragments) ? response.selected_fragments : [];
+      const selectedById = new Map(selectedFragments.map((fragment) => [String(fragment.id), fragment]));
 
-      const rankedExistingCodes = codes
-        .map((code) => ({
-          slug: String(code.slug),
-          name: String(code.name || code.slug || 'Código'),
-          score: scoreCodeReuse(fragmentText, code),
-        }))
-        .sort((a, b) => b.score - a.score);
-
-      const best = rankedExistingCodes[0] || null;
-      const alternatives = rankedExistingCodes
-        .slice(0, 3)
-        .filter((option) => option.score > 0)
-        .map((option) => ({
-          code_slug: option.slug,
-          code_name: option.name,
-          confidence: Number(option.score.toFixed(2)),
-        }));
-
-      if (best && best.score >= 0.28) {
-        nextProposals.push({
-          id: `code_proposal_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-          fragment_id: String(fragment.id),
-          fragment_excerpt: fragmentText,
-          suggested_code_slug: best.slug,
-          suggested_code_name: best.name,
-          decision_type: 'reutilizacion',
-          confidence: Number(best.score.toFixed(2)),
-          justification: `Reutilización prioritaria: coincide semánticamente con “${best.name}”.`,
-          alternatives,
-          status: 'propuesto',
-          created_at: now,
-          updated_at: now,
-          review_log: [],
-          parent_candidate_slug: null,
-        });
-        return;
-      }
-
-      const candidate = buildCandidateCodeFromFragment(fragment);
-      nextProposals.push({
-        id: `code_proposal_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
-        fragment_id: String(fragment.id),
-        fragment_excerpt: fragmentText,
-        suggested_code_slug: candidate.candidateSlug,
-        suggested_code_name: candidate.candidateName,
-        decision_type: 'nuevo',
-        confidence: Number((best?.score ? Math.min(0.55, Math.max(0.3, best.score + 0.1)) : 0.52).toFixed(2)),
-        justification: 'No se encontró un código existente con ajuste semántico suficiente; se propone candidato nuevo.',
-        alternatives,
+      const now = new Date().toISOString();
+      const acceptedProposals = codeProposals.filter((proposal) => proposal.status === 'aceptado');
+      const normalizedGenerated = generatedProposals.map((proposal, index) => ({
+        id: String(proposal.id || `code_proposal_ai_${Date.now()}_${index + 1}`),
+        fragment_id: String(proposal.fragment_id || ''),
+        fragment_excerpt: String(proposal.fragment_excerpt || ''),
+        suggested_code_slug: String(proposal.suggested_code_slug || ''),
+        suggested_code_name: String(proposal.suggested_code_name || 'Código sugerido'),
+        decision_type: String(proposal.decision_type || 'nuevo'),
+        confidence: Number.isFinite(Number(proposal.confidence)) ? Number(proposal.confidence) : 0.5,
+        justification: String(proposal.justification || 'Propuesta generada por compresión semántica IA.'),
+        alternatives: Array.isArray(proposal.alternatives) ? proposal.alternatives : [],
         status: 'propuesto',
-        created_at: now,
-        updated_at: now,
+        created_at: String(proposal.created_at || now),
+        updated_at: String(proposal.updated_at || now),
         review_log: [],
         parent_candidate_slug: null,
-      });
-    });
+        ai_code_score: Number.isFinite(Number(proposal.ai_code_score)) ? Number(proposal.ai_code_score) : null,
+        traceability: proposal.traceability || null,
+      }));
 
-    persist({
-      ...store,
-      codeProposals: nextProposals,
-    });
+      const nextFragments = fragments.map((fragment) => {
+        const selected = selectedById.get(String(fragment.id));
+        if (!selected) {
+          if (targetFragments.some((target) => String(target.id) === String(fragment.id))) {
+            return {
+              ...fragment,
+              fragment_status: 'rejected',
+              ai_candidate_score: Number.isFinite(Number(fragment.ai_candidate_score)) ? Number(fragment.ai_candidate_score) : null,
+            };
+          }
+          return fragment;
+        }
+        return {
+          ...fragment,
+          ...selected,
+          fragment_status: 'selected',
+        };
+      });
+
+      persist({
+        ...store,
+        fragments: nextFragments,
+        codeProposals: [...acceptedProposals, ...normalizedGenerated],
+      });
+      setCodeSelectionMetrics(response?.metrics || null);
+    } catch (error) {
+      setIngestionError(error?.message || 'No se pudo ejecutar el motor IA de selección de fragmentos y compresión de códigos.');
+    }
   };
 
   const acceptCodeProposal = (proposal) => {
@@ -2384,6 +2364,11 @@ const CommentsModePage = () => {
                   </div>
                   <div className="text-xs text-slate-600">
                     Total: {codeProposals.length} · Pendientes/Propuestas: {codeProposals.filter((item) => ['pendiente', 'propuesto'].includes(String(item.status || 'pendiente'))).length}
+                    {codeSelectionMetrics ? (
+                      <span className="ml-2 text-[11px] text-slate-500">
+                        · IA seleccionó {Number(codeSelectionMetrics.total_fragments_selected || 0)} / {Number(codeSelectionMetrics.total_fragments_analyzed || 0)} · códigos {Number(codeSelectionMetrics.final_codes_count || 0)}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
 

@@ -2892,6 +2892,15 @@ function parseYouTubeVideoId(rawValue = '') {
   }
 }
 
+function slugify(input = '') {
+  return String(input || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 function extractResolvedVideoId(item = null) {
   if (!item) return '';
   if (typeof item.videoId === 'string' && item.videoId.trim()) return item.videoId.trim();
@@ -3225,6 +3234,240 @@ function enrichCommentFragments({ fragments = [], existingFragments = [] }) {
       coding_budget_max: 40,
     };
   });
+}
+
+function clamp(min, value, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function safeNumber(input, fallback = 0) {
+  const n = Number(input);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function rankAndSelectFragmentsForCoding(fragments = []) {
+  const analyzed = (Array.isArray(fragments) ? fragments : [])
+    .map((fragment) => {
+      const redundancy = clamp(0, safeNumber(fragment.redundancy_score, 0), 1);
+      const novelty = clamp(0, safeNumber(fragment.novelty_score, 0.5), 1);
+      const density = clamp(0, safeNumber(fragment.density_score, 0.5), 1);
+      const quality = clamp(0, safeNumber(fragment.extraction_quality_score, 0.5), 1);
+      const dispersionBoost = String(fragment.source_dispersion_marker || '').includes('repeated') ? 0.08 : 0;
+      const aiCandidateScore = clamp(0, (0.4 * novelty) + (0.35 * density) + (0.2 * quality) - (0.35 * redundancy) + dispersionBoost, 1);
+      return {
+        ...fragment,
+        redundancy_score: redundancy,
+        novelty_score: novelty,
+        density_score: density,
+        extraction_quality_score: quality,
+        ai_candidate_score: Number(aiCandidateScore.toFixed(4)),
+      };
+    })
+    .filter((fragment) => String(fragment.excerpt || '').trim().length >= 8)
+    .sort((a, b) => Number(b.ai_candidate_score || 0) - Number(a.ai_candidate_score || 0));
+
+  const total = analyzed.length;
+  if (!total) return { analyzed: [], selected: [], ratio: 0 };
+
+  const targetMin = Math.max(1, Math.floor(total * 0.08));
+  const targetMax = Math.max(targetMin, Math.floor(total * 0.15));
+  const hardMax = Math.max(1, Math.floor(total * 0.2));
+
+  const baseSelected = analyzed
+    .filter((fragment) => fragment.density_score >= 0.24 && fragment.extraction_quality_score >= 0.24)
+    .slice(0, hardMax);
+
+  let selected = baseSelected.slice(0, targetMax);
+  if (selected.length < targetMin) selected = analyzed.slice(0, targetMin);
+
+  // Forzar segunda compresión si supera 25%.
+  const currentRatio = selected.length / Math.max(total, 1);
+  if (currentRatio > 0.25) {
+    selected = selected.filter((fragment) => Number(fragment.ai_candidate_score || 0) >= 0.58);
+    if (selected.length < targetMin) {
+      selected = analyzed.slice(0, targetMin);
+    }
+  }
+
+  const selectedHashes = new Set();
+  const deduped = [];
+  for (const fragment of selected) {
+    const hash = String(fragment.semantic_hash || '');
+    if (hash && selectedHashes.has(hash)) continue;
+    selectedHashes.add(hash);
+    deduped.push({ ...fragment, fragment_status: 'selected' });
+  }
+
+  const selectedIds = new Set(deduped.map((fragment) => String(fragment.id || '')));
+  const analyzedWithStatus = analyzed.map((fragment) => (
+    selectedIds.has(String(fragment.id || ''))
+      ? { ...fragment, fragment_status: 'selected' }
+      : { ...fragment, fragment_status: Number(fragment.ai_candidate_score || 0) >= 0.3 ? 'candidate' : 'rejected' }
+  ));
+
+  return {
+    analyzed: analyzedWithStatus,
+    selected: deduped,
+    ratio: deduped.length / Math.max(total, 1),
+  };
+}
+
+function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], existingCodes = [] }) {
+  const tokensToIgnore = new Set(['pero', 'aunque', 'porque', 'para', 'esto', 'esta', 'este', 'muy', 'mas', 'solo', 'como', 'cuando']);
+  const codeBySlug = new Map();
+  const semanticGroups = new Map();
+  const sourceSetsBySlug = new Map();
+
+  const existing = Array.isArray(existingCodes) ? existingCodes : [];
+  const existingBySlug = new Map(existing.map((code) => [String(code.slug), code]));
+
+  const buildGroupKey = (fragment) => {
+    const text = String(fragment.excerpt || '').toLowerCase();
+    const tokens = tokenizeFragment(text).filter((token) => !tokensToIgnore.has(token));
+    const anchor = tokens.slice(0, 3).join('-') || String(fragment.semantic_hash || '').slice(0, 8) || `cluster-${Math.floor(Math.random() * 1000)}`;
+    return anchor;
+  };
+
+  selectedFragments.forEach((fragment) => {
+    const key = buildGroupKey(fragment);
+    if (!semanticGroups.has(key)) semanticGroups.set(key, []);
+    semanticGroups.get(key).push(fragment);
+  });
+
+  let clusters = Array.from(semanticGroups.entries()).map(([key, items]) => ({
+    key,
+    items,
+    strength: items.reduce((acc, item) => acc + Number(item.ai_candidate_score || 0), 0),
+  }));
+
+  clusters.sort((a, b) => b.strength - a.strength);
+
+  const targetCodes = clamp(25, clusters.length, 30);
+  const hardMaxCodes = 40;
+  if (clusters.length > hardMaxCodes) {
+    clusters = clusters.slice(0, hardMaxCodes);
+  }
+
+  const compressed = clusters.slice(0, targetCodes).map((cluster, index) => {
+    const representative = cluster.items[0] || {};
+    const text = String(representative.excerpt || '').trim();
+    const label = text.split(/[.!?\n]/)[0].trim().slice(0, 72) || `Código ${index + 1}`;
+
+    // Reutilización disciplinada: primero intentar código existente más cercano.
+    let chosenCode = null;
+    let bestScore = 0;
+    existing.forEach((code) => {
+      const score = (() => {
+        const fragTokens = new Set(tokenizeFragment(text));
+        const codeTokens = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
+        const inter = [...fragTokens].filter((t) => codeTokens.has(t)).length;
+        const union = new Set([...fragTokens, ...codeTokens]).size;
+        return union ? inter / union : 0;
+      })();
+      if (score > bestScore) {
+        bestScore = score;
+        chosenCode = code;
+      }
+    });
+
+    const shouldReuse = Boolean(chosenCode) && bestScore >= 0.26;
+    let slug;
+    let name;
+    let decisionType;
+    if (shouldReuse) {
+      slug = String(chosenCode.slug);
+      name = String(chosenCode.name || chosenCode.slug || 'Código');
+      decisionType = 'reutilizacion';
+    } else {
+      const baseSlug = slugify(label).slice(0, 64) || `code-${Date.now()}-${index}`;
+      let candidate = baseSlug;
+      let suffix = 1;
+      while (codeBySlug.has(candidate) || existingBySlug.has(candidate)) {
+        suffix += 1;
+        candidate = `${baseSlug}-${suffix}`;
+      }
+      slug = candidate;
+      name = label;
+      decisionType = 'nuevo';
+    }
+
+    if (!codeBySlug.has(slug)) {
+      codeBySlug.set(slug, {
+        suggested_code_slug: slug,
+        suggested_code_name: name,
+        decision_type: decisionType,
+        cluster_strength: Number(cluster.strength.toFixed(4)),
+        fragments: [],
+      });
+      sourceSetsBySlug.set(slug, new Set());
+    }
+
+    const bucket = codeBySlug.get(slug);
+    cluster.items.forEach((item) => {
+      bucket.fragments.push(item);
+      const sourceKey = `${item.source_video_id || item.video_id || ''}|${item.source_run_id || ''}|${item.source_comment_id || ''}`;
+      if (sourceKey !== '||') sourceSetsBySlug.get(slug).add(sourceKey);
+    });
+
+    return bucket;
+  });
+
+  const proposals = [];
+  let proposalCounter = 0;
+
+  codeBySlug.forEach((bucket, slug) => {
+    const fragmentsForCode = Array.isArray(bucket.fragments) ? bucket.fragments : [];
+    const codeFrequency = fragmentsForCode.length;
+    const sourceDispersion = Number(sourceSetsBySlug.get(slug)?.size || 0);
+    const consistency = (() => {
+      if (fragmentsForCode.length <= 1) return 0.82;
+      const avgRedundancy = fragmentsForCode.reduce((acc, f) => acc + Number(f.redundancy_score || 0), 0) / fragmentsForCode.length;
+      return clamp(0, 1 - avgRedundancy, 1);
+    })();
+    const intensity = fragmentsForCode.reduce((acc, f) => acc + Number(f.density_score || 0), 0) / Math.max(1, fragmentsForCode.length);
+    const scoreIa = clamp(0, (0.35 * clamp(0, codeFrequency / Math.max(1, selectedFragments.length), 1)) + (0.3 * clamp(0, sourceDispersion / Math.max(1, selectedFragments.length), 1)) + (0.2 * consistency) + (0.15 * intensity), 1);
+
+    fragmentsForCode.forEach((fragment) => {
+      proposalCounter += 1;
+      proposals.push({
+        id: `code_proposal_ai_${Date.now()}_${proposalCounter}`,
+        fragment_id: String(fragment.id || ''),
+        fragment_excerpt: String(fragment.excerpt || ''),
+        suggested_code_slug: slug,
+        suggested_code_name: bucket.suggested_code_name,
+        decision_type: bucket.decision_type,
+        confidence: Number(clamp(0.05, (Number(fragment.ai_candidate_score || 0) * 0.65) + (scoreIa * 0.35), 0.99).toFixed(2)),
+        justification: bucket.decision_type === 'reutilizacion'
+          ? `Compresión semántica: fragmento asignado a código existente con narrativa compartida.`
+          : 'Compresión semántica: no hubo código existente suficientemente cercano; se propone núcleo nuevo.',
+        alternatives: [],
+        status: 'propuesto',
+        created_at: nowIso(),
+        updated_at: nowIso(),
+        review_log: [],
+        parent_candidate_slug: null,
+        ai_code_score: Number((scoreIa * 100).toFixed(2)),
+        traceability: {
+          source_comment_id: fragment.source_comment_id || fragment.comment_id || null,
+          source_video_id: fragment.source_video_id || fragment.video_id || null,
+          source_run_id: fragment.source_run_id || null,
+          semantic_hash: fragment.semantic_hash || null,
+        },
+      });
+    });
+  });
+
+  const generatedCodes = Array.from(codeBySlug.values()).map((bucket) => ({
+    suggested_code_slug: bucket.suggested_code_slug,
+    suggested_code_name: bucket.suggested_code_name,
+    decision_type: bucket.decision_type,
+    fragments_count: Array.isArray(bucket.fragments) ? bucket.fragments.length : 0,
+  }));
+
+  return {
+    proposals,
+    generatedCodes,
+  };
 }
 
 async function ensureYouTubeAccessToken(connection, config) {
@@ -5336,6 +5579,54 @@ const server = http.createServer(async (req, res) => {
             coding_budget_target: 30,
             coding_budget_max: 40,
             dropped_as_noise: Math.max(0, fragments.length - cleaned.length),
+          },
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-base/code-selection-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const fragments = Array.isArray(body.fragments) ? body.fragments : [];
+      const existingCodes = Array.isArray(body.existing_codes) ? body.existing_codes : [];
+
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const ranked = rankAndSelectFragmentsForCoding(fragments);
+      const compressed = buildCompressedCodesFromSelectedFragments({
+        selectedFragments: ranked.selected,
+        existingCodes,
+      });
+
+      const totalAnalyzed = ranked.analyzed.length;
+      const totalSelected = ranked.selected.length;
+      const finalCodeCount = compressed.generatedCodes.length;
+      const compressionRatio = totalAnalyzed > 0 ? Number((totalSelected / totalAnalyzed).toFixed(4)) : 0;
+
+      return sendJson(req, res, 200, {
+        data: {
+          selected_fragments: ranked.selected,
+          clusters_internal: compressed.generatedCodes,
+          final_code_proposals: compressed.proposals,
+          metrics: {
+            total_fragments_analyzed: totalAnalyzed,
+            total_fragments_selected: totalSelected,
+            compression_ratio: compressionRatio,
+            final_codes_count: finalCodeCount,
+            code_budget_target: 30,
+            code_budget_max: 40,
           },
         },
       });
