@@ -23,6 +23,8 @@ import AbTestPage from '@/pages/AbTestPage';
 import CloudPage from '@/pages/CloudPage';
 import InterviewsPage from '@/pages/InterviewsPage';
 import InterviewDetailPage from '@/pages/InterviewDetailPage';
+import CommentsModePage from '@/pages/CommentsModePage';
+import ProjectChatPage from '@/pages/ProjectChatPage';
 import LoginPage from '@/pages/LoginPage';
 import SignupPage from '@/pages/SignupPage';
 
@@ -73,10 +75,12 @@ const ProtectedApp = () => (
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/videos/:videoId" element={<VideoDetailPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/hypotheses/:hypothesisId/ab-test" element={<AbTestPage />} />
               <Route path="/projects/:projectId/cloud" element={<CloudPage />} />
+              <Route path="/projects/:projectId/chat" element={<ProjectChatPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/interviews" element={<InterviewsPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/interviews/code-map" element={<InterviewsPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/interviews/cloud/:nodeId" element={<InterviewsPage />} />
               <Route path="/projects/:projectId/campaigns/:campaignId/interviews/:sessionId" element={<InterviewDetailPage />} />
+              <Route path="/projects/:projectId/campaigns/:campaignId/comments" element={<CommentsModePage />} />
               <Route path="*" element={<Navigate to="/projects" replace />} />
             </Routes>
           </HypothesisProvider>

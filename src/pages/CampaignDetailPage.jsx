@@ -55,11 +55,13 @@ const CampaignDetailPage = () => {
   const hypothesesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/hypotheses`;
   const videosLibraryPath = `/projects/${campaign.project_id}/videos`;
   const interviewsPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/interviews`;
+  const commentsPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/comments`;
 
   const chooseMode = (mode) => {
     localStorage.setItem(`campaign-mode-selected:${campaign.id}`, mode);
     setModeModalOpen(false);
     if (mode === 'interviews') navigate(interviewsPath);
+    if (mode === 'comments') navigate(commentsPath);
   };
 
   return (
@@ -122,6 +124,15 @@ const CampaignDetailPage = () => {
               <p className="text-gray-600 mb-4">Módulo separado de videos: clientes, formularios, hipótesis de entrevistas y sesiones.</p>
               <Link to={interviewsPath} className="text-emerald-600 font-medium hover:underline">Abrir Modo Entrevistas →</Link>
             </motion.div>
+
+            <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-2xl shadow-xl p-6 border border-cyan-100">
+              <div className="flex items-center gap-3 mb-4">
+                <MessageSquare className="w-6 h-6 text-cyan-600" />
+                <h2 className="text-xl font-semibold">Modo comentarios</h2>
+              </div>
+              <p className="text-gray-600 mb-4">Módulo independiente para análisis semántico basado en comentarios como fuente principal.</p>
+              <Link to={commentsPath} className="text-cyan-600 font-medium hover:underline">Abrir Modo Comentarios →</Link>
+            </motion.div>
           </div>
         </div>
 
@@ -130,7 +141,7 @@ const CampaignDetailPage = () => {
             <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md space-y-4">
               <h3 className="text-xl font-semibold">Seleccionar modo</h3>
               <p className="text-sm text-gray-600">Elige cómo quieres trabajar esta campaña.</p>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3">
                 <button className="border rounded-xl p-4 text-left hover:border-indigo-400 hover:bg-indigo-50" onClick={() => chooseMode('videos')}>
                   <p className="font-semibold text-indigo-700">Modo videos</p>
                   <p className="text-xs text-gray-600 mt-1">Biblioteca, hipótesis de videos, audiencias y cloud.</p>
@@ -138,6 +149,10 @@ const CampaignDetailPage = () => {
                 <button className="border rounded-xl p-4 text-left hover:border-emerald-400 hover:bg-emerald-50" onClick={() => chooseMode('interviews')}>
                   <p className="font-semibold text-emerald-700">Modo entrevistas</p>
                   <p className="text-xs text-gray-600 mt-1">Clientes, formularios y sesiones cualitativas.</p>
+                </button>
+                <button className="border rounded-xl p-4 text-left hover:border-cyan-400 hover:bg-cyan-50" onClick={() => chooseMode('comments')}>
+                  <p className="font-semibold text-cyan-700">Modo comentarios</p>
+                  <p className="text-xs text-gray-600 mt-1">Base de comentarios, fragmentos, códigos y clusters.</p>
                 </button>
               </div>
             </div>
