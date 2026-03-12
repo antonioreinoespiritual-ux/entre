@@ -643,6 +643,51 @@ const CommentsModePage = () => {
     setFragmentMenuId('');
   };
 
+  const goToFragmentOrigin = async (fragment) => {
+    if (!fragment) return;
+    const sourceCommentId = String(fragment.source_comment_id || fragment.comment_id || '').trim();
+    if (!sourceCommentId) {
+      window.alert('Este fragmento no tiene comentario de origen asociado.');
+      return;
+    }
+
+    const findReaderComment = (items = []) => items.find((item) => {
+      const rowId = String(item.id || '').trim();
+      const rowSourceId = String(item.source_comment_id || '').trim();
+      return rowId === sourceCommentId || rowSourceId === sourceCommentId;
+    }) || null;
+
+    let originComment = findReaderComment(readerComments);
+    if (!originComment) {
+      const data = await commentsIngestionApi.listTable({
+        projectId,
+        campaignId,
+        limit: commentsTable.limit,
+        offset: 0,
+        q: '',
+      });
+      const fetchedItems = Array.isArray(data.items) ? data.items : [];
+      setCommentsTable((prev) => ({
+        ...prev,
+        items: fetchedItems,
+        total: Number(data.total || 0),
+        offset: 0,
+        q: '',
+        error: '',
+      }));
+      originComment = findReaderComment(fetchedItems);
+    }
+
+    if (!originComment) {
+      window.alert('No se encontró el comentario de origen en la base de comentarios cargada.');
+      return;
+    }
+
+    setTab('reader');
+    setSelectedReaderCommentId(String(originComment.id));
+    setReaderSelection({ text: '', start: null, end: null, commentId: '' });
+  };
+
   const filteredFragments = useMemo(() => {
     const query = fragmentQuery.trim().toLowerCase();
     return fragments.filter((fragment) => {
@@ -1371,6 +1416,7 @@ const CommentsModePage = () => {
                           {fragmentMenuId === fragmentId ? (
                             <div className="absolute right-0 top-9 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Editar fragmento</button>
+                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { goToFragmentOrigin(fragment); setFragmentMenuId(''); }}>Ir a origen</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Vincular código</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { evolveFragmentToCode(fragment); setFragmentMenuId(''); }}>Evolucionar a código</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => { deleteSingleFragment(fragmentId); setFragmentMenuId(''); }}>Eliminar fragmento</button>
