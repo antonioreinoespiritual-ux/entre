@@ -3724,7 +3724,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
 }
 
 
-function buildCodeGenerationAgentPrompt({ comments = [] }) {
+function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes = 40 }) {
   const compactText = (value, max = 180) => String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -3736,27 +3736,20 @@ function buildCodeGenerationAgentPrompt({ comments = [] }) {
       const text = String(item.text || item.comment_text || item.body || item.content || '').trim();
       return { id, text };
     })
-    .filter((item) => item.text)
-    .slice(0, 260);
+    .filter((item) => item.text);
 
-  const sampledComments = (() => {
-    if (normalizedComments.length <= 120) return normalizedComments;
-    const step = Math.max(1, Math.floor(normalizedComments.length / 120));
-    const sampled = [];
-    for (let i = 0; i < normalizedComments.length && sampled.length < 120; i += step) sampled.push(normalizedComments[i]);
-    return sampled;
-  })();
-
-  const commentsBlock = sampledComments
+  const commentsBlock = normalizedComments
     .map((item, index) => `${index + 1}) ${compactText(item.text, 180)}`)
     .join('\n');
 
-  return `Tarea: crear taxonomía conceptual jerárquica desde comentarios.
+  return `Tarea: crear taxonomía conceptual jerárquica desde comentarios completos.
 No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
 Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
 Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin prefijos vacíos ni keywords sueltas.
-Límites: 12-40 códigos; fusionar excesos; descartar ruido.
-Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
+Objetivo: detectar la mayor cantidad de códigos útiles hasta saturación semántica.
+Límites: mínimo ${Math.max(12, Number(minCodes) || 20)} y máximo ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos; fusionar excesos; descartar ruido.
+Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), saturation_score(0-1), subclusters.
+Regla: todo subcluster propuesto debe poder funcionar también como código independiente.
 Devuelve solo JSON:
 {
   "proposals": [
@@ -3767,6 +3760,7 @@ Devuelve solo JSON:
       "coherence_level": "alta|media|baja",
       "pattern_size": "bajo|medio|alto",
       "recommendation": "crear|fusionar|descartar",
+      "saturation_score": 0.0,
       "subclusters": [
         {
           "suggested_subcode_name": "string",
@@ -3774,7 +3768,8 @@ Devuelve solo JSON:
           "naming_rationale": "string",
           "coherence_level": "alta|media|baja",
           "pattern_size": "bajo|medio|alto",
-          "recommendation": "crear|fusionar|descartar"
+          "recommendation": "crear|fusionar|descartar",
+          "saturation_score": 0.0
         }
       ]
     }
@@ -3783,6 +3778,91 @@ Devuelve solo JSON:
 
 COMENTARIOS A ANALIZAR (unidad: comentario completo):
 ${commentsBlock}`;
+}
+
+function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, maxCodes = 40 }) {
+  const compactText = (value, max = 180) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
+  const candidateLines = (Array.isArray(candidates) ? candidates : [])
+    .slice(0, 220)
+    .map((item, index) => `${index + 1}) ${compactText(item.suggested_code_name, 90)} :: ${compactText(item.description, 140)}`)
+    .join('\n');
+
+  return `Consolida esta lista de candidatos en taxonomía final sin trazabilidad.
+Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, maximizando cobertura semántica y deteniéndose por saturación.
+Fusiona redundancias, descarta ruido y conserva solo nombres conceptuales reutilizables.
+Incluye subcódigos útiles y marca recommendation.
+Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
+
+CANDIDATOS:
+${candidateLines}`;
+}
+
+function flattenSubclustersAsCodeProposals(proposals = []) {
+  const normalized = Array.isArray(proposals) ? proposals : [];
+  const extra = [];
+  normalized.forEach((proposal) => {
+    const parentName = String(proposal?.suggested_code_name || proposal?.cluster_name || '').trim();
+    const subclusters = Array.isArray(proposal?.subclusters) ? proposal.subclusters : [];
+    subclusters.forEach((sub) => {
+      const subName = String(sub?.suggested_subcode_name || sub?.cluster_name || '').trim();
+      if (!subName) return;
+      extra.push({
+        cluster_name: String(sub.cluster_name || subName || '').trim(),
+        suggested_code_name: subName,
+        description: String(sub.description || `Subpatrón derivado de ${parentName || 'cluster principal'}.`).trim(),
+        naming_rationale: String(sub.naming_rationale || 'Subcluster convertido en código independiente por utilidad conceptual.').trim(),
+        coherence_level: String(sub.coherence_level || proposal.coherence_level || 'media').toLowerCase(),
+        pattern_size: String(sub.pattern_size || 'medio').toLowerCase(),
+        recommendation: String(sub.recommendation || 'crear').toLowerCase(),
+        saturation_score: Number.isFinite(Number(sub.saturation_score)) ? Number(sub.saturation_score) : null,
+        subclusters: [],
+        generated_without_traceability: true,
+        conceptual_taxonomy_stage: 'discovery',
+      });
+    });
+  });
+  return [...normalized, ...extra];
+}
+
+function dedupeCodeProposalsByName(proposals = [], maxItems = 60) {
+  const normalized = Array.isArray(proposals) ? proposals : [];
+  const keyOf = (name) => String(name || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const map = new Map();
+  normalized.forEach((item) => {
+    const key = keyOf(item?.suggested_code_name || item?.cluster_name);
+    if (!key) return;
+    if (!map.has(key)) {
+      map.set(key, item);
+      return;
+    }
+    const current = map.get(key);
+    const currentSubCount = Array.isArray(current?.subclusters) ? current.subclusters.length : 0;
+    const nextSubCount = Array.isArray(item?.subclusters) ? item.subclusters.length : 0;
+    if (nextSubCount > currentSubCount) map.set(key, item);
+  });
+
+  return Array.from(map.values()).slice(0, Math.max(1, maxItems));
+}
+
+function chunkCommentsForGeneration(comments = [], chunkSize = 120) {
+  const normalized = Array.isArray(comments) ? comments : [];
+  const size = Math.max(20, Number(chunkSize) || 120);
+  const chunks = [];
+  for (let i = 0; i < normalized.length; i += size) {
+    chunks.push(normalized.slice(i, i + size));
+  }
+  return chunks;
 }
 
 function normalizeCodeGenerationAgentOutput(parsed) {
@@ -6053,31 +6133,119 @@ const server = http.createServer(async (req, res) => {
       }
 
       try {
-        const prompt = buildCodeGenerationAgentPrompt({ comments });
-        const completion = await requestAiChatCompletion(integration, [
-          { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
-          { role: 'user', content: prompt },
-        ]);
-        const parsed = extractJsonObjectFromText(completion.content);
-        const proposals = normalizeCodeGenerationAgentOutput(parsed);
+        const commentsInput = Array.isArray(comments) ? comments : [];
+        const [dbRows] = await pool.query(
+          `SELECT id, source_comment_id, text
+           FROM comment_dataset_comments
+           WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+           ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC`,
+          [user.id, projectId, campaignId],
+        );
+
+        const dbComments = (Array.isArray(dbRows) ? dbRows : []).map((row) => ({
+          id: row.source_comment_id || row.id,
+          text: row.text,
+        }));
+
+        const mergedById = new Map();
+        [...dbComments, ...commentsInput].forEach((item, index) => {
+          const id = String(item?.id || item?.comment_id || item?.source_comment_id || `comment_${index + 1}`);
+          const text = String(item?.text || item?.comment_text || item?.body || item?.content || '').trim();
+          if (!text) return;
+          if (!mergedById.has(id)) mergedById.set(id, { id, text });
+        });
+        const allComments = Array.from(mergedById.values());
+
+        if (!allComments.length) {
+          return sendJson(req, res, 200, {
+            data: {
+              proposals: [],
+              metrics: {
+                comments_analyzed: 0,
+                clusters_count: 0,
+                top_level_clusters_count: 0,
+                generated_without_traceability: true,
+              },
+              meta: {
+                generated_without_traceability: true,
+                unit: 'comments',
+                flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+                prompt_version: 'fase_22_3_full_db_iterative_llm',
+                provider: integration.provider,
+                model: integration.model,
+                source: 'ai_model',
+              },
+            },
+          });
+        }
+
+        const MIN_CODES = 20;
+        const MAX_CODES = 40;
+        const commentChunks = chunkCommentsForGeneration(allComments, 120);
+        let mergedProposals = [];
+        let chunkCalls = 0;
+        let stagnantRounds = 0;
+        let previousUniqueCount = 0;
+
+        for (const chunk of commentChunks) {
+          const prompt = buildCodeGenerationAgentPrompt({ comments: chunk, minCodes: MIN_CODES, maxCodes: MAX_CODES });
+          const completion = await requestAiChatCompletion(integration, [
+            { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+            { role: 'user', content: prompt },
+          ]);
+          const parsed = extractJsonObjectFromText(completion.content);
+          const chunkProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsed));
+          mergedProposals = dedupeCodeProposalsByName([...mergedProposals, ...chunkProposals], 160);
+          chunkCalls += 1;
+
+          const uniqueCount = mergedProposals.length;
+          const growth = uniqueCount - previousUniqueCount;
+          if (growth <= 1) stagnantRounds += 1;
+          else stagnantRounds = 0;
+          previousUniqueCount = uniqueCount;
+
+          const saturationReached = uniqueCount >= 30 && stagnantRounds >= 3;
+          if (saturationReached) break;
+        }
+
+        let finalProposals = mergedProposals;
+        if (mergedProposals.length > MAX_CODES) {
+          const synthesisPrompt = buildCodeGenerationSynthesisPrompt({
+            candidates: mergedProposals,
+            minCodes: MIN_CODES,
+            maxCodes: MAX_CODES,
+          });
+          const synthesized = await requestAiChatCompletion(integration, [
+            { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+            { role: 'user', content: synthesisPrompt },
+          ]);
+          const parsedSynthesis = extractJsonObjectFromText(synthesized.content);
+          const synthesizedProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsedSynthesis));
+          finalProposals = dedupeCodeProposalsByName(synthesizedProposals, MAX_CODES);
+        } else {
+          finalProposals = dedupeCodeProposalsByName(flattenSubclustersAsCodeProposals(mergedProposals), MAX_CODES);
+        }
 
         return sendJson(req, res, 200, {
           data: {
-            proposals,
+            proposals: finalProposals,
             metrics: {
-              comments_analyzed: Math.min(Array.isArray(comments) ? comments.length : 0, 900),
-              clusters_count: proposals.length,
-              top_level_clusters_count: proposals.length,
+              comments_analyzed: allComments.length,
+              chunks_analyzed: chunkCalls,
+              clusters_count: finalProposals.length,
+              top_level_clusters_count: finalProposals.length,
               generated_without_traceability: true,
+              semantic_saturation_reached: finalProposals.length >= 30,
             },
             meta: {
               generated_without_traceability: true,
               unit: 'comments',
               flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
-              prompt_version: 'fase_22_1_hierarchical_cluster_prompt',
+              prompt_version: 'fase_22_3_full_db_iterative_llm',
               provider: integration.provider,
               model: integration.model,
               source: 'ai_model',
+              chunk_size: 120,
             },
           },
         });
