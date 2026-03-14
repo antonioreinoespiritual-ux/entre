@@ -3724,6 +3724,196 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
 }
 
 
+function buildCodeGenerationAgentPrompt({ comments = [] }) {
+  const normalizedComments = (Array.isArray(comments) ? comments : [])
+    .map((item, index) => {
+      const id = String(item.id || item.comment_id || item.source_comment_id || `comment_${index + 1}`);
+      const text = String(item.text || item.comment_text || item.body || item.content || '').trim();
+      return { id, text };
+    })
+    .filter((item) => item.text)
+    .slice(0, 1800);
+
+  const commentsBlock = normalizedComments
+    .map((item, index) => `${index + 1}. [${item.id}] ${item.text.slice(0, 900)}`)
+    .join('\n');
+
+  return `OBJETIVO DEL AGENTE IA
+
+Tu tarea es analizar un conjunto grande de comentarios de usuarios y construir una propuesta conceptual de códigos semánticos de alta calidad mediante clustering jerárquico.
+
+NO debes asignar fragmentos a códigos.
+NO debes generar trazabilidad.
+NO debes intentar clasificar comentario por comentario.
+
+Tu función es descubrir patrones conceptuales dominantes del discurso del mercado.
+
+Este proceso tiene 3 etapas obligatorias:
+
+1) Clusterización semántica
+2) Subclusterización conceptual
+3) Generación de propuesta de códigos
+
+------------------------------------------------
+
+FASE 1 — CLUSTERIZACIÓN SEMÁNTICA
+
+Debes analizar TODOS los comentarios como unidades completas de significado.
+
+Tu objetivo es detectar patrones semánticos dominantes, no similitudes superficiales de palabras.
+
+Debes:
+
+- agrupar comentarios que expresen el mismo problema, narrativa, emoción o interpretación
+- ignorar ruido lingüístico (palabras funcionales, saludos, bromas, spam, comentarios irrelevantes)
+- ignorar variaciones gramaticales si el significado conceptual es el mismo
+- priorizar patrones psicológicos y narrativos, no solo temas técnicos
+
+Regla crítica:
+
+Un cluster debe representar un fenómeno del mercado, no una coincidencia estadística débil.
+
+------------------------------------------------
+
+CRITERIOS PARA FORMAR CLUSTERS
+
+Un cluster válido debe cumplir al menos 3 de estos criterios:
+
+- los comentarios expresan el mismo tipo de problema
+- comparten interpretación mental similar del problema
+- tienen emoción dominante comparable
+- describen comportamiento o intento de solución parecido
+- reflejan una narrativa recurrente del mercado
+- aparecen en múltiples videos o fuentes distintas
+
+Clusters basados solo en palabras repetidas deben ser descartados.
+
+------------------------------------------------
+
+FASE 2 — SUBCLUSTERIZACIÓN
+
+Si un cluster es demasiado amplio o heterogéneo debes dividirlo en subclusters.
+
+Debes crear subclusters cuando:
+
+- existen interpretaciones diferentes del mismo problema
+- hay emociones dominantes distintas
+- hay diferencias claras en nivel de urgencia o intensidad
+- existen sub-narrativas dentro del mismo fenómeno
+
+Si un cluster ya es coherente y específico NO debes dividirlo.
+
+Evita sobrefragmentar.
+
+------------------------------------------------
+
+FASE 3 — GENERACIÓN DE PROPUESTA DE CÓDIGOS
+
+Debes convertir clusters y subclusters en propuesta conceptual de códigos.
+
+Reglas:
+
+- cluster dominante → candidato a código principal
+- subcluster → candidato a subcódigo
+- cada código debe tener nombre semántico claro, corto y conceptual
+- evita nombres descriptivos largos o ambiguos
+- evita códigos redundantes o solapados
+- prioriza reutilización conceptual (fusionar patrones similares)
+
+------------------------------------------------
+
+LÍMITES IMPORTANTES
+
+- debes proponer entre 12 y 40 códigos como máximo
+- si detectas más patrones debes fusionarlos jerárquicamente
+- prioriza profundidad conceptual sobre cantidad
+
+------------------------------------------------
+
+EVALUACIÓN DE CALIDAD DE CADA CÓDIGO
+
+Para cada código debes evaluar:
+
+1) tamaño del patrón (bajo / medio / alto)
+2) dispersión (si aparece en múltiples videos o fuentes)
+3) coherencia conceptual (alta / media / baja)
+4) intensidad narrativa (débil / moderada / fuerte)
+5) claridad psicológica del problema
+
+Si un patrón es débil o ruidoso debes descartarlo.
+
+------------------------------------------------
+
+SALIDA ESPERADA
+
+Debes devolver una propuesta estructurada que incluya:
+
+- nombre del código sugerido
+- descripción conceptual breve
+- subcódigos sugeridos si existen
+- nivel estimado de coherencia
+- tamaño del patrón
+- recomendación: crear / fusionar / descartar
+
+NO debes:
+
+- asignar comentarios a códigos
+- crear trazabilidad
+- generar scores numéricos finales
+- intentar validar hipótesis
+
+Tu objetivo es construir una taxonomía conceptual robusta del discurso del mercado basada en clustering semántico jerárquico.
+
+Responde EXCLUSIVAMENTE en JSON válido con esta forma:
+{
+  "proposals": [
+    {
+      "cluster_name": "string",
+      "suggested_code_name": "string",
+      "description": "string",
+      "coherence_level": "alta|media|baja",
+      "pattern_size": "bajo|medio|alto",
+      "recommendation": "crear|fusionar|descartar",
+      "subclusters": [
+        {
+          "cluster_name": "string",
+          "suggested_subcode_name": "string",
+          "description": "string",
+          "coherence_level": "alta|media|baja",
+          "pattern_size": "bajo|medio|alto",
+          "recommendation": "crear|fusionar|descartar"
+        }
+      ]
+    }
+  ]
+}
+
+COMENTARIOS A ANALIZAR (unidad: comentario completo):
+${commentsBlock}`;
+}
+
+function normalizeCodeGenerationAgentOutput(parsed) {
+  const proposals = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
+  return proposals.slice(0, 40).map((proposal, index) => ({
+    cluster_name: String(proposal.cluster_name || `Cluster ${index + 1}`).trim(),
+    suggested_code_name: String(proposal.suggested_code_name || proposal.cluster_name || `Código ${index + 1}`).trim(),
+    description: String(proposal.description || 'Patrón conceptual propuesto sin trazabilidad inicial.').trim(),
+    coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
+    pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
+    recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
+    subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub, subIndex) => ({
+      cluster_name: String(sub.cluster_name || `Subcluster ${subIndex + 1}`).trim(),
+      suggested_subcode_name: String(sub.suggested_subcode_name || sub.cluster_name || `Subcódigo ${subIndex + 1}`).trim(),
+      description: String(sub.description || 'Subpatrón conceptual propuesto sin trazabilidad inicial.').trim(),
+      coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
+      pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
+      recommendation: ['crear', 'fusionar', 'descartar'].includes(String(sub.recommendation || '').toLowerCase()) ? String(sub.recommendation).toLowerCase() : 'crear',
+    })),
+    generated_without_traceability: true,
+    conceptual_taxonomy_stage: 'discovery',
+  }));
+}
+
 function buildCodeGenerationFromComments({ comments = [] }) {
   const cfg = {
     minCommentLength: 25,
@@ -6065,6 +6255,44 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
 
+      const integration = await getAiIntegrationByUserId(user.id);
+      const aiEnabled = Boolean(integration && integration.provider && integration.model);
+
+      if (aiEnabled) {
+        try {
+          const prompt = buildCodeGenerationAgentPrompt({ comments });
+          const completion = await requestAiChatCompletion(integration, [
+            { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+            { role: 'user', content: prompt },
+          ]);
+          const parsed = extractJsonObjectFromText(completion.content);
+          const proposals = normalizeCodeGenerationAgentOutput(parsed);
+
+          return sendJson(req, res, 200, {
+            data: {
+              proposals,
+              metrics: {
+                comments_analyzed: Math.min(Array.isArray(comments) ? comments.length : 0, 1800),
+                clusters_count: proposals.length,
+                top_level_clusters_count: proposals.length,
+                generated_without_traceability: true,
+              },
+              meta: {
+                generated_without_traceability: true,
+                unit: 'comments',
+                flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+                prompt_version: 'fase_22_1_hierarchical_cluster_prompt',
+                provider: integration.provider,
+                model: integration.model,
+                source: 'ai_model',
+              },
+            },
+          });
+        } catch {
+          // fallback below
+        }
+      }
+
       const generated = buildCodeGenerationFromComments({ comments });
       return sendJson(req, res, 200, {
         data: {
@@ -6074,6 +6302,8 @@ const server = http.createServer(async (req, res) => {
             generated_without_traceability: true,
             unit: 'comments',
             flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+            prompt_version: 'fase_22_1_hierarchical_cluster_prompt',
+            source: 'heuristic_fallback',
           },
         },
       });
