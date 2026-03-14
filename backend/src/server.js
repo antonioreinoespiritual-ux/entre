@@ -3764,7 +3764,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
 }
 
 
-function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes = 40 }) {
+function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes = 40, stage = 'final' }) {
   const compactText = (value, max = 180) => String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -3782,15 +3782,27 @@ function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes
     .map((item, index) => `${index + 1}) ${compactText(item.text, 180)}`)
     .join('\n');
 
+  const stageConfig = String(stage || 'final').toLowerCase() === 'chunk'
+    ? {
+      min: Math.max(4, Number(minCodes) || 6),
+      max: Math.max(6, Number(maxCodes) || 12),
+      target: 'Devuelve candidatos compactos: 6-12 códigos por bloque.',
+    }
+    : {
+      min: Math.max(12, Number(minCodes) || 20),
+      max: Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40),
+      target: 'Taxonomía final: 20-40 códigos usando saturación semántica.',
+    };
+
   return `Tarea: crear taxonomía conceptual jerárquica desde comentarios completos.
 No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
 Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
 Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin prefijos vacíos ni keywords sueltas.
-Objetivo: detectar la mayor cantidad de códigos útiles hasta saturación semántica.
-Límites: mínimo ${Math.max(12, Number(minCodes) || 20)} y máximo ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos; fusionar excesos; descartar ruido.
-Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), saturation_score(0-1), subclusters.
-Regla: todo subcluster propuesto debe poder funcionar también como código independiente.
-Devuelve solo JSON:
+Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
+Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
+Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
+Regla: los subclusters deben ser conceptuales y no redundantes.
+Formato de salida: JSON válido, sin texto adicional.
 {
   "proposals": [
     {
@@ -3800,7 +3812,6 @@ Devuelve solo JSON:
       "coherence_level": "alta|media|baja",
       "pattern_size": "bajo|medio|alto",
       "recommendation": "crear|fusionar|descartar",
-      "saturation_score": 0.0,
       "subclusters": [
         {
           "suggested_subcode_name": "string",
@@ -3808,8 +3819,7 @@ Devuelve solo JSON:
           "naming_rationale": "string",
           "coherence_level": "alta|media|baja",
           "pattern_size": "bajo|medio|alto",
-          "recommendation": "crear|fusionar|descartar",
-          "saturation_score": 0.0
+          "recommendation": "crear|fusionar|descartar"
         }
       ]
     }
@@ -3827,7 +3837,7 @@ function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, ma
     .slice(0, max);
 
   const candidateLines = (Array.isArray(candidates) ? candidates : [])
-    .slice(0, 220)
+    .slice(0, 120)
     .map((item, index) => `${index + 1}) ${compactText(item.suggested_code_name, 90)} :: ${compactText(item.description, 140)}`)
     .join('\n');
 
@@ -6244,7 +6254,7 @@ const server = http.createServer(async (req, res) => {
             break;
           }
 
-          const prompt = buildCodeGenerationAgentPrompt({ comments: chunk, minCodes: MIN_CODES, maxCodes: MAX_CODES });
+          const prompt = buildCodeGenerationAgentPrompt({ comments: chunk, minCodes: 6, maxCodes: 12, stage: 'chunk' });
           const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
             { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
             { role: 'user', content: prompt },
