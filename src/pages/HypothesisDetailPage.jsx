@@ -109,24 +109,42 @@ const HypothesisDetailPage = () => {
       return Number.isFinite(parsed) ? parsed : 0;
     };
 
-    const metricValueForVideo = (video = {}) => {
-      const normalizedMetric = metric.toLowerCase();
-      const metricAliasToField = {
-        'views finish %': 'views_finish_pct',
-        'retention %': 'retencion_pct',
-        'avg watch time': 'tiempo_prom_seg',
-        'live peak viewers': 'pico_viewers',
-        'live avg viewers': 'viewers_prom',
-        'live new followers': 'nuevos_seguidores',
-        lead_form: 'formulario_lead',
-      };
-
-      const field = metricAliasToField[normalizedMetric] || metric;
-      return toNumber(video[field]);
+    const normalizedMetric = metric.toLowerCase();
+    const metricAliasToField = {
+      'views finish %': 'views_finish_pct',
+      'retention %': 'retencion_pct',
+      'avg watch time': 'tiempo_prom_seg',
+      'live peak viewers': 'pico_viewers',
+      'live avg viewers': 'viewers_prom',
+      'live new followers': 'nuevos_seguidores',
+      lead_form: 'formulario_lead',
     };
+    const resolvedMetricField = metricAliasToField[normalizedMetric] || metric;
+
+    const countMetrics = new Set([
+      'views',
+      'clicks',
+      'initiate_checkouts',
+      'view_content',
+      'formulario_lead',
+      'lead_form',
+      'purchase',
+      'likes',
+      'comments',
+      'shares',
+      'saves',
+      'nuevos_seguidores',
+      'new_followers',
+      'pico_viewers',
+    ]);
+
+    const metricValueForVideo = (video = {}) => toNumber(video[resolvedMetricField]);
 
     const values = videos.map((video) => metricValueForVideo(video));
-    const currentValue = values.length ? (values.reduce((acc, value) => acc + toNumber(value), 0) / values.length) : 0;
+    const totalValue = values.reduce((acc, value) => acc + toNumber(value), 0);
+    const averageValue = values.length ? (totalValue / values.length) : 0;
+    const useTotalMode = countMetrics.has(String(resolvedMetricField || '').toLowerCase());
+    const currentValue = useTotalMode ? totalValue : averageValue;
 
     const passes = (() => {
       if (operator === '>=') return currentValue >= threshold;
@@ -150,6 +168,9 @@ const HypothesisDetailPage = () => {
       operator,
       threshold,
       currentValue,
+      totalValue,
+      averageValue,
+      useTotalMode,
       videosEvaluated: values.length,
       progressPct,
       ringPct,
@@ -465,7 +486,9 @@ const HypothesisDetailPage = () => {
                     <span className="text-xs text-slate-400 ml-2">({hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold})</span>
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    Actual: {hypothesisMetricProgress.currentValue.toFixed(2)} · Evaluada en {hypothesisMetricProgress.videosEvaluated} videos
+                    {hypothesisMetricProgress.useTotalMode
+                      ? `Total entre videos: ${hypothesisMetricProgress.totalValue.toFixed(2)} · Videos evaluados: ${hypothesisMetricProgress.videosEvaluated}`
+                      : `Promedio actual: ${hypothesisMetricProgress.averageValue.toFixed(2)} · Videos evaluados: ${hypothesisMetricProgress.videosEvaluated}`}
                   </p>
 
                   <div className="mt-3 h-2.5 w-full rounded-full bg-slate-800 overflow-hidden">
@@ -487,7 +510,8 @@ const HypothesisDetailPage = () => {
                     <TrendingUp className="w-4 h-4 text-indigo-300" />
                     {hypothesisMetricProgress.currentValue.toFixed(2)}
                   </p>
-                  <p className="text-xs text-slate-400 mt-1">Threshold: {hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold}</p>
+                  <p className="text-xs text-slate-400 mt-1">{hypothesisMetricProgress.useTotalMode ? 'Modo total acumulado' : 'Modo promedio'}</p>
+                  <p className="text-xs text-slate-400">Threshold: {hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold}</p>
                   <p className="text-xs text-slate-400">Progreso: {hypothesisMetricProgress.progressPct.toFixed(1)}%</p>
                 </div>
               </div>
