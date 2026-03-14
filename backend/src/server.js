@@ -2606,6 +2606,46 @@ async function requestAiChatCompletion(integration, payload) {
   };
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+
+function parseRateLimitRetryMs(errorMessage = '') {
+  const message = String(errorMessage || '');
+  const secondsMatch = message.match(/try again in\s*([0-9]+(?:\.[0-9]+)?)s/i);
+  if (secondsMatch && Number.isFinite(Number(secondsMatch[1]))) {
+    return Math.max(500, Math.ceil(Number(secondsMatch[1]) * 1000) + 250);
+  }
+  return 0;
+}
+
+function isRateLimitError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('rate limit') || message.includes('tpm') || message.includes('tokens per minute');
+}
+
+async function requestAiChatCompletionWithRateLimitRetry(integration, payload, options = {}) {
+  const maxRetries = Math.max(0, Number(options.maxRetries) || 4);
+  const baseDelayMs = Math.max(300, Number(options.baseDelayMs) || 1200);
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt <= maxRetries) {
+    try {
+      return await requestAiChatCompletion(integration, payload);
+    } catch (error) {
+      lastError = error;
+      if (!isRateLimitError(error) || attempt >= maxRetries) throw error;
+
+      const parsedDelay = parseRateLimitRetryMs(error?.message);
+      const jitter = Math.floor(Math.random() * 350);
+      const delayMs = parsedDelay || (baseDelayMs * (attempt + 1)) + jitter;
+      await sleep(delayMs);
+      attempt += 1;
+    }
+  }
+
+  throw lastError || new Error('No se pudo completar el chat con IA por límite de tasa.');
+}
+
 function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText }) {
   return [
     'Eres un agente de fragmentación semántica robusta.',
@@ -5711,7 +5751,7 @@ const server = http.createServer(async (req, res) => {
       });
 
       try {
-        const completion = await requestAiChatCompletion(integration, [
+        const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
           {
             role: 'system',
             content: 'Responde exclusivamente con JSON válido, sin markdown ni texto adicional.',
@@ -6189,10 +6229,10 @@ const server = http.createServer(async (req, res) => {
 
         for (const chunk of commentChunks) {
           const prompt = buildCodeGenerationAgentPrompt({ comments: chunk, minCodes: MIN_CODES, maxCodes: MAX_CODES });
-          const completion = await requestAiChatCompletion(integration, [
+          const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
             { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
             { role: 'user', content: prompt },
-          ]);
+          ], { maxRetries: 5, baseDelayMs: 1500 });
           const parsed = extractJsonObjectFromText(completion.content);
           const chunkProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsed));
           mergedProposals = dedupeCodeProposalsByName([...mergedProposals, ...chunkProposals], 160);
@@ -6215,10 +6255,10 @@ const server = http.createServer(async (req, res) => {
             minCodes: MIN_CODES,
             maxCodes: MAX_CODES,
           });
-          const synthesized = await requestAiChatCompletion(integration, [
+          const synthesized = await requestAiChatCompletionWithRateLimitRetry(integration, [
             { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
             { role: 'user', content: synthesisPrompt },
-          ]);
+          ], { maxRetries: 5, baseDelayMs: 1500 });
           const parsedSynthesis = extractJsonObjectFromText(synthesized.content);
           const synthesizedProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsedSynthesis));
           finalProposals = dedupeCodeProposalsByName(synthesizedProposals, MAX_CODES);
