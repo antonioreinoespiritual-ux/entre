@@ -3393,21 +3393,205 @@ function rankAndSelectFragmentsForCoding(fragments = []) {
 }
 
 function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], existingCodes = [] }) {
-  const disabledAt = nowIso();
-  const analyzedFragments = Array.isArray(selectedFragments) ? selectedFragments : [];
-  const knownCodesCount = Array.isArray(existingCodes) ? existingCodes.length : 0;
+  const fragments = (Array.isArray(selectedFragments) ? selectedFragments : [])
+    .filter((fragment) => String(fragment.excerpt || '').trim().length >= 8)
+    .map((fragment, index) => ({
+      ...fragment,
+      id: String(fragment.id || `comment_fragment_${Date.now()}_${index}`),
+      excerpt: String(fragment.excerpt || '').trim(),
+      tokenSet: buildSemanticTokenSet([fragment]),
+    }));
 
-  // FASE 21.3 (hard-disable): se elimina completamente la evolución automática de fragmentos a códigos.
-  // Este flujo queda desactivado para impedir que cualquier fragmento termine convertido en código sugerido.
+  const config = {
+    minClusterSize: 3,
+    maxClusterSize: 40,
+    minCoherence: 0.27,
+    maxDepth: 3,
+    marginalGainThreshold: 0.06,
+    assignThreshold: 0.22,
+  };
+
+  const averagePairwiseSimilarity = (items = []) => {
+    if (items.length <= 1) return 1;
+    let pairs = 0;
+    let sum = 0;
+    for (let i = 0; i < items.length; i += 1) {
+      for (let j = i + 1; j < items.length; j += 1) {
+        sum += jaccardSimilarity(items[i].tokenSet, items[j].tokenSet);
+        pairs += 1;
+      }
+    }
+    return pairs ? sum / pairs : 0;
+  };
+
+  const buildInitialClusters = (items = []) => {
+    const clusters = [];
+    items.forEach((item) => {
+      let bestCluster = null;
+      let bestScore = 0;
+      clusters.forEach((cluster) => {
+        const score = jaccardSimilarity(item.tokenSet, cluster.tokenSet);
+        if (score > bestScore) {
+          bestScore = score;
+          bestCluster = cluster;
+        }
+      });
+
+      if (bestCluster && bestScore >= config.assignThreshold) {
+        bestCluster.items.push(item);
+        bestCluster.tokenSet = buildSemanticTokenSet(bestCluster.items);
+      } else {
+        clusters.push({
+          id: `cluster_seed_${clusters.length + 1}`,
+          items: [item],
+          tokenSet: buildSemanticTokenSet([item]),
+        });
+      }
+    });
+    return clusters;
+  };
+
+  const splitClusterIfNeeded = (cluster, depth = 0) => {
+    const coherence = averagePairwiseSimilarity(cluster.items);
+    const tooLarge = cluster.items.length > config.maxClusterSize;
+    const tooHeterogeneous = coherence < config.minCoherence;
+    const canSplit = depth < config.maxDepth && cluster.items.length >= (config.minClusterSize * 2);
+    if (!canSplit || (!tooLarge && !tooHeterogeneous)) {
+      return [{
+        ...cluster,
+        depth,
+        coherence: Number(coherence.toFixed(4)),
+      }];
+    }
+
+    let seedA = cluster.items[0];
+    let seedB = cluster.items[cluster.items.length - 1];
+    let minSimilarity = 1;
+    for (let i = 0; i < cluster.items.length; i += 1) {
+      for (let j = i + 1; j < cluster.items.length; j += 1) {
+        const sim = jaccardSimilarity(cluster.items[i].tokenSet, cluster.items[j].tokenSet);
+        if (sim < minSimilarity) {
+          minSimilarity = sim;
+          seedA = cluster.items[i];
+          seedB = cluster.items[j];
+        }
+      }
+    }
+
+    const left = [];
+    const right = [];
+    cluster.items.forEach((item) => {
+      const simLeft = jaccardSimilarity(item.tokenSet, seedA.tokenSet);
+      const simRight = jaccardSimilarity(item.tokenSet, seedB.tokenSet);
+      if (simLeft >= simRight) left.push(item);
+      else right.push(item);
+    });
+
+    if (left.length < config.minClusterSize || right.length < config.minClusterSize) {
+      return [{
+        ...cluster,
+        depth,
+        coherence: Number(coherence.toFixed(4)),
+      }];
+    }
+
+    const parentCoherence = coherence;
+    const leftCoherence = averagePairwiseSimilarity(left);
+    const rightCoherence = averagePairwiseSimilarity(right);
+    const weightedChildCoherence = ((leftCoherence * left.length) + (rightCoherence * right.length)) / Math.max(1, cluster.items.length);
+    const marginalGain = weightedChildCoherence - parentCoherence;
+    if (marginalGain < config.marginalGainThreshold) {
+      return [{
+        ...cluster,
+        depth,
+        coherence: Number(coherence.toFixed(4)),
+      }];
+    }
+
+    return [
+      ...splitClusterIfNeeded({ id: `${cluster.id}.a`, items: left, tokenSet: buildSemanticTokenSet(left), parent_id: cluster.id }, depth + 1),
+      ...splitClusterIfNeeded({ id: `${cluster.id}.b`, items: right, tokenSet: buildSemanticTokenSet(right), parent_id: cluster.id }, depth + 1),
+    ];
+  };
+
+  const findClosestExistingCode = (clusterItems = []) => {
+    const clusterTokenSet = buildSemanticTokenSet(clusterItems);
+    let bestCode = null;
+    let bestScore = 0;
+    (Array.isArray(existingCodes) ? existingCodes : []).forEach((code) => {
+      const codeTokenSet = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
+      const score = jaccardSimilarity(clusterTokenSet, codeTokenSet);
+      if (score > bestScore) {
+        bestScore = score;
+        bestCode = code;
+      }
+    });
+    return {
+      score: Number(bestScore.toFixed(4)),
+      code: bestCode ? { slug: String(bestCode.slug || ''), name: String(bestCode.name || '') } : null,
+    };
+  };
+
+  const inferConceptualType = (name = '') => {
+    const n = String(name || '').toLowerCase();
+    if (/(miedo|ansiedad|culpa|afectivo|emocional)/.test(n)) return 'emocional';
+    if (/(comunic|interacci|vincul|relacional)/.test(n)) return 'relacional';
+    if (/(control|conflicto|instrumental)/.test(n)) return 'dinámica';
+    return 'emergente';
+  };
+
+  const baseClusters = buildInitialClusters(fragments)
+    .filter((cluster) => cluster.items.length >= config.minClusterSize)
+    .flatMap((cluster) => splitClusterIfNeeded(cluster, 0));
+
+  const semanticClusters = baseClusters.map((cluster, index) => {
+    let patternName = buildAbstractCodeLabel(cluster.items);
+    if (isLiteralLikeCodeName(patternName, cluster.items)) {
+      patternName = `patrón semántico ${index + 1}`;
+    }
+    const closest = findClosestExistingCode(cluster.items);
+    const coherence = Number(cluster.coherence || averagePairwiseSimilarity(cluster.items));
+    const sourceSpread = new Set(cluster.items.map((item) => String(item.source_comment_id || item.comment_id || item.id))).size;
+    const sourceDispersion = Number((sourceSpread / Math.max(1, cluster.items.length)).toFixed(4));
+    let suggestedDecision = 'crear';
+    if (closest.code && closest.score >= 0.38) suggestedDecision = 'reutilizar';
+    if (cluster.items.length > 24 && coherence < 0.45) suggestedDecision = 'dividir';
+    if (cluster.items.length < 3 || coherence < 0.2) suggestedDecision = 'ignorar';
+    const confidence = clamp(0.1, (0.5 * coherence) + (0.25 * closest.score) + (0.25 * (cluster.items.length / Math.max(1, fragments.length))), 0.95);
+
+    return {
+      id: `semantic_cluster_${index + 1}`,
+      parent_id: cluster.parent_id || null,
+      depth: Number(cluster.depth || 0),
+      size: cluster.items.length,
+      coherence: Number(coherence.toFixed(4)),
+      suggested_pattern_name: patternName,
+      suggested_code_type: inferConceptualType(patternName),
+      suggested_decision: suggestedDecision,
+      confidence: Number(confidence.toFixed(4)),
+      source_dispersion: sourceDispersion,
+      representative_fragments: cluster.items.slice(0, 4).map((item) => ({
+        fragment_id: String(item.id || ''),
+        excerpt: String(item.excerpt || ''),
+      })),
+      fragment_ids: cluster.items.map((item) => String(item.id || '')),
+      similar_existing_code: closest.code,
+      existing_similarity_score: closest.score,
+      can_split: cluster.items.length >= (config.minClusterSize * 2),
+      can_merge: Boolean(cluster.parent_id),
+    };
+  });
+
   return {
     proposals: [],
     generatedCodes: [],
+    semanticClusters,
     meta: {
-      code_generation_disabled: true,
-      reason: 'fragment_to_code_flow_removed',
-      analyzed_fragments_count: analyzedFragments.length,
-      known_codes_count: knownCodesCount,
-      disabled_at: disabledAt,
+      assistant_mode: true,
+      auto_code_generation: false,
+      analyzed_fragments_count: fragments.length,
+      clusters_count: semanticClusters.length,
+      generated_at: nowIso(),
     },
   };
 }
@@ -5534,6 +5718,8 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const projectId = String(body.project_id || '').trim();
       const campaignId = String(body.campaign_id || '').trim();
+      const fragments = Array.isArray(body.fragments) ? body.fragments : [];
+      const existingCodes = Array.isArray(body.existing_codes) ? body.existing_codes : [];
 
       if (!projectId || !campaignId) {
         return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
@@ -5545,22 +5731,29 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
 
-      // Hard-disable global: eliminar cualquier evolución de fragmentos a códigos desde Modo Comentarios.
+      const ranked = rankAndSelectFragmentsForCoding(fragments);
+      const clustered = buildCompressedCodesFromSelectedFragments({
+        selectedFragments: ranked.selected,
+        existingCodes,
+      });
+
       return sendJson(req, res, 200, {
         data: {
-          selected_fragments: [],
-          clusters_internal: [],
+          selected_fragments: ranked.selected,
+          clusters_internal: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters : [],
+          semantic_clusters: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters : [],
           final_code_proposals: [],
           metrics: {
-            total_fragments_analyzed: 0,
-            total_fragments_selected: 0,
-            compression_ratio: 0,
+            total_fragments_analyzed: ranked.analyzed.length,
+            total_fragments_selected: ranked.selected.length,
+            compression_ratio: ranked.ratio,
             final_codes_count: 0,
-            code_budget_target: 0,
-            code_budget_max: 0,
-            code_generation_disabled: true,
-            reason: 'comment_mode_fragment_to_code_disabled',
+            semantic_clusters_count: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters.length : 0,
+            assistant_mode: true,
+            auto_code_generation: false,
+            reason: 'semantic_cluster_assistant_requires_human_decision',
           },
+          meta: clustered.meta || { assistant_mode: true, auto_code_generation: false },
         },
       });
     }

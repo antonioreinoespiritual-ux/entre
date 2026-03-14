@@ -87,6 +87,10 @@ const CommentsModePage = () => {
   const [semanticAgentBusy, setSemanticAgentBusy] = useState(false);
   const [semanticAgentError, setSemanticAgentError] = useState('');
   const [semanticAgentProgress, setSemanticAgentProgress] = useState({ done: 0, total: 0 });
+  const [semanticClusterModalOpen, setSemanticClusterModalOpen] = useState(false);
+  const [semanticClusterCards, setSemanticClusterCards] = useState([]);
+  const [clusterDecisionDrafts, setClusterDecisionDrafts] = useState({});
+  const [clusterDecisionLog, setClusterDecisionLog] = useState([]);
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [readerSelection, setReaderSelection] = useState({ text: '', start: null, end: null, commentId: '' });
@@ -405,6 +409,28 @@ const CommentsModePage = () => {
     }));
   };
 
+
+  const getClusterDraft = (clusterId) => {
+    const key = String(clusterId || '');
+    const existing = clusterDecisionDrafts[key] || {};
+    return {
+      editedName: String(existing.editedName || ''),
+      conceptualType: String(existing.conceptualType || ''),
+      targetCodeSlug: String(existing.targetCodeSlug || ''),
+    };
+  };
+
+  const updateClusterDraft = (clusterId, patch) => {
+    const key = String(clusterId || '');
+    setClusterDecisionDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        ...getClusterDraft(key),
+        ...patch,
+      },
+    }));
+  };
+
   const createUniqueCode = ({ name, description = '', parentSlug = null, createdManual = false }) => {
     const safeName = String(name || '').trim() || `Código ${new Date().toLocaleTimeString()}`;
     const baseSlug = slugify(safeName).slice(0, 64) || `code-${Date.now()}`;
@@ -451,18 +477,9 @@ const CommentsModePage = () => {
   };
 
   const runCodeProposalAgent = async () => {
-    if (guardCodeEvolution()) return;
-    const acceptedByFragment = new Map();
-    codeProposals.forEach((proposal) => {
-      if (proposal.status !== 'aceptado') return;
-      acceptedByFragment.set(String(proposal.fragment_id), proposal);
-    });
-
     const targetFragments = fragments.filter((fragment) => {
-      const fragmentId = String(fragment.id);
-      const hasAcceptedProposal = acceptedByFragment.has(fragmentId);
       const hasAcceptedCoding = Array.isArray(fragment.code_slugs) && fragment.code_slugs.length > 0;
-      return !hasAcceptedProposal && !hasAcceptedCoding;
+      return !hasAcceptedCoding;
     });
 
     if (!targetFragments.length) return;
@@ -475,43 +492,15 @@ const CommentsModePage = () => {
         existing_codes: codes,
       });
 
-      const generatedProposals = Array.isArray(response?.final_code_proposals) ? response.final_code_proposals : [];
       const selectedFragments = Array.isArray(response?.selected_fragments) ? response.selected_fragments : [];
       const selectedById = new Map(selectedFragments.map((fragment) => [String(fragment.id), fragment]));
-
-      const now = new Date().toISOString();
-      const acceptedProposals = codeProposals.filter((proposal) => proposal.status === 'aceptado');
-      const normalizedGenerated = generatedProposals.map((proposal, index) => ({
-        id: String(proposal.id || `code_proposal_ai_${Date.now()}_${index + 1}`),
-        fragment_id: String(proposal.fragment_id || ''),
-        fragment_excerpt: String(proposal.fragment_excerpt || ''),
-        suggested_code_slug: String(proposal.suggested_code_slug || ''),
-        suggested_code_name: String(proposal.suggested_code_name || 'Código sugerido'),
-        decision_type: String(proposal.decision_type || 'nuevo'),
-        confidence: Number.isFinite(Number(proposal.confidence)) ? Number(proposal.confidence) : 0.5,
-        justification: String(proposal.justification || 'Propuesta generada por compresión semántica IA.'),
-        alternatives: Array.isArray(proposal.alternatives) ? proposal.alternatives : [],
-        status: 'propuesto',
-        created_at: String(proposal.created_at || now),
-        updated_at: String(proposal.updated_at || now),
-        review_log: [],
-        parent_candidate_slug: null,
-        ai_code_score: Number.isFinite(Number(proposal.ai_code_score)) ? Number(proposal.ai_code_score) : null,
-        traceability: proposal.traceability || null,
-      }));
+      const clusters = Array.isArray(response?.semantic_clusters)
+        ? response.semantic_clusters
+        : (Array.isArray(response?.clusters_internal) ? response.clusters_internal : []);
 
       const nextFragments = fragments.map((fragment) => {
         const selected = selectedById.get(String(fragment.id));
-        if (!selected) {
-          if (targetFragments.some((target) => String(target.id) === String(fragment.id))) {
-            return {
-              ...fragment,
-              fragment_status: 'rejected',
-              ai_candidate_score: Number.isFinite(Number(fragment.ai_candidate_score)) ? Number(fragment.ai_candidate_score) : null,
-            };
-          }
-          return fragment;
-        }
+        if (!selected) return fragment;
         return {
           ...fragment,
           ...selected,
@@ -519,16 +508,89 @@ const CommentsModePage = () => {
         };
       });
 
-      persist({
-        ...store,
-        fragments: nextFragments,
-        codeProposals: [...acceptedProposals, ...normalizedGenerated],
-      });
+      const normalizedCards = clusters.map((cluster, index) => ({
+        id: String(cluster.id || `semantic_cluster_${index + 1}`),
+        suggested_pattern_name: String(cluster.suggested_pattern_name || `Patrón ${index + 1}`),
+        suggested_code_type: String(cluster.suggested_code_type || 'emergente'),
+        suggested_decision: String(cluster.suggested_decision || 'crear'),
+        confidence: Number(cluster.confidence || 0),
+        coherence: Number(cluster.coherence || 0),
+        size: Number(cluster.size || 0),
+        depth: Number(cluster.depth || 0),
+        source_dispersion: Number(cluster.source_dispersion || 0),
+        similar_existing_code: cluster.similar_existing_code || null,
+        representative_fragments: Array.isArray(cluster.representative_fragments) ? cluster.representative_fragments : [],
+        fragment_ids: Array.isArray(cluster.fragment_ids) ? cluster.fragment_ids.map((id) => String(id)) : [],
+      }));
+
+      setSemanticClusterCards(normalizedCards);
+      setSemanticClusterModalOpen(true);
+      persist({ ...store, fragments: nextFragments });
       setCodeSelectionMetrics(response?.metrics || null);
     } catch (error) {
-      setIngestionError(error?.message || 'No se pudo ejecutar el motor IA de selección de fragmentos y compresión de códigos.');
+      setIngestionError(error?.message || 'No se pudo ejecutar el agente de clusterización semántica.');
     }
   };
+
+  const applyClusterDecision = (cluster, action) => {
+    if (!cluster) return;
+    const draft = getClusterDraft(cluster.id);
+    const editedName = String(draft.editedName || cluster.suggested_pattern_name || '').trim();
+    const conceptualType = String(draft.conceptualType || cluster.suggested_code_type || 'emergente').trim();
+    const fragmentIdSet = new Set((cluster.fragment_ids || []).map((id) => String(id)));
+
+    let nextCodes = [...codes];
+    let targetSlug = '';
+    let targetName = '';
+
+    if (action === 'crear') {
+      const newCode = createUniqueCode({
+        name: editedName || 'Código conceptual',
+        description: `Código creado desde cluster ${cluster.id} · tipo ${conceptualType}.`,
+        createdManual: true,
+      });
+      nextCodes = [newCode, ...nextCodes];
+      targetSlug = String(newCode.slug);
+      targetName = String(newCode.name);
+    }
+
+    if (action === 'reutilizar') {
+      const reused = codes.find((code) => String(code.slug) === String(draft.targetCodeSlug || cluster?.similar_existing_code?.slug || ''));
+      if (!reused) return;
+      targetSlug = String(reused.slug);
+      targetName = String(reused.name || reused.slug);
+    }
+
+    let nextFragments = fragments;
+    if (targetSlug) {
+      nextFragments = fragments.map((fragment) => {
+        if (!fragmentIdSet.has(String(fragment.id))) return fragment;
+        const merged = Array.from(new Set([...(fragment.code_slugs || []), targetSlug]));
+        return {
+          ...fragment,
+          code_slugs: merged,
+          last_cluster_id: String(cluster.id || ''),
+        };
+      });
+    }
+
+    const logEntry = {
+      id: `cluster_decision_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      cluster_id: String(cluster.id || ''),
+      action,
+      final_code_slug: targetSlug || null,
+      final_code_name: targetName || null,
+      edited_name: editedName || null,
+      conceptual_type: conceptualType || null,
+      fragment_count: Number(cluster.size || 0),
+      created_at: new Date().toISOString(),
+    };
+
+    setClusterDecisionLog((prev) => [logEntry, ...prev]);
+    setSemanticClusterCards((prev) => prev.filter((item) => String(item.id) !== String(cluster.id)));
+    persist({ ...store, fragments: nextFragments, codes: nextCodes });
+  };
+
 
   const acceptCodeProposal = (proposal) => {
     if (guardCodeEvolution()) return;
@@ -2309,7 +2371,7 @@ const CommentsModePage = () => {
                 </div>
                 <div className="flex items-center gap-2">
                   <Button className="bg-violet-600 text-white" onClick={runCodeProposalAgent}>
-                    Agente 2 · Proponer códigos
+                    Agente 2 · Clusterizar pendientes
                   </Button>
                   <Button className="bg-white border text-slate-700" title="Mapa de códigos" onClick={() => setCodeMapOpen(true)}>
                     🕸️ Mapa de códigos
@@ -2433,7 +2495,7 @@ const CommentsModePage = () => {
                 ) : null}
 
                 {!codeProposals.length ? (
-                  <p className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">Sin propuestas aún. Ejecuta “Agente 2 · Proponer códigos”.</p>
+                  <p className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">Sin propuestas aún. Ejecuta “Agente 2 · Clusterizar pendientes”.</p>
                 ) : !humanPanelProposals.length ? (
                   <div className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">
                     <p>No hay propuestas para los filtros actuales.</p>
@@ -2780,6 +2842,69 @@ const CommentsModePage = () => {
               ) : null}
             </div>
           )}
+
+
+          {semanticClusterModalOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+              <div className="max-h-[88vh] w-full max-w-6xl overflow-auto rounded-xl bg-white shadow-2xl">
+                <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Modal · Propuestas de codificación asistida por clusters</h3>
+                    <p className="text-xs text-slate-500">IA propone estructuras semánticas; la decisión final siempre es humana.</p>
+                  </div>
+                  <Button className="bg-white border text-slate-700" onClick={() => setSemanticClusterModalOpen(false)}>Cerrar</Button>
+                </div>
+                <div className="grid gap-3 p-4 md:grid-cols-2">
+                  {semanticClusterCards.length === 0 ? (
+                    <p className="text-sm text-slate-500">No hay clusters pendientes de decisión.</p>
+                  ) : semanticClusterCards.map((cluster) => {
+                    const draft = getClusterDraft(cluster.id);
+                    return (
+                      <div key={cluster.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-slate-900">{cluster.suggested_pattern_name}</p>
+                            <p className="text-xs text-slate-500">Tipo: {cluster.suggested_code_type} · Decisión IA: {cluster.suggested_decision}</p>
+                          </div>
+                          <span className="rounded bg-white px-2 py-0.5 text-xs border">conf. {Math.round(Number(cluster.confidence || 0) * 100)}%</span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                          <div className="rounded border bg-white px-2 py-1">Tamaño: {cluster.size}</div>
+                          <div className="rounded border bg-white px-2 py-1">Coherencia: {cluster.coherence}</div>
+                          <div className="rounded border bg-white px-2 py-1">Profundidad: {cluster.depth}</div>
+                          <div className="rounded border bg-white px-2 py-1">Dispersión: {cluster.source_dispersion}</div>
+                        </div>
+                        <div>
+                          <p className="mb-1 text-xs font-semibold text-slate-700">Fragmentos representativos</p>
+                          <div className="space-y-1">
+                            {cluster.representative_fragments.slice(0, 3).map((item) => (
+                              <p key={String(item.fragment_id)} className="rounded border bg-white px-2 py-1 text-xs text-slate-700">{item.excerpt}</p>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                          <input className="rounded border px-2 py-1 text-xs" placeholder="Editar nombre sugerido" value={draft.editedName} onChange={(e) => updateClusterDraft(cluster.id, { editedName: e.target.value })} />
+                          <input className="rounded border px-2 py-1 text-xs" placeholder="Tipo conceptual" value={draft.conceptualType} onChange={(e) => updateClusterDraft(cluster.id, { conceptualType: e.target.value })} />
+                        </div>
+                        <select className="w-full rounded border px-2 py-1 text-xs" value={draft.targetCodeSlug} onChange={(e) => updateClusterDraft(cluster.id, { targetCodeSlug: e.target.value })}>
+                          <option value="">Seleccionar código existente (reutilizar)</option>
+                          {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+                        </select>
+                        <div className="flex flex-wrap gap-1">
+                          <Button className="bg-indigo-600 text-white" onClick={() => applyClusterDecision(cluster, 'crear')}>Crear código</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'reutilizar')}>Reutilizar</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'dividir')}>Dividir</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'fusionar')}>Fusionar</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'ignorar')}>Ignorar</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'posponer')}>Posponer</Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {tab === 'clusters' && (
             <div className="rounded-xl border bg-white p-4 space-y-3">
