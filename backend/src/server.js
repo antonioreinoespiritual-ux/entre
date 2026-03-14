@@ -6221,18 +6221,34 @@ const server = http.createServer(async (req, res) => {
 
         const MIN_CODES = 20;
         const MAX_CODES = 40;
-        const commentChunks = chunkCommentsForGeneration(allComments, 120);
+        const CHUNK_SIZE = 120;
+        const MAX_CHUNKS = 18;
+        const MAX_GENERATION_MS = 90000;
+        const startedAtMs = Date.now();
+        const commentChunks = chunkCommentsForGeneration(allComments, CHUNK_SIZE);
         let mergedProposals = [];
         let chunkCalls = 0;
         let stagnantRounds = 0;
         let previousUniqueCount = 0;
+        let stoppedBy = 'all_chunks';
 
         for (const chunk of commentChunks) {
+          if (chunkCalls >= MAX_CHUNKS) {
+            stoppedBy = 'max_chunks';
+            break;
+          }
+
+          const elapsedMs = Date.now() - startedAtMs;
+          if (elapsedMs >= MAX_GENERATION_MS) {
+            stoppedBy = 'max_generation_time';
+            break;
+          }
+
           const prompt = buildCodeGenerationAgentPrompt({ comments: chunk, minCodes: MIN_CODES, maxCodes: MAX_CODES });
           const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
             { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
             { role: 'user', content: prompt },
-          ], { maxRetries: 5, baseDelayMs: 1500 });
+          ], { maxRetries: 2, baseDelayMs: 1200 });
           const parsed = extractJsonObjectFromText(completion.content);
           const chunkProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsed));
           mergedProposals = dedupeCodeProposalsByName([...mergedProposals, ...chunkProposals], 160);
@@ -6245,7 +6261,10 @@ const server = http.createServer(async (req, res) => {
           previousUniqueCount = uniqueCount;
 
           const saturationReached = uniqueCount >= 30 && stagnantRounds >= 3;
-          if (saturationReached) break;
+          if (saturationReached) {
+            stoppedBy = 'semantic_saturation';
+            break;
+          }
         }
 
         let finalProposals = mergedProposals;
@@ -6276,6 +6295,8 @@ const server = http.createServer(async (req, res) => {
               top_level_clusters_count: finalProposals.length,
               generated_without_traceability: true,
               semantic_saturation_reached: finalProposals.length >= 30,
+              generation_elapsed_ms: Date.now() - startedAtMs,
+              stop_reason: stoppedBy,
             },
             meta: {
               generated_without_traceability: true,
@@ -6285,7 +6306,9 @@ const server = http.createServer(async (req, res) => {
               provider: integration.provider,
               model: integration.model,
               source: 'ai_model',
-              chunk_size: 120,
+              chunk_size: CHUNK_SIZE,
+              max_chunks: MAX_CHUNKS,
+              max_generation_ms: MAX_GENERATION_MS,
             },
           },
         });
