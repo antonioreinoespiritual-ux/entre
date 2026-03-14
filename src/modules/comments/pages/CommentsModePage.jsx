@@ -220,6 +220,26 @@ const CommentsModePage = () => {
     return selected || readerComments[0] || null;
   }, [readerComments, selectedReaderCommentId]);
 
+  const codeGenerationProgress = useMemo(() => {
+    const tableTotalRaw = Number(codeGenerationMetrics?.comments_total_from_table || 0);
+    const analyzedRaw = Number(codeGenerationMetrics?.comments_analyzed || 0);
+    const fetchedRaw = Number(codeGenerationMetrics?.comments_fetched_for_generation || 0);
+
+    const tableTotal = Number.isFinite(tableTotalRaw) ? Math.max(0, tableTotalRaw) : 0;
+    const analyzed = Number.isFinite(analyzedRaw) ? Math.max(0, analyzedRaw) : 0;
+    const fetched = Number.isFinite(fetchedRaw) ? Math.max(0, fetchedRaw) : 0;
+
+    const denominator = tableTotal > 0 ? tableTotal : Math.max(analyzed, fetched, 0);
+    const ratio = denominator > 0 ? Math.min(1, analyzed / denominator) : 0;
+
+    return {
+      totalComments: denominator,
+      analyzedComments: analyzed,
+      fetchedComments: fetched,
+      pct: Math.round(ratio * 100),
+    };
+  }, [codeGenerationMetrics]);
+
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
 
   const fragmentClientOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.client_id || '').trim()).filter(Boolean))), [fragments]);
@@ -3013,9 +3033,26 @@ const CommentsModePage = () => {
                   {codeGenerationBusy ? <p className="text-sm text-slate-600">Generando propuesta conceptual...</p> : null}
                   {codeGenerationError ? <p className="text-sm text-rose-600">{codeGenerationError}</p> : null}
                   {codeGenerationMetrics ? (
-                    <p className="text-xs text-slate-500">
-                      Comentarios consultados: {Number(codeGenerationMetrics.comments_total_from_table || 0)} · enviados a generación: {Number(codeGenerationMetrics.comments_fetched_for_generation || 0)} · analizados por IA: {Number(codeGenerationMetrics.comments_analyzed || 0)} · Clusters: {Number(codeGenerationMetrics.clusters_count || 0)} · Top-level: {Number(codeGenerationMetrics.top_level_clusters_count || 0)}
-                    </p>
+                    <div className="space-y-2 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-2">
+                      <div className="flex items-center justify-between text-xs text-indigo-900">
+                        <p className="font-medium">Total comentarios procesados</p>
+                        <p>{codeGenerationProgress.analyzedComments} / {codeGenerationProgress.totalComments}</p>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-100">
+                        <div
+                          className="h-full bg-gradient-to-r from-indigo-500 to-cyan-500 transition-all duration-500"
+                          style={{ width: `${codeGenerationProgress.pct}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-indigo-800/80">
+                        <span>Progreso real del análisis de comentarios</span>
+                        <span>{codeGenerationProgress.pct}%</span>
+                      </div>
+
+                      <p className="text-xs text-slate-600">
+                        Total base: {Number(codeGenerationMetrics.comments_total_from_table || 0)} · Enviados a generación: {codeGenerationProgress.fetchedComments} · Analizados por IA: {codeGenerationProgress.analyzedComments} · Clusters: {Number(codeGenerationMetrics.clusters_count || 0)} · Top-level: {Number(codeGenerationMetrics.top_level_clusters_count || 0)}
+                      </p>
+                    </div>
                   ) : null}
                   {codeGenerationDeleteMode === 'single' ? (
                     <p className="text-xs text-rose-700">Modo eliminación uno a uno activo.</p>
