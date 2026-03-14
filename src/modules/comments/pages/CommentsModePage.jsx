@@ -96,6 +96,8 @@ const CommentsModePage = () => {
   const [codeGenerationError, setCodeGenerationError] = useState('');
   const [generatedCodeProposals, setGeneratedCodeProposals] = useState([]);
   const [codeGenerationMetrics, setCodeGenerationMetrics] = useState(null);
+  const [codeGenerationDeleteMenuOpen, setCodeGenerationDeleteMenuOpen] = useState(false);
+  const [codeGenerationDeleteMode, setCodeGenerationDeleteMode] = useState('none');
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [readerSelection, setReaderSelection] = useState({ text: '', start: null, end: null, commentId: '' });
@@ -2963,7 +2965,44 @@ const CommentsModePage = () => {
                     <h3 className="text-sm font-semibold text-slate-900">Generación automática de códigos (sin trazabilidad inicial)</h3>
                     <p className="text-xs text-slate-500">Comentarios → Clusterización → Subclusterización → Propuesta de códigos.</p>
                   </div>
-                  <Button className="bg-white border text-slate-700" onClick={() => setCodeGenerationModalOpen(false)}>Cerrar</Button>
+                  <div className="relative flex items-center gap-2">
+                    <Button className="bg-white border text-rose-700" onClick={() => setCodeGenerationDeleteMenuOpen((prev) => !prev)}>Eliminar</Button>
+                    {codeGenerationDeleteMenuOpen ? (
+                      <div className="absolute right-0 top-11 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg">
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50"
+                          onClick={() => {
+                            setGeneratedCodeProposals([]);
+                            setCodeGenerationDeleteMenuOpen(false);
+                          }}
+                        >
+                          Eliminar todo
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-100"
+                          onClick={() => {
+                            setCodeGenerationDeleteMode('single');
+                            setCodeGenerationDeleteMenuOpen(false);
+                          }}
+                        >
+                          Eliminar uno a uno
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-500 hover:bg-slate-100"
+                          onClick={() => {
+                            setCodeGenerationDeleteMode('none');
+                            setCodeGenerationDeleteMenuOpen(false);
+                          }}
+                        >
+                          Salir modo eliminar
+                        </button>
+                      </div>
+                    ) : null}
+                    <Button className="bg-white border text-slate-700" onClick={() => setCodeGenerationModalOpen(false)}>Cerrar</Button>
+                  </div>
                 </div>
                 <div className="space-y-3 p-4 text-sm">
                   <div className="grid gap-2 md:grid-cols-3">
@@ -2977,6 +3016,9 @@ const CommentsModePage = () => {
                     <p className="text-xs text-slate-500">
                       Comentarios consultados: {Number(codeGenerationMetrics.comments_total_from_table || 0)} · enviados a generación: {Number(codeGenerationMetrics.comments_fetched_for_generation || 0)} · analizados por IA: {Number(codeGenerationMetrics.comments_analyzed || 0)} · Clusters: {Number(codeGenerationMetrics.clusters_count || 0)} · Top-level: {Number(codeGenerationMetrics.top_level_clusters_count || 0)}
                     </p>
+                  ) : null}
+                  {codeGenerationDeleteMode === 'single' ? (
+                    <p className="text-xs text-rose-700">Modo eliminación uno a uno activo.</p>
                   ) : null}
 
                   <div className="space-y-2">
@@ -3007,7 +3049,9 @@ const CommentsModePage = () => {
                         ) : null}
                         <div className="flex gap-2">
                           <Button className="bg-indigo-600 text-white" onClick={() => createCodeFromGeneratedProposal(proposal)}>Crear en codebook</Button>
-                          <Button className="bg-white border text-slate-700" onClick={() => setGeneratedCodeProposals((prev) => prev.filter((item) => String(item.id) !== String(proposal.id)))}>Descartar</Button>
+                          {codeGenerationDeleteMode === 'single' ? (
+                            <Button className="bg-white border text-rose-700" onClick={() => setGeneratedCodeProposals((prev) => prev.filter((item) => String(item.id) !== String(proposal.id)))}>Eliminar</Button>
+                          ) : null}
                         </div>
                       </div>
                     ))}
