@@ -513,8 +513,13 @@ const CommentsModePage = () => {
         suggested_pattern_name: String(cluster.suggested_pattern_name || `Patrón ${index + 1}`),
         suggested_code_type: String(cluster.suggested_code_type || 'emergente'),
         suggested_decision: String(cluster.suggested_decision || 'crear'),
+        cluster_state: String(cluster.cluster_state || 'valido'),
+        quality_score: Number(cluster.quality_score || 0),
         confidence: Number(cluster.confidence || 0),
         coherence: Number(cluster.coherence || 0),
+        density: Number(cluster.density || 0),
+        separation: Number(cluster.separation || 0),
+        interpretability: Number(cluster.interpretability || 0),
         size: Number(cluster.size || 0),
         depth: Number(cluster.depth || 0),
         source_dispersion: Number(cluster.source_dispersion || 0),
@@ -2866,13 +2871,18 @@ const CommentsModePage = () => {
                             <p className="font-semibold text-slate-900">{cluster.suggested_pattern_name}</p>
                             <p className="text-xs text-slate-500">Tipo: {cluster.suggested_code_type} · Decisión IA: {cluster.suggested_decision}</p>
                           </div>
-                          <span className="rounded bg-white px-2 py-0.5 text-xs border">conf. {Math.round(Number(cluster.confidence || 0) * 100)}%</span>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className="rounded bg-white px-2 py-0.5 text-xs border">conf. {Math.round(Number(cluster.confidence || 0) * 100)}%</span>
+                            <span className="rounded bg-white px-2 py-0.5 text-xs border">{cluster.cluster_state}</span>
+                          </div>
                         </div>
                         <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
                           <div className="rounded border bg-white px-2 py-1">Tamaño: {cluster.size}</div>
                           <div className="rounded border bg-white px-2 py-1">Coherencia: {cluster.coherence}</div>
                           <div className="rounded border bg-white px-2 py-1">Profundidad: {cluster.depth}</div>
                           <div className="rounded border bg-white px-2 py-1">Dispersión: {cluster.source_dispersion}</div>
+                          <div className="rounded border bg-white px-2 py-1">Calidad: {cluster.quality_score}</div>
+                          <div className="rounded border bg-white px-2 py-1">Separación: {cluster.separation}</div>
                         </div>
                         <div>
                           <p className="mb-1 text-xs font-semibold text-slate-700">Fragmentos representativos</p>

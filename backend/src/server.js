@@ -3393,85 +3393,154 @@ function rankAndSelectFragmentsForCoding(fragments = []) {
 }
 
 function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], existingCodes = [] }) {
-  const fragments = (Array.isArray(selectedFragments) ? selectedFragments : [])
-    .filter((fragment) => String(fragment.excerpt || '').trim().length >= 8)
-    .map((fragment, index) => ({
-      ...fragment,
-      id: String(fragment.id || `comment_fragment_${Date.now()}_${index}`),
-      excerpt: String(fragment.excerpt || '').trim(),
-      tokenSet: buildSemanticTokenSet([fragment]),
-    }));
-
-  const config = {
+  const cfg = {
+    minTextLength: 18,
+    minTokenCount: 3,
+    minSemanticQuality: 0.32,
+    assignThreshold: 0.24,
+    mergeThreshold: 0.34,
+    maxClusterSize: 36,
     minClusterSize: 3,
-    maxClusterSize: 40,
-    minCoherence: 0.27,
     maxDepth: 3,
-    marginalGainThreshold: 0.06,
-    assignThreshold: 0.22,
+    minSplitGain: 0.07,
+    minCoherence: 0.29,
+    maxClusters: 60,
   };
 
-  const averagePairwiseSimilarity = (items = []) => {
+  const raw = (Array.isArray(selectedFragments) ? selectedFragments : [])
+    .map((fragment, index) => {
+      const excerpt = String(fragment.excerpt || '').trim();
+      const tokens = tokenizeFragment(excerpt);
+      const semanticQuality = clamp(
+        0,
+        (0.34 * clamp(0, safeNumber(fragment.density_score, 0.4), 1))
+        + (0.3 * clamp(0, safeNumber(fragment.extraction_quality_score, 0.4), 1))
+        + (0.22 * clamp(0, safeNumber(fragment.novelty_score, 0.4), 1))
+        + (0.14 * (Math.min(30, tokens.length) / 30)),
+        1,
+      );
+      return {
+        ...fragment,
+        id: String(fragment.id || `comment_fragment_${Date.now()}_${index}`),
+        excerpt,
+        tokens,
+        tokenSet: buildSemanticTokenSet([{ excerpt }]),
+        semantic_quality: Number(semanticQuality.toFixed(4)),
+      };
+    })
+    .filter((fragment) => (
+      fragment.excerpt.length >= cfg.minTextLength
+      && fragment.tokens.length >= cfg.minTokenCount
+      && fragment.semantic_quality >= cfg.minSemanticQuality
+    ));
+
+  const bySemanticFingerprint = new Map();
+  raw.forEach((fragment) => {
+    const hash = String(fragment.semantic_hash || '');
+    const key = hash || Array.from(fragment.tokenSet).sort().slice(0, 6).join('|');
+    if (!key) return;
+    const prev = bySemanticFingerprint.get(key);
+    if (!prev || Number(fragment.semantic_quality || 0) > Number(prev.semantic_quality || 0)) {
+      bySemanticFingerprint.set(key, fragment);
+    }
+  });
+  const fragments = Array.from(bySemanticFingerprint.values());
+
+  const avgPairwise = (items = []) => {
     if (items.length <= 1) return 1;
     let pairs = 0;
-    let sum = 0;
+    let acc = 0;
     for (let i = 0; i < items.length; i += 1) {
       for (let j = i + 1; j < items.length; j += 1) {
-        sum += jaccardSimilarity(items[i].tokenSet, items[j].tokenSet);
+        acc += jaccardSimilarity(items[i].tokenSet, items[j].tokenSet);
         pairs += 1;
       }
     }
-    return pairs ? sum / pairs : 0;
+    return pairs ? acc / pairs : 0;
+  };
+
+  const centroidTokenSet = (items = []) => buildSemanticTokenSet(items.map((item) => ({ excerpt: item.excerpt })));
+
+  const scoreInterpretability = (items = []) => {
+    if (!items.length) return 0;
+    const counts = new Map();
+    items.forEach((item) => {
+      item.tokenSet.forEach((token) => counts.set(token, Number(counts.get(token) || 0) + 1));
+    });
+    const top = Array.from(counts.values()).sort((a, b) => b - a).slice(0, 3);
+    const concentration = top.reduce((acc, value) => acc + value, 0) / Math.max(1, items.length * 3);
+    return clamp(0, concentration, 1);
   };
 
   const buildInitialClusters = (items = []) => {
     const clusters = [];
     items.forEach((item) => {
-      let bestCluster = null;
+      let best = null;
       let bestScore = 0;
       clusters.forEach((cluster) => {
-        const score = jaccardSimilarity(item.tokenSet, cluster.tokenSet);
-        if (score > bestScore) {
-          bestScore = score;
-          bestCluster = cluster;
+        const sim = jaccardSimilarity(item.tokenSet, cluster.centroid);
+        if (sim > bestScore) {
+          bestScore = sim;
+          best = cluster;
         }
       });
-
-      if (bestCluster && bestScore >= config.assignThreshold) {
-        bestCluster.items.push(item);
-        bestCluster.tokenSet = buildSemanticTokenSet(bestCluster.items);
+      if (best && bestScore >= cfg.assignThreshold) {
+        best.items.push(item);
+        best.centroid = centroidTokenSet(best.items);
       } else {
         clusters.push({
           id: `cluster_seed_${clusters.length + 1}`,
           items: [item],
-          tokenSet: buildSemanticTokenSet([item]),
+          centroid: centroidTokenSet([item]),
+          parent_id: null,
+          depth: 0,
         });
       }
     });
     return clusters;
   };
 
-  const splitClusterIfNeeded = (cluster, depth = 0) => {
-    const coherence = averagePairwiseSimilarity(cluster.items);
-    const tooLarge = cluster.items.length > config.maxClusterSize;
-    const tooHeterogeneous = coherence < config.minCoherence;
-    const canSplit = depth < config.maxDepth && cluster.items.length >= (config.minClusterSize * 2);
-    if (!canSplit || (!tooLarge && !tooHeterogeneous)) {
-      return [{
-        ...cluster,
-        depth,
-        coherence: Number(coherence.toFixed(4)),
-      }];
+  const refineAssignments = (seedClusters = []) => {
+    if (!seedClusters.length) return [];
+    let clusters = seedClusters.map((cluster) => ({ ...cluster, items: [...cluster.items] }));
+    for (let iter = 0; iter < 2; iter += 1) {
+      const allItems = clusters.flatMap((cluster) => cluster.items);
+      const emptied = clusters.map((cluster) => ({ ...cluster, items: [] }));
+      allItems.forEach((item) => {
+        let bestIndex = 0;
+        let bestScore = -1;
+        emptied.forEach((cluster, idx) => {
+          const sim = jaccardSimilarity(item.tokenSet, cluster.centroid);
+          if (sim > bestScore) {
+            bestScore = sim;
+            bestIndex = idx;
+          }
+        });
+        emptied[bestIndex].items.push(item);
+      });
+      clusters = emptied
+        .filter((cluster) => cluster.items.length)
+        .map((cluster) => ({ ...cluster, centroid: centroidTokenSet(cluster.items) }));
+    }
+    return clusters;
+  };
+
+  const splitClusterRecursively = (cluster, depth = 0) => {
+    const coherence = avgPairwise(cluster.items);
+    const canSplit = depth < cfg.maxDepth && cluster.items.length >= (cfg.minClusterSize * 2);
+    const shouldSplit = canSplit && (cluster.items.length > cfg.maxClusterSize || coherence < cfg.minCoherence);
+    if (!shouldSplit) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroidTokenSet(cluster.items) }];
     }
 
     let seedA = cluster.items[0];
     let seedB = cluster.items[cluster.items.length - 1];
-    let minSimilarity = 1;
+    let minSim = 1;
     for (let i = 0; i < cluster.items.length; i += 1) {
       for (let j = i + 1; j < cluster.items.length; j += 1) {
         const sim = jaccardSimilarity(cluster.items[i].tokenSet, cluster.items[j].tokenSet);
-        if (sim < minSimilarity) {
-          minSimilarity = sim;
+        if (sim < minSim) {
+          minSim = sim;
           seedA = cluster.items[i];
           seedB = cluster.items[j];
         }
@@ -3481,116 +3550,174 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
     const left = [];
     const right = [];
     cluster.items.forEach((item) => {
-      const simLeft = jaccardSimilarity(item.tokenSet, seedA.tokenSet);
-      const simRight = jaccardSimilarity(item.tokenSet, seedB.tokenSet);
-      if (simLeft >= simRight) left.push(item);
+      const l = jaccardSimilarity(item.tokenSet, seedA.tokenSet);
+      const r = jaccardSimilarity(item.tokenSet, seedB.tokenSet);
+      if (l >= r) left.push(item);
       else right.push(item);
     });
 
-    if (left.length < config.minClusterSize || right.length < config.minClusterSize) {
-      return [{
-        ...cluster,
-        depth,
-        coherence: Number(coherence.toFixed(4)),
-      }];
+    if (left.length < cfg.minClusterSize || right.length < cfg.minClusterSize) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroidTokenSet(cluster.items) }];
     }
 
-    const parentCoherence = coherence;
-    const leftCoherence = averagePairwiseSimilarity(left);
-    const rightCoherence = averagePairwiseSimilarity(right);
-    const weightedChildCoherence = ((leftCoherence * left.length) + (rightCoherence * right.length)) / Math.max(1, cluster.items.length);
-    const marginalGain = weightedChildCoherence - parentCoherence;
-    if (marginalGain < config.marginalGainThreshold) {
-      return [{
-        ...cluster,
-        depth,
-        coherence: Number(coherence.toFixed(4)),
-      }];
+    const before = coherence;
+    const after = ((avgPairwise(left) * left.length) + (avgPairwise(right) * right.length)) / Math.max(1, cluster.items.length);
+    if ((after - before) < cfg.minSplitGain) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroidTokenSet(cluster.items) }];
     }
 
     return [
-      ...splitClusterIfNeeded({ id: `${cluster.id}.a`, items: left, tokenSet: buildSemanticTokenSet(left), parent_id: cluster.id }, depth + 1),
-      ...splitClusterIfNeeded({ id: `${cluster.id}.b`, items: right, tokenSet: buildSemanticTokenSet(right), parent_id: cluster.id }, depth + 1),
+      ...splitClusterRecursively({
+        id: `${cluster.id}.a`,
+        items: left,
+        centroid: centroidTokenSet(left),
+        parent_id: cluster.id,
+      }, depth + 1),
+      ...splitClusterRecursively({
+        id: `${cluster.id}.b`,
+        items: right,
+        centroid: centroidTokenSet(right),
+        parent_id: cluster.id,
+      }, depth + 1),
     ];
   };
 
-  const findClosestExistingCode = (clusterItems = []) => {
-    const clusterTokenSet = buildSemanticTokenSet(clusterItems);
+  const mergeTinyClusters = (clusters = []) => {
+    const pool = clusters.map((cluster) => ({ ...cluster, items: [...cluster.items], centroid: centroidTokenSet(cluster.items) }));
+    const stable = [];
+
+    while (pool.length) {
+      const cluster = pool.shift();
+      if (!cluster) break;
+      if (cluster.items.length >= cfg.minClusterSize) {
+        stable.push(cluster);
+        continue;
+      }
+
+      let bestTarget = null;
+      let bestScore = 0;
+      [...pool, ...stable].forEach((candidate) => {
+        const sim = jaccardSimilarity(cluster.centroid, candidate.centroid);
+        if (sim > bestScore) {
+          bestScore = sim;
+          bestTarget = candidate;
+        }
+      });
+
+      if (bestTarget && bestScore >= cfg.mergeThreshold) {
+        bestTarget.items.push(...cluster.items);
+        bestTarget.centroid = centroidTokenSet(bestTarget.items);
+      } else {
+        stable.push(cluster);
+      }
+    }
+
+    return stable;
+  };
+
+  const clustersSeeded = refineAssignments(buildInitialClusters(fragments));
+  const clustersSplit = clustersSeeded.flatMap((cluster) => splitClusterRecursively(cluster, 0));
+  let clusters = mergeTinyClusters(clustersSplit)
+    .filter((cluster) => cluster.items.length >= cfg.minClusterSize)
+    .slice(0, cfg.maxClusters);
+
+  const nearestExistingCode = (items = []) => {
+    const clusterSet = centroidTokenSet(items);
     let bestCode = null;
     let bestScore = 0;
     (Array.isArray(existingCodes) ? existingCodes : []).forEach((code) => {
-      const codeTokenSet = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
-      const score = jaccardSimilarity(clusterTokenSet, codeTokenSet);
+      const codeSet = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
+      const score = jaccardSimilarity(clusterSet, codeSet);
       if (score > bestScore) {
         bestScore = score;
         bestCode = code;
       }
     });
     return {
-      score: Number(bestScore.toFixed(4)),
       code: bestCode ? { slug: String(bestCode.slug || ''), name: String(bestCode.name || '') } : null,
+      score: Number(bestScore.toFixed(4)),
     };
   };
 
-  const inferConceptualType = (name = '') => {
-    const n = String(name || '').toLowerCase();
-    if (/(miedo|ansiedad|culpa|afectivo|emocional)/.test(n)) return 'emocional';
-    if (/(comunic|interacci|vincul|relacional)/.test(n)) return 'relacional';
-    if (/(control|conflicto|instrumental)/.test(n)) return 'dinámica';
-    return 'emergente';
-  };
+  const semanticClusters = clusters.map((cluster, index) => {
+    const coherence = Number(avgPairwise(cluster.items).toFixed(4));
+    const centroid = centroidTokenSet(cluster.items);
+    const similarityToCentroid = cluster.items.map((item) => jaccardSimilarity(item.tokenSet, centroid));
+    const density = Number((similarityToCentroid.reduce((acc, value) => acc + value, 0) / Math.max(1, similarityToCentroid.length)).toFixed(4));
+    const interpretability = Number(scoreInterpretability(cluster.items).toFixed(4));
 
-  const baseClusters = buildInitialClusters(fragments)
-    .filter((cluster) => cluster.items.length >= config.minClusterSize)
-    .flatMap((cluster) => splitClusterIfNeeded(cluster, 0));
+    let nearestNeighborSimilarity = 0;
+    clusters.forEach((candidate) => {
+      if (candidate.id === cluster.id) return;
+      nearestNeighborSimilarity = Math.max(nearestNeighborSimilarity, jaccardSimilarity(centroid, candidate.centroid));
+    });
+    const separation = Number((1 - nearestNeighborSimilarity).toFixed(4));
 
-  const semanticClusters = baseClusters.map((cluster, index) => {
+    const quality = clamp(0, (0.36 * coherence) + (0.27 * density) + (0.22 * separation) + (0.15 * interpretability), 1);
+    let clusterState = 'valido';
+    if (quality < 0.56 || coherence < cfg.minCoherence) clusterState = 'debil';
+    if (quality < 0.44 || coherence < 0.2) clusterState = 'ruido';
+
     let patternName = buildAbstractCodeLabel(cluster.items);
-    if (isLiteralLikeCodeName(patternName, cluster.items)) {
-      patternName = `patrón semántico ${index + 1}`;
-    }
-    const closest = findClosestExistingCode(cluster.items);
-    const coherence = Number(cluster.coherence || averagePairwiseSimilarity(cluster.items));
-    const sourceSpread = new Set(cluster.items.map((item) => String(item.source_comment_id || item.comment_id || item.id))).size;
-    const sourceDispersion = Number((sourceSpread / Math.max(1, cluster.items.length)).toFixed(4));
+    if (isLiteralLikeCodeName(patternName, cluster.items)) patternName = `patrón semántico ${index + 1}`;
+
+    const close = nearestExistingCode(cluster.items);
     let suggestedDecision = 'crear';
-    if (closest.code && closest.score >= 0.38) suggestedDecision = 'reutilizar';
-    if (cluster.items.length > 24 && coherence < 0.45) suggestedDecision = 'dividir';
-    if (cluster.items.length < 3 || coherence < 0.2) suggestedDecision = 'ignorar';
-    const confidence = clamp(0.1, (0.5 * coherence) + (0.25 * closest.score) + (0.25 * (cluster.items.length / Math.max(1, fragments.length))), 0.95);
+    if (clusterState === 'ruido') suggestedDecision = 'ignorar';
+    else if (close.code && close.score >= 0.4) suggestedDecision = 'reutilizar';
+    else if (cluster.items.length > cfg.maxClusterSize * 0.75 && coherence < 0.48) suggestedDecision = 'dividir';
+
+    const sourceSpread = new Set(cluster.items.map((item) => `${item.source_video_id || ''}|${item.source_comment_id || item.id}`)).size;
 
     return {
       id: `semantic_cluster_${index + 1}`,
       parent_id: cluster.parent_id || null,
       depth: Number(cluster.depth || 0),
       size: cluster.items.length,
-      coherence: Number(coherence.toFixed(4)),
+      coherence,
+      density,
+      separation,
+      interpretability,
+      quality_score: Number(quality.toFixed(4)),
+      cluster_state: clusterState,
       suggested_pattern_name: patternName,
-      suggested_code_type: inferConceptualType(patternName),
+      suggested_code_type: (/(miedo|ansiedad|culpa|emocional|afectivo)/i.test(patternName) ? 'emocional' : /(vincul|comunic|interacci|relacional)/i.test(patternName) ? 'relacional' : 'emergente'),
       suggested_decision: suggestedDecision,
-      confidence: Number(confidence.toFixed(4)),
-      source_dispersion: sourceDispersion,
-      representative_fragments: cluster.items.slice(0, 4).map((item) => ({
-        fragment_id: String(item.id || ''),
-        excerpt: String(item.excerpt || ''),
-      })),
+      confidence: Number(clamp(0.1, (0.55 * quality) + (0.25 * close.score) + (0.2 * Math.min(1, cluster.items.length / 18)), 0.95).toFixed(4)),
+      source_dispersion: Number((sourceSpread / Math.max(1, cluster.items.length)).toFixed(4)),
+      representative_fragments: cluster.items
+        .map((item) => ({
+          fragment_id: String(item.id || ''),
+          excerpt: String(item.excerpt || ''),
+          centroid_similarity: jaccardSimilarity(item.tokenSet, centroid),
+        }))
+        .sort((a, b) => b.centroid_similarity - a.centroid_similarity)
+        .slice(0, 4),
       fragment_ids: cluster.items.map((item) => String(item.id || '')),
-      similar_existing_code: closest.code,
-      existing_similarity_score: closest.score,
-      can_split: cluster.items.length >= (config.minClusterSize * 2),
+      similar_existing_code: close.code,
+      existing_similarity_score: close.score,
+      can_split: cluster.items.length >= (cfg.minClusterSize * 2),
       can_merge: Boolean(cluster.parent_id),
     };
   });
 
+  const usefulClusters = semanticClusters
+    .filter((cluster) => cluster.cluster_state !== 'ruido' || cluster.size >= cfg.minClusterSize + 1)
+    .sort((a, b) => Number(b.quality_score || 0) - Number(a.quality_score || 0));
+
+  const noiseClusters = semanticClusters.filter((cluster) => cluster.cluster_state === 'ruido');
+
   return {
     proposals: [],
     generatedCodes: [],
-    semanticClusters,
+    semanticClusters: usefulClusters,
+    noiseClusters,
     meta: {
       assistant_mode: true,
       auto_code_generation: false,
       analyzed_fragments_count: fragments.length,
-      clusters_count: semanticClusters.length,
+      clusters_count: usefulClusters.length,
+      noise_clusters_count: noiseClusters.length,
       generated_at: nowIso(),
     },
   };
@@ -5742,6 +5869,7 @@ const server = http.createServer(async (req, res) => {
           selected_fragments: ranked.selected,
           clusters_internal: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters : [],
           semantic_clusters: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters : [],
+          noise_clusters: Array.isArray(clustered.noiseClusters) ? clustered.noiseClusters : [],
           final_code_proposals: [],
           metrics: {
             total_fragments_analyzed: ranked.analyzed.length,
@@ -5749,6 +5877,7 @@ const server = http.createServer(async (req, res) => {
             compression_ratio: ranked.ratio,
             final_codes_count: 0,
             semantic_clusters_count: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters.length : 0,
+            noise_clusters_count: Array.isArray(clustered.noiseClusters) ? clustered.noiseClusters.length : 0,
             assistant_mode: true,
             auto_code_generation: false,
             reason: 'semantic_cluster_assistant_requires_human_decision',
