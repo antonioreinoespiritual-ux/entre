@@ -111,38 +111,6 @@ const HypothesisDetailPage = () => {
 
     const metricValueForVideo = (video = {}) => {
       const normalizedMetric = metric.toLowerCase();
-      if (normalizedMetric === 'ctr') {
-        const rawCtr = toNumber(video.ctr);
-        if (rawCtr > 0) return rawCtr;
-        const clicks = toNumber(video.clicks);
-        const views = toNumber(video.views);
-        return views > 0 ? (clicks / views) * 100 : 0;
-      }
-      if (normalizedMetric === 'cpc') {
-        const rawCpc = toNumber(video.cpc);
-        if (rawCpc > 0) return rawCpc;
-        const spend = toNumber(video.spend || video.cost || video.inversion_total || 0);
-        const clicks = toNumber(video.clicks);
-        return clicks > 0 ? spend / clicks : 0;
-      }
-      if (normalizedMetric === 'purchase_rate') {
-        const viewContent = toNumber(video.view_content);
-        return viewContent > 0 ? toNumber(video.purchase) / viewContent : 0;
-      }
-      if (normalizedMetric === 'initiate_checkout_rate') {
-        const views = toNumber(video.views);
-        return views > 0 ? toNumber(video.initiate_checkouts) / views : 0;
-      }
-      if (normalizedMetric === 'view_content_rate') {
-        const views = toNumber(video.views);
-        return views > 0 ? toNumber(video.view_content) / views : 0;
-      }
-      if (normalizedMetric === 'lead_rate') {
-        const views = toNumber(video.views);
-        const leads = toNumber(video.formulario_lead ?? video.lead_form);
-        return views > 0 ? leads / views : 0;
-      }
-
       const metricAliasToField = {
         'views finish %': 'views_finish_pct',
         'retention %': 'retencion_pct',
@@ -158,9 +126,7 @@ const HypothesisDetailPage = () => {
     };
 
     const values = videos.map((video) => metricValueForVideo(video));
-    const total = values.reduce((acc, value) => acc + toNumber(value), 0);
-    const average = values.length ? total / values.length : 0;
-    const currentValue = average;
+    const currentValue = values.length ? (values.reduce((acc, value) => acc + toNumber(value), 0) / values.length) : 0;
 
     const passes = (() => {
       if (operator === '>=') return currentValue >= threshold;
@@ -184,8 +150,6 @@ const HypothesisDetailPage = () => {
       operator,
       threshold,
       currentValue,
-      total,
-      average,
       videosEvaluated: values.length,
       progressPct,
       ringPct,
@@ -501,7 +465,7 @@ const HypothesisDetailPage = () => {
                     <span className="text-xs text-slate-400 ml-2">({hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold})</span>
                   </p>
                   <p className="text-xs text-slate-400 mt-1">
-                    Actual: {hypothesisMetricProgress.currentValue.toFixed(2)} · Promedio en {hypothesisMetricProgress.videosEvaluated} videos
+                    Actual: {hypothesisMetricProgress.currentValue.toFixed(2)} · Evaluada en {hypothesisMetricProgress.videosEvaluated} videos
                   </p>
 
                   <div className="mt-3 h-2.5 w-full rounded-full bg-slate-800 overflow-hidden">
