@@ -91,6 +91,11 @@ const CommentsModePage = () => {
   const [semanticClusterCards, setSemanticClusterCards] = useState([]);
   const [clusterDecisionDrafts, setClusterDecisionDrafts] = useState({});
   const [clusterDecisionLog, setClusterDecisionLog] = useState([]);
+  const [codeGenerationModalOpen, setCodeGenerationModalOpen] = useState(false);
+  const [codeGenerationBusy, setCodeGenerationBusy] = useState(false);
+  const [codeGenerationError, setCodeGenerationError] = useState('');
+  const [generatedCodeProposals, setGeneratedCodeProposals] = useState([]);
+  const [codeGenerationMetrics, setCodeGenerationMetrics] = useState(null);
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [readerSelection, setReaderSelection] = useState({ text: '', start: null, end: null, commentId: '' });
@@ -1404,6 +1409,81 @@ const CommentsModePage = () => {
     setReaderSelection({ text: '', start: null, end: null, commentId: '' });
   };
 
+
+  const runGenerateCodesWithoutTraceability = async () => {
+    setCodeGenerationError('');
+    setCodeGenerationBusy(true);
+    setCodeGenerationModalOpen(true);
+
+    try {
+      let commentsForGeneration = Array.isArray(commentsTable.items) ? commentsTable.items : [];
+      if (!commentsForGeneration.length) {
+        const tableData = await commentsIngestionApi.listTable({ projectId, campaignId, limit: 500, offset: 0, q: '' });
+        commentsForGeneration = Array.isArray(tableData?.items) ? tableData.items : [];
+      }
+
+      const response = await commentsIngestionApi.runCodeGenerationAgent({
+        project_id: projectId,
+        campaign_id: campaignId,
+        comments: commentsForGeneration,
+      });
+
+      const proposals = Array.isArray(response?.proposals) ? response.proposals : [];
+      setGeneratedCodeProposals(proposals.map((proposal, index) => ({
+        id: `generated_code_proposal_${Date.now()}_${index + 1}`,
+        cluster_name: String(proposal.cluster_name || `Cluster ${index + 1}`),
+        suggested_code_name: String(proposal.suggested_code_name || `Código ${index + 1}`),
+        description: String(proposal.description || 'Propuesta conceptual generada sin trazabilidad inicial.'),
+        confidence: Number(proposal.confidence || 0),
+        size_estimate: Number(proposal.size_estimate || 0),
+        subclusters: Array.isArray(proposal.subclusters) ? proposal.subclusters : [],
+        generated_without_traceability: true,
+      })));
+      setCodeGenerationMetrics(response?.metrics || null);
+    } catch (error) {
+      setCodeGenerationError(error?.message || 'No se pudo generar propuestas desde comentarios.');
+    } finally {
+      setCodeGenerationBusy(false);
+    }
+  };
+
+  const createCodeFromGeneratedProposal = (proposal) => {
+    if (!proposal) return;
+    const parentCode = createUniqueCode({
+      name: String(proposal.suggested_code_name || proposal.cluster_name || 'Código generado').trim(),
+      description: `${String(proposal.description || '').trim()} [GENERADO SIN TRAZABILIDAD]`,
+      createdManual: true,
+    });
+
+    const children = (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).map((subcluster) => createUniqueCode({
+      name: String(subcluster.suggested_subcode_name || subcluster.cluster_name || 'Subcódigo generado').trim(),
+      description: `${String(subcluster.description || 'Subpatrón generado sin trazabilidad inicial.').trim()} [GENERADO SIN TRAZABILIDAD]`,
+      parentSlug: parentCode.slug,
+      createdManual: true,
+    }));
+
+    const taggedParent = {
+      ...parentCode,
+      generated_without_traceability: true,
+      generation_source: 'comments_cluster_generation',
+      taxonomy_stage: 'discovery',
+    };
+
+    const taggedChildren = children.map((item) => ({
+      ...item,
+      generated_without_traceability: true,
+      generation_source: 'comments_subcluster_generation',
+      taxonomy_stage: 'discovery',
+    }));
+
+    persist({
+      ...store,
+      codes: [taggedParent, ...taggedChildren, ...codes],
+    });
+
+    setGeneratedCodeProposals((prev) => prev.filter((item) => String(item.id) !== String(proposal.id)));
+  };
+
   const filteredFragments = useMemo(() => {
     const query = fragmentQuery.trim().toLowerCase();
     return fragments.filter((fragment) => {
@@ -2381,6 +2461,9 @@ const CommentsModePage = () => {
                   <Button className="bg-white border text-slate-700" title="Mapa de códigos" onClick={() => setCodeMapOpen(true)}>
                     🕸️ Mapa de códigos
                   </Button>
+                  <Button className="bg-emerald-600 text-white" onClick={runGenerateCodesWithoutTraceability}>
+                    Generar
+                  </Button>
                   <Button className="bg-indigo-600 text-white" onClick={() => openCodeEditor('create')}>
                     <Plus className="mr-1 h-4 w-4" /> Crear código
                   </Button>
@@ -2848,6 +2931,69 @@ const CommentsModePage = () => {
             </div>
           )}
 
+
+
+          {codeGenerationModalOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+              <div className="max-h-[88vh] w-full max-w-5xl overflow-auto rounded-xl bg-white shadow-2xl">
+                <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Generación automática de códigos (sin trazabilidad inicial)</h3>
+                    <p className="text-xs text-slate-500">Comentarios → Clusterización → Subclusterización → Propuesta de códigos.</p>
+                  </div>
+                  <Button className="bg-white border text-slate-700" onClick={() => setCodeGenerationModalOpen(false)}>Cerrar</Button>
+                </div>
+                <div className="space-y-3 p-4 text-sm">
+                  <div className="grid gap-2 md:grid-cols-3">
+                    <div className="rounded border bg-slate-50 px-3 py-2 text-xs">1) Clusterización comentarios</div>
+                    <div className="rounded border bg-slate-50 px-3 py-2 text-xs">2) Subclusterización patrones</div>
+                    <div className="rounded border bg-slate-50 px-3 py-2 text-xs">3) Propuesta de códigos/subcódigos</div>
+                  </div>
+                  {codeGenerationBusy ? <p className="text-sm text-slate-600">Generando propuesta conceptual...</p> : null}
+                  {codeGenerationError ? <p className="text-sm text-rose-600">{codeGenerationError}</p> : null}
+                  {codeGenerationMetrics ? (
+                    <p className="text-xs text-slate-500">
+                      Comentarios analizados: {Number(codeGenerationMetrics.comments_analyzed || 0)} · Clusters: {Number(codeGenerationMetrics.clusters_count || 0)} · Top-level: {Number(codeGenerationMetrics.top_level_clusters_count || 0)}
+                    </p>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    {!generatedCodeProposals.length ? (
+                      !codeGenerationBusy ? <p className="text-sm text-slate-500">Aún no hay propuestas generadas.</p> : null
+                    ) : generatedCodeProposals.map((proposal) => (
+                      <div key={proposal.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-slate-900">{proposal.suggested_code_name}</p>
+                            <p className="text-xs text-slate-500">Cluster: {proposal.cluster_name} · Confianza IA: {Math.round(Number(proposal.confidence || 0) * 100)}%</p>
+                          </div>
+                          <span className="rounded border bg-white px-2 py-0.5 text-xs">Sin trazabilidad inicial</span>
+                        </div>
+                        <p className="text-xs text-slate-700">{proposal.description}</p>
+                        <p className="text-xs text-slate-500">Tamaño estimado: {proposal.size_estimate}</p>
+                        {(proposal.subclusters || []).length ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold text-slate-700">Subcódigos sugeridos</p>
+                            <div className="space-y-1">
+                              {proposal.subclusters.map((sub, idx) => (
+                                <p key={`${proposal.id}_sub_${idx}`} className="rounded border bg-white px-2 py-1 text-xs text-slate-700">
+                                  {sub.suggested_subcode_name || sub.cluster_name} · conf. {Math.round(Number(sub.confidence || 0) * 100)}%
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        <div className="flex gap-2">
+                          <Button className="bg-indigo-600 text-white" onClick={() => createCodeFromGeneratedProposal(proposal)}>Crear en codebook</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => setGeneratedCodeProposals((prev) => prev.filter((item) => String(item.id) !== String(proposal.id)))}>Descartar</Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {semanticClusterModalOpen ? (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">

@@ -3724,6 +3724,165 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
 }
 
 
+function buildCodeGenerationFromComments({ comments = [] }) {
+  const cfg = {
+    minCommentLength: 25,
+    minTokens: 4,
+    minClusterSize: 3,
+    maxClusterSize: 70,
+    assignThreshold: 0.2,
+    splitThreshold: 0.3,
+    minSplitGain: 0.05,
+    maxDepth: 2,
+  };
+
+  const normalized = (Array.isArray(comments) ? comments : [])
+    .map((item, index) => {
+      const text = String(item.text || item.comment_text || item.body || item.content || '').trim();
+      const tokens = tokenizeFragment(text);
+      return {
+        id: String(item.id || item.comment_id || `comment_${index + 1}`),
+        text,
+        tokens,
+        tokenSet: new Set(tokens.filter((t) => t.length >= 4)),
+      };
+    })
+    .filter((item) => item.text.length >= cfg.minCommentLength && item.tokens.length >= cfg.minTokens);
+
+  const dedup = new Map();
+  normalized.forEach((item) => {
+    const key = item.text.toLowerCase().replace(/\s+/g, ' ').slice(0, 240);
+    if (!key) return;
+    if (!dedup.has(key)) dedup.set(key, item);
+  });
+  const commentsClean = Array.from(dedup.values());
+
+  const avgPairwise = (items = []) => {
+    if (items.length <= 1) return 1;
+    let pairs = 0;
+    let sum = 0;
+    for (let i = 0; i < items.length; i += 1) {
+      for (let j = i + 1; j < items.length; j += 1) {
+        sum += jaccardSimilarity(items[i].tokenSet, items[j].tokenSet);
+        pairs += 1;
+      }
+    }
+    return pairs ? sum / pairs : 0;
+  };
+
+  const centroid = (items = []) => {
+    const set = buildSemanticTokenSet(items.map((it) => ({ excerpt: it.text })));
+    return set;
+  };
+
+  const clusterSeed = [];
+  commentsClean.forEach((item) => {
+    let best = null;
+    let bestScore = 0;
+    clusterSeed.forEach((cluster) => {
+      const sim = jaccardSimilarity(item.tokenSet, cluster.centroid);
+      if (sim > bestScore) {
+        bestScore = sim;
+        best = cluster;
+      }
+    });
+    if (best && bestScore >= cfg.assignThreshold) {
+      best.items.push(item);
+      best.centroid = centroid(best.items);
+    } else {
+      clusterSeed.push({ id: `c_${clusterSeed.length + 1}`, items: [item], centroid: centroid([item]), depth: 0, parent_id: null });
+    }
+  });
+
+  const splitCluster = (cluster, depth = 0) => {
+    const coherence = avgPairwise(cluster.items);
+    const shouldSplit = depth < cfg.maxDepth && cluster.items.length > cfg.maxClusterSize && coherence < cfg.splitThreshold;
+    if (!shouldSplit || cluster.items.length < cfg.minClusterSize * 2) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroid(cluster.items) }];
+    }
+    let seedA = cluster.items[0];
+    let seedB = cluster.items[cluster.items.length - 1];
+    let minSim = 1;
+    for (let i = 0; i < cluster.items.length; i += 1) {
+      for (let j = i + 1; j < cluster.items.length; j += 1) {
+        const sim = jaccardSimilarity(cluster.items[i].tokenSet, cluster.items[j].tokenSet);
+        if (sim < minSim) {
+          minSim = sim;
+          seedA = cluster.items[i];
+          seedB = cluster.items[j];
+        }
+      }
+    }
+
+    const left = [];
+    const right = [];
+    cluster.items.forEach((item) => {
+      const l = jaccardSimilarity(item.tokenSet, seedA.tokenSet);
+      const r = jaccardSimilarity(item.tokenSet, seedB.tokenSet);
+      if (l >= r) left.push(item);
+      else right.push(item);
+    });
+
+    if (left.length < cfg.minClusterSize || right.length < cfg.minClusterSize) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroid(cluster.items) }];
+    }
+
+    const after = ((avgPairwise(left) * left.length) + (avgPairwise(right) * right.length)) / Math.max(1, cluster.items.length);
+    if ((after - coherence) < cfg.minSplitGain) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroid(cluster.items) }];
+    }
+
+    return [
+      ...splitCluster({ id: `${cluster.id}.1`, items: left, centroid: centroid(left), parent_id: cluster.id }, depth + 1),
+      ...splitCluster({ id: `${cluster.id}.2`, items: right, centroid: centroid(right), parent_id: cluster.id }, depth + 1),
+    ];
+  };
+
+  const clusters = clusterSeed.flatMap((cluster) => splitCluster(cluster, 0)).filter((cluster) => cluster.items.length >= cfg.minClusterSize);
+
+  const nameFromCluster = (cluster, index) => {
+    const label = buildAbstractCodeLabel(cluster.items.map((item) => ({ excerpt: item.text })));
+    if (!isLiteralLikeCodeName(label, cluster.items.map((item) => ({ excerpt: item.text })))) return label;
+    return `patrón conceptual ${index + 1}`;
+  };
+
+  const parents = clusters.filter((cluster) => Number(cluster.depth || 0) === 0);
+  const proposals = parents.map((parent, index) => {
+    const parentName = nameFromCluster(parent, index);
+    const children = clusters
+      .filter((cluster) => String(cluster.parent_id || '').startsWith(String(parent.id)))
+      .map((cluster, childIndex) => ({
+        cluster_name: nameFromCluster(cluster, childIndex),
+        suggested_subcode_name: nameFromCluster(cluster, childIndex),
+        description: `Subpatrón conceptual derivado del patrón ${parentName}.`,
+        confidence: Number(clamp(0.15, (0.65 * Number(cluster.coherence || 0)) + 0.25, 0.95).toFixed(4)),
+        size_estimate: cluster.items.length,
+      }));
+
+    return {
+      cluster_name: parentName,
+      suggested_code_name: parentName,
+      description: 'Patrón conceptual detectado desde comentarios completos sin trazabilidad inicial.',
+      confidence: Number(clamp(0.15, (0.7 * Number(parent.coherence || 0)) + 0.2, 0.95).toFixed(4)),
+      size_estimate: parent.items.length,
+      subclusters: children,
+      generated_without_traceability: true,
+      conceptual_taxonomy_stage: 'discovery',
+    };
+  });
+
+  return {
+    proposals,
+    metrics: {
+      comments_analyzed: commentsClean.length,
+      clusters_count: clusters.length,
+      top_level_clusters_count: parents.length,
+      generated_without_traceability: true,
+    },
+  };
+}
+
+
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
   const expiresAtMs = connection.expires_at ? new Date(connection.expires_at).getTime() : 0;
@@ -5886,6 +6045,40 @@ const server = http.createServer(async (req, res) => {
         },
       });
     }
+
+    if (url.pathname === '/api/comment-base/code-generation-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const comments = Array.isArray(body.comments) ? body.comments : [];
+
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
+      }
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const generated = buildCodeGenerationFromComments({ comments });
+      return sendJson(req, res, 200, {
+        data: {
+          proposals: Array.isArray(generated.proposals) ? generated.proposals : [],
+          metrics: generated.metrics || {},
+          meta: {
+            generated_without_traceability: true,
+            unit: 'comments',
+            flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+          },
+        },
+      });
+    }
+
 
     if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
       const user = authFromRequest(req);
