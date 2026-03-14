@@ -3725,6 +3725,11 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
 
 
 function buildCodeGenerationAgentPrompt({ comments = [] }) {
+  const compactText = (value, max = 340) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
   const normalizedComments = (Array.isArray(comments) ? comments : [])
     .map((item, index) => {
       const id = String(item.id || item.comment_id || item.source_comment_id || `comment_${index + 1}`);
@@ -3732,147 +3737,38 @@ function buildCodeGenerationAgentPrompt({ comments = [] }) {
       return { id, text };
     })
     .filter((item) => item.text)
-    .slice(0, 1800);
+    .slice(0, 900);
 
-  const commentsBlock = normalizedComments
-    .map((item, index) => `${index + 1}. [${item.id}] ${item.text.slice(0, 900)}`)
+  const sampledComments = (() => {
+    if (normalizedComments.length <= 420) return normalizedComments;
+    const step = Math.max(1, Math.floor(normalizedComments.length / 420));
+    const sampled = [];
+    for (let i = 0; i < normalizedComments.length && sampled.length < 420; i += step) sampled.push(normalizedComments[i]);
+    return sampled;
+  })();
+
+  const commentsBlock = sampledComments
+    .map((item, index) => `${index + 1}) [${item.id}] ${compactText(item.text, 300)}`)
     .join('\n');
 
-  return `OBJETIVO DEL AGENTE IA
+  return `Rol: investigar comentarios y proponer taxonomía conceptual jerárquica.
+Restricciones: NO trazabilidad, NO asignación comentario->código, NO clasificación uno a uno.
 
-Tu tarea es analizar un conjunto grande de comentarios de usuarios y construir una propuesta conceptual de códigos semánticos de alta calidad mediante clustering jerárquico.
+Proceso obligatorio:
+1) Clusterizar por significado (problema/emoción/narrativa/conducta), no por keywords.
+2) Subclusterizar solo si hay heterogeneidad real (evitar sobrefragmentación).
+3) Convertir clusters/subclusters en propuesta de códigos.
 
-NO debes asignar fragmentos a códigos.
-NO debes generar trazabilidad.
-NO debes intentar clasificar comentario por comentario.
+Reglas de naming (críticas):
+- nombre conceptual, claro, reutilizable, 2-5 palabras.
+- evitar literalidad, keywords sueltas, guiones raros, prefijos vacíos (ej. "patrón relacional").
+- nombrar fenómeno dominante (problema, interpretación, emoción, objeción, narrativa).
 
-Tu función es descubrir patrones conceptuales dominantes del discurso del mercado.
+Límites:
+- proponer 12 a 40 códigos (fusionar si hay exceso).
+- descartar patrones débiles o ruidosos.
 
-Este proceso tiene 3 etapas obligatorias:
-
-1) Clusterización semántica
-2) Subclusterización conceptual
-3) Generación de propuesta de códigos
-
-------------------------------------------------
-
-FASE 1 — CLUSTERIZACIÓN SEMÁNTICA
-
-Debes analizar TODOS los comentarios como unidades completas de significado.
-
-Tu objetivo es detectar patrones semánticos dominantes, no similitudes superficiales de palabras.
-
-Debes:
-
-- agrupar comentarios que expresen el mismo problema, narrativa, emoción o interpretación
-- ignorar ruido lingüístico (palabras funcionales, saludos, bromas, spam, comentarios irrelevantes)
-- ignorar variaciones gramaticales si el significado conceptual es el mismo
-- priorizar patrones psicológicos y narrativos, no solo temas técnicos
-
-Regla crítica:
-
-Un cluster debe representar un fenómeno del mercado, no una coincidencia estadística débil.
-
-------------------------------------------------
-
-CRITERIOS PARA FORMAR CLUSTERS
-
-Un cluster válido debe cumplir al menos 3 de estos criterios:
-
-- los comentarios expresan el mismo tipo de problema
-- comparten interpretación mental similar del problema
-- tienen emoción dominante comparable
-- describen comportamiento o intento de solución parecido
-- reflejan una narrativa recurrente del mercado
-- aparecen en múltiples videos o fuentes distintas
-
-Clusters basados solo en palabras repetidas deben ser descartados.
-
-------------------------------------------------
-
-FASE 2 — SUBCLUSTERIZACIÓN
-
-Si un cluster es demasiado amplio o heterogéneo debes dividirlo en subclusters.
-
-Debes crear subclusters cuando:
-
-- existen interpretaciones diferentes del mismo problema
-- hay emociones dominantes distintas
-- hay diferencias claras en nivel de urgencia o intensidad
-- existen sub-narrativas dentro del mismo fenómeno
-
-Si un cluster ya es coherente y específico NO debes dividirlo.
-
-Evita sobrefragmentar.
-
-------------------------------------------------
-
-FASE 3 — GENERACIÓN DE PROPUESTA DE CÓDIGOS
-
-Debes convertir clusters y subclusters en propuesta conceptual de códigos.
-
-Reglas:
-
-- cluster dominante → candidato a código principal
-- subcluster → candidato a subcódigo
-- cada código debe tener nombre semántico claro, corto y conceptual
-- evita nombres descriptivos largos o ambiguos
-- evita códigos redundantes o solapados
-- prioriza reutilización conceptual (fusionar patrones similares)
-
-REGLA CENTRAL DE NAMING:
-- el nombre debe capturar la IDEA SEMÁNTICA DOMINANTE del cluster
-- NO usar prefijos por defecto como "patrón relacional"
-- NO usar nombres tipo keyword o bolsa de palabras
-- NO usar guiones o tokens pegados como nombre principal
-- preferir nombres conceptuales breves (2 a 5 palabras), claros y reutilizables
-- evitar copiar frases literales o casi literales de comentarios
-
-
-------------------------------------------------
-
-LÍMITES IMPORTANTES
-
-- debes proponer entre 12 y 40 códigos como máximo
-- si detectas más patrones debes fusionarlos jerárquicamente
-- prioriza profundidad conceptual sobre cantidad
-
-------------------------------------------------
-
-EVALUACIÓN DE CALIDAD DE CADA CÓDIGO
-
-Para cada código debes evaluar:
-
-1) tamaño del patrón (bajo / medio / alto)
-2) dispersión (si aparece en múltiples videos o fuentes)
-3) coherencia conceptual (alta / media / baja)
-4) intensidad narrativa (débil / moderada / fuerte)
-5) claridad psicológica del problema
-
-Si un patrón es débil o ruidoso debes descartarlo.
-
-------------------------------------------------
-
-SALIDA ESPERADA
-
-Debes devolver una propuesta estructurada que incluya:
-
-- nombre del código sugerido
-- descripción conceptual breve
-- breve explicación conceptual del nombre (por qué representa el patrón)
-- subcódigos sugeridos si existen
-- nivel estimado de coherencia
-- tamaño del patrón
-- recomendación: crear / fusionar / descartar
-
-NO debes:
-
-- asignar comentarios a códigos
-- crear trazabilidad
-- generar scores numéricos finales
-- intentar validar hipótesis
-
-Tu objetivo es construir una taxonomía conceptual robusta del discurso del mercado basada en clustering semántico jerárquico.
+Para cada código: description breve, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
 
 Responde EXCLUSIVAMENTE en JSON válido con esta forma:
 {
@@ -6182,7 +6078,7 @@ const server = http.createServer(async (req, res) => {
           data: {
             proposals,
             metrics: {
-              comments_analyzed: Math.min(Array.isArray(comments) ? comments.length : 0, 1800),
+              comments_analyzed: Math.min(Array.isArray(comments) ? comments.length : 0, 900),
               clusters_count: proposals.length,
               top_level_clusters_count: proposals.length,
               generated_without_traceability: true,
