@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Activity, ArrowLeft, BarChart3, CheckCircle2, Gauge, Layers3, MoreHorizontal, Plus, Trash2, Video } from 'lucide-react';
+import { Activity, ArrowLeft, BarChart3, CheckCircle2, Gauge, Layers3, MoreHorizontal, Plus, Target, Trash2, TrendingUp, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
@@ -97,6 +97,101 @@ const HypothesisDetailPage = () => {
     hypothesisId,
   }), [videos, hypothesis, hypothesisId]);
 
+
+
+  const hypothesisMetricProgress = useMemo(() => {
+    const metric = String(hypothesis?.metrica_objetivo_y || 'views').trim();
+    const operator = String(hypothesis?.umbral_operador || '>=').trim() || '>=';
+    const threshold = Number(hypothesis?.umbral_valor ?? 0);
+
+    const toNumber = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const metricValueForVideo = (video = {}) => {
+      const normalizedMetric = metric.toLowerCase();
+      if (normalizedMetric === 'ctr') {
+        const rawCtr = toNumber(video.ctr);
+        if (rawCtr > 0) return rawCtr;
+        const clicks = toNumber(video.clicks);
+        const views = toNumber(video.views);
+        return views > 0 ? (clicks / views) * 100 : 0;
+      }
+      if (normalizedMetric === 'cpc') {
+        const rawCpc = toNumber(video.cpc);
+        if (rawCpc > 0) return rawCpc;
+        const spend = toNumber(video.spend || video.cost || video.inversion_total || 0);
+        const clicks = toNumber(video.clicks);
+        return clicks > 0 ? spend / clicks : 0;
+      }
+      if (normalizedMetric === 'purchase_rate') {
+        const viewContent = toNumber(video.view_content);
+        return viewContent > 0 ? toNumber(video.purchase) / viewContent : 0;
+      }
+      if (normalizedMetric === 'initiate_checkout_rate') {
+        const views = toNumber(video.views);
+        return views > 0 ? toNumber(video.initiate_checkouts) / views : 0;
+      }
+      if (normalizedMetric === 'view_content_rate') {
+        const views = toNumber(video.views);
+        return views > 0 ? toNumber(video.view_content) / views : 0;
+      }
+      if (normalizedMetric === 'lead_rate') {
+        const views = toNumber(video.views);
+        const leads = toNumber(video.formulario_lead ?? video.lead_form);
+        return views > 0 ? leads / views : 0;
+      }
+
+      const metricAliasToField = {
+        'views finish %': 'views_finish_pct',
+        'retention %': 'retencion_pct',
+        'avg watch time': 'tiempo_prom_seg',
+        'live peak viewers': 'pico_viewers',
+        'live avg viewers': 'viewers_prom',
+        'live new followers': 'nuevos_seguidores',
+        lead_form: 'formulario_lead',
+      };
+
+      const field = metricAliasToField[normalizedMetric] || metric;
+      return toNumber(video[field]);
+    };
+
+    const values = videos.map((video) => metricValueForVideo(video));
+    const total = values.reduce((acc, value) => acc + toNumber(value), 0);
+    const average = values.length ? total / values.length : 0;
+    const currentValue = average;
+
+    const passes = (() => {
+      if (operator === '>=') return currentValue >= threshold;
+      if (operator === '>') return currentValue > threshold;
+      if (operator === '<=') return currentValue <= threshold;
+      if (operator === '<') return currentValue < threshold;
+      return currentValue >= threshold;
+    })();
+
+    const progressRaw = (() => {
+      if (threshold <= 0) return currentValue > 0 ? 100 : 0;
+      if (operator === '>=' || operator === '>') return (currentValue / threshold) * 100;
+      return currentValue <= 0 ? 200 : (threshold / currentValue) * 100;
+    })();
+
+    const progressPct = Math.max(0, Math.min(200, Number.isFinite(progressRaw) ? progressRaw : 0));
+    const ringPct = Math.max(0, Math.min(100, progressPct));
+
+    return {
+      metric,
+      operator,
+      threshold,
+      currentValue,
+      total,
+      average,
+      videosEvaluated: values.length,
+      progressPct,
+      ringPct,
+      passes,
+    };
+  }, [hypothesis, videos]);
 
   const hypothesisCardKpis = useMemo(() => {
     const paidCount = videos.filter((video) => (video.video_type || 'organic') === 'paid').length;
@@ -385,6 +480,62 @@ const HypothesisDetailPage = () => {
               <div className="rounded-xl border border-fuchsia-700/40 bg-slate-900/80 p-3">
                 <p className="text-xs text-slate-400">Mix de tipo</p>
                 <p className="text-sm text-slate-200 mt-2">Paid {hypothesisCardKpis.paidCount} · Organic {hypothesisCardKpis.organicCount} · Live {hypothesisCardKpis.liveCount}</p>
+              </div>
+            </div>
+
+            <div className="mb-4 rounded-xl border border-indigo-700/40 bg-slate-900/80 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="flex items-center gap-2 text-indigo-300"><Target className="w-4 h-4" /><p className="text-sm font-medium">Métrica Y seleccionada</p></div>
+                  <p className="text-lg font-semibold text-white mt-1">{hypothesisMetricProgress.metric || '-'} <span className="text-sm text-slate-400">({hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold})</span></p>
+                  <p className="text-xs text-slate-400 mt-1">Valor actual promedio: {hypothesisMetricProgress.currentValue.toFixed(2)} · Total acumulado: {hypothesisMetricProgress.total.toFixed(2)} · Videos analizados: {hypothesisMetricProgress.videosEvaluated}</p>
+                </div>
+                <div className="text-right">
+                  <p className={`text-sm font-medium ${hypothesisMetricProgress.passes ? 'text-emerald-300' : 'text-amber-300'}`}>{hypothesisMetricProgress.passes ? 'Cumple umbral' : 'Debajo del umbral'}</p>
+                  <p className="text-xs text-slate-400">Progreso: {hypothesisMetricProgress.progressPct.toFixed(1)}%</p>
+                </div>
+              </div>
+              <div className="mt-4 grid md:grid-cols-[1fr_220px] gap-4 items-center">
+                <div>
+                  <div className="h-3 w-full rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 transition-all duration-700"
+                      style={{ width: `${Math.min(100, hypothesisMetricProgress.progressPct)}%` }}
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                    <span>0%</span>
+                    <span>Objetivo 100%</span>
+                    <span>Overdrive 200%</span>
+                  </div>
+                </div>
+                <div className="mx-auto h-40 w-40 rounded-full border border-indigo-700/50 bg-slate-950/70 grid place-items-center relative">
+                  <svg viewBox="0 0 120 120" className="absolute inset-0 h-full w-full -rotate-90">
+                    <circle cx="60" cy="60" r="48" stroke="#1e293b" strokeWidth="10" fill="none" />
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="48"
+                      stroke="url(#metricProgressGradient)"
+                      strokeWidth="10"
+                      strokeLinecap="round"
+                      fill="none"
+                      strokeDasharray={2 * Math.PI * 48}
+                      strokeDashoffset={(2 * Math.PI * 48) * (1 - (hypothesisMetricProgress.ringPct / 100))}
+                    />
+                    <defs>
+                      <linearGradient id="metricProgressGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stopColor="#22d3ee" />
+                        <stop offset="50%" stopColor="#6366f1" />
+                        <stop offset="100%" stopColor="#d946ef" />
+                      </linearGradient>
+                    </defs>
+                  </svg>
+                  <div className="text-center">
+                    <p className="text-2xl font-semibold text-white">{hypothesisMetricProgress.ringPct.toFixed(0)}%</p>
+                    <p className="text-[11px] text-slate-400 flex items-center justify-center gap-1"><TrendingUp className="w-3 h-3" /> avance Y</p>
+                  </div>
+                </div>
               </div>
             </div>
 
