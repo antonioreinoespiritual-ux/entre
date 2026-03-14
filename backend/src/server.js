@@ -3820,6 +3820,15 @@ Reglas:
 - evita códigos redundantes o solapados
 - prioriza reutilización conceptual (fusionar patrones similares)
 
+REGLA CENTRAL DE NAMING:
+- el nombre debe capturar la IDEA SEMÁNTICA DOMINANTE del cluster
+- NO usar prefijos por defecto como "patrón relacional"
+- NO usar nombres tipo keyword o bolsa de palabras
+- NO usar guiones o tokens pegados como nombre principal
+- preferir nombres conceptuales breves (2 a 5 palabras), claros y reutilizables
+- evitar copiar frases literales o casi literales de comentarios
+
+
 ------------------------------------------------
 
 LÍMITES IMPORTANTES
@@ -3850,6 +3859,7 @@ Debes devolver una propuesta estructurada que incluya:
 
 - nombre del código sugerido
 - descripción conceptual breve
+- breve explicación conceptual del nombre (por qué representa el patrón)
 - subcódigos sugeridos si existen
 - nivel estimado de coherencia
 - tamaño del patrón
@@ -3893,18 +3903,68 @@ ${commentsBlock}`;
 }
 
 function normalizeCodeGenerationAgentOutput(parsed) {
+  const normalizeConceptualName = (raw, fallback = 'código conceptual') => {
+    let value = String(raw || '').toLowerCase().trim();
+    if (!value) return fallback;
+    value = value
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/[^a-z0-9\s]/g, '')
+      .trim();
+
+    const bannedStarts = [
+      'patron relacional',
+      'patron conceptual',
+      'patron',
+    ];
+    if (bannedStarts.some((prefix) => value.startsWith(prefix))) {
+      value = value
+        .replace(/^patron\s+relacional\s*/g, '')
+        .replace(/^patron\s+conceptual\s*/g, '')
+        .replace(/^patron\s*/g, '')
+        .trim();
+    }
+
+    const filler = new Set(['excelente', 'gracias', 'hola', 'buenas', 'ok', 'si', 'no']);
+    const tokens = value.split(/\s+/).filter(Boolean).filter((token) => !filler.has(token));
+    const compact = tokens.slice(0, 5).join(' ').trim();
+    if (!compact || compact.length < 8) return fallback;
+
+    const title = compact.replace(/\b\w/g, (m) => m.toUpperCase());
+    return title;
+  };
+
+  const inferNameRationale = (name, description) => {
+    const n = String(name || '').toLowerCase();
+    const d = String(description || '').toLowerCase();
+    if (/miedo|ansiedad|abandono|inseguridad/.test(n + d)) {
+      return 'El nombre resume un patrón emocional dominante y reutilizable del cluster.';
+    }
+    if (/desinteres|indiferencia|alejamiento|distancia/.test(n + d)) {
+      return 'El nombre abstrae la interpretación recurrente de pérdida o distancia en el vínculo.';
+    }
+    if (/validacion|apoyo|seguridad|reconex/.test(n + d)) {
+      return 'El nombre representa una necesidad psicológica compartida entre múltiples comentarios.';
+    }
+    return 'El nombre condensa el significado dominante del cluster en una etiqueta conceptual reutilizable.';
+  };
+
   const proposals = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
   return proposals.slice(0, 40).map((proposal, index) => ({
-    cluster_name: String(proposal.cluster_name || `Cluster ${index + 1}`).trim(),
-    suggested_code_name: String(proposal.suggested_code_name || proposal.cluster_name || `Código ${index + 1}`).trim(),
+    cluster_name: normalizeConceptualName(proposal.cluster_name || `cluster conceptual ${index + 1}`, `Cluster Conceptual ${index + 1}`),
+    suggested_code_name: normalizeConceptualName(proposal.suggested_code_name || proposal.cluster_name || `codigo conceptual ${index + 1}`, `Código Conceptual ${index + 1}`),
     description: String(proposal.description || 'Patrón conceptual propuesto sin trazabilidad inicial.').trim(),
+    naming_rationale: inferNameRationale(proposal.suggested_code_name || proposal.cluster_name, proposal.description),
     coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
     pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
     recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
     subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub, subIndex) => ({
-      cluster_name: String(sub.cluster_name || `Subcluster ${subIndex + 1}`).trim(),
-      suggested_subcode_name: String(sub.suggested_subcode_name || sub.cluster_name || `Subcódigo ${subIndex + 1}`).trim(),
+      cluster_name: normalizeConceptualName(sub.cluster_name || `subcluster conceptual ${subIndex + 1}`, `Subcluster Conceptual ${subIndex + 1}`),
+      suggested_subcode_name: normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name || `subcodigo conceptual ${subIndex + 1}`, `Subcódigo Conceptual ${subIndex + 1}`),
       description: String(sub.description || 'Subpatrón conceptual propuesto sin trazabilidad inicial.').trim(),
+      naming_rationale: inferNameRationale(sub.suggested_subcode_name || sub.cluster_name, sub.description),
       coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
       pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
       recommendation: ['crear', 'fusionar', 'descartar'].includes(String(sub.recommendation || '').toLowerCase()) ? String(sub.recommendation).toLowerCase() : 'crear',
@@ -4031,9 +4091,24 @@ function buildCodeGenerationFromComments({ comments = [] }) {
   const clusters = clusterSeed.flatMap((cluster) => splitCluster(cluster, 0)).filter((cluster) => cluster.items.length >= cfg.minClusterSize);
 
   const nameFromCluster = (cluster, index) => {
-    const label = buildAbstractCodeLabel(cluster.items.map((item) => ({ excerpt: item.text })));
-    if (!isLiteralLikeCodeName(label, cluster.items.map((item) => ({ excerpt: item.text })))) return label;
-    return `patrón conceptual ${index + 1}`;
+    const items = cluster.items.map((item) => ({ excerpt: item.text }));
+    const combined = cluster.items.map((item) => String(item.text || '').toLowerCase()).join(' ');
+    const hasAny = (tokens) => tokens.some((token) => combined.includes(token));
+    if (hasAny(['miedo', 'abandono', 'ansiedad', 'inseguridad'])) return 'Ansiedad Por Abandono';
+    if (hasAny(['ignora', 'indiferencia', 'desinteres', 'distancia'])) return 'Percepcion De Desinteres';
+    if (hasAny(['validacion', 'apoyo', 'atencion', 'seguridad'])) return 'Necesidad De Validacion Afectiva';
+    if (hasAny(['confusion', 'duda', 'contradictorio'])) return 'Confusion Relacional';
+    if (hasAny(['reconectar', 'volver', 'recuperar'])) return 'Deseo De Reconexion';
+    const label = buildAbstractCodeLabel(items);
+    if (!isLiteralLikeCodeName(label, items)) {
+      return String(label)
+        .replace(/^patr[oó]n\s+relacional\s*/i, '')
+        .replace(/^patr[oó]n\s+conceptual\s*/i, '')
+        .replace(/^patr[oó]n\s*/i, '')
+        .trim()
+        .replace(/\b\w/g, (m) => m.toUpperCase()) || `Codigo Conceptual ${index + 1}`;
+    }
+    return `Codigo Conceptual ${index + 1}`;
   };
 
   const parents = clusters.filter((cluster) => Number(cluster.depth || 0) === 0);
@@ -4053,6 +4128,7 @@ function buildCodeGenerationFromComments({ comments = [] }) {
       cluster_name: parentName,
       suggested_code_name: parentName,
       description: 'Patrón conceptual detectado desde comentarios completos sin trazabilidad inicial.',
+      naming_rationale: 'Nombre abstraído por fenómeno dominante del cluster y no por vocabulario superficial.',
       confidence: Number(clamp(0.15, (0.7 * Number(parent.coherence || 0)) + 0.2, 0.95).toFixed(4)),
       size_estimate: parent.items.length,
       subclusters: children,
