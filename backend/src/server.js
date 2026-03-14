@@ -3725,7 +3725,7 @@ function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], exi
 
 
 function buildCodeGenerationAgentPrompt({ comments = [] }) {
-  const compactText = (value, max = 340) => String(value || '')
+  const compactText = (value, max = 180) => String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, max);
@@ -3737,54 +3737,41 @@ function buildCodeGenerationAgentPrompt({ comments = [] }) {
       return { id, text };
     })
     .filter((item) => item.text)
-    .slice(0, 900);
+    .slice(0, 260);
 
   const sampledComments = (() => {
-    if (normalizedComments.length <= 420) return normalizedComments;
-    const step = Math.max(1, Math.floor(normalizedComments.length / 420));
+    if (normalizedComments.length <= 120) return normalizedComments;
+    const step = Math.max(1, Math.floor(normalizedComments.length / 120));
     const sampled = [];
-    for (let i = 0; i < normalizedComments.length && sampled.length < 420; i += step) sampled.push(normalizedComments[i]);
+    for (let i = 0; i < normalizedComments.length && sampled.length < 120; i += step) sampled.push(normalizedComments[i]);
     return sampled;
   })();
 
   const commentsBlock = sampledComments
-    .map((item, index) => `${index + 1}) [${item.id}] ${compactText(item.text, 300)}`)
+    .map((item, index) => `${index + 1}) ${compactText(item.text, 180)}`)
     .join('\n');
 
-  return `Rol: investigar comentarios y proponer taxonomía conceptual jerárquica.
-Restricciones: NO trazabilidad, NO asignación comentario->código, NO clasificación uno a uno.
-
-Proceso obligatorio:
-1) Clusterizar por significado (problema/emoción/narrativa/conducta), no por keywords.
-2) Subclusterizar solo si hay heterogeneidad real (evitar sobrefragmentación).
-3) Convertir clusters/subclusters en propuesta de códigos.
-
-Reglas de naming (críticas):
-- nombre conceptual, claro, reutilizable, 2-5 palabras.
-- evitar literalidad, keywords sueltas, guiones raros, prefijos vacíos (ej. "patrón relacional").
-- nombrar fenómeno dominante (problema, interpretación, emoción, objeción, narrativa).
-
-Límites:
-- proponer 12 a 40 códigos (fusionar si hay exceso).
-- descartar patrones débiles o ruidosos.
-
-Para cada código: description breve, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
-
-Responde EXCLUSIVAMENTE en JSON válido con esta forma:
+  return `Tarea: crear taxonomía conceptual jerárquica desde comentarios.
+No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
+Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
+Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin prefijos vacíos ni keywords sueltas.
+Límites: 12-40 códigos; fusionar excesos; descartar ruido.
+Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
+Devuelve solo JSON:
 {
   "proposals": [
     {
-      "cluster_name": "string",
       "suggested_code_name": "string",
       "description": "string",
+      "naming_rationale": "string",
       "coherence_level": "alta|media|baja",
       "pattern_size": "bajo|medio|alto",
       "recommendation": "crear|fusionar|descartar",
       "subclusters": [
         {
-          "cluster_name": "string",
           "suggested_subcode_name": "string",
           "description": "string",
+          "naming_rationale": "string",
           "coherence_level": "alta|media|baja",
           "pattern_size": "bajo|medio|alto",
           "recommendation": "crear|fusionar|descartar"
