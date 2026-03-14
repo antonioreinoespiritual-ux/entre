@@ -450,8 +450,8 @@ const HypothesisDetailPage = () => {
 
 
       {showHypothesisCardModal ? (
-        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm p-4 flex items-center justify-center">
-          <div className="w-full max-w-4xl rounded-2xl border border-cyan-700/60 bg-slate-950 text-slate-100 shadow-[0_0_60px_rgba(34,211,238,0.2)] p-6">
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
+          <div className="w-full max-w-4xl rounded-2xl border border-cyan-700/60 bg-slate-950 text-slate-100 shadow-[0_0_60px_rgba(34,211,238,0.2)] p-6 my-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-start justify-between gap-4 mb-5">
               <div>
                 <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Tarjeta de hipótesis</p>
@@ -483,58 +483,48 @@ const HypothesisDetailPage = () => {
               </div>
             </div>
 
-            <div className="mb-4 rounded-xl border border-indigo-700/40 bg-slate-900/80 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="flex items-center gap-2 text-indigo-300"><Target className="w-4 h-4" /><p className="text-sm font-medium">Métrica Y seleccionada</p></div>
-                  <p className="text-lg font-semibold text-white mt-1">{hypothesisMetricProgress.metric || '-'} <span className="text-sm text-slate-400">({hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold})</span></p>
-                  <p className="text-xs text-slate-400 mt-1">Valor actual promedio: {hypothesisMetricProgress.currentValue.toFixed(2)} · Total acumulado: {hypothesisMetricProgress.total.toFixed(2)} · Videos analizados: {hypothesisMetricProgress.videosEvaluated}</p>
+            <div className="mb-4 rounded-xl border border-indigo-700/30 bg-slate-900/70 p-3">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div className="flex items-center gap-2 text-indigo-300">
+                  <Target className="w-4 h-4" />
+                  <p className="text-sm font-medium">Métrica Y seleccionada</p>
                 </div>
-                <div className="text-right">
-                  <p className={`text-sm font-medium ${hypothesisMetricProgress.passes ? 'text-emerald-300' : 'text-amber-300'}`}>{hypothesisMetricProgress.passes ? 'Cumple umbral' : 'Debajo del umbral'}</p>
-                  <p className="text-xs text-slate-400">Progreso: {hypothesisMetricProgress.progressPct.toFixed(1)}%</p>
-                </div>
+                <p className={`text-xs font-medium px-2 py-1 rounded-full ${hypothesisMetricProgress.passes ? 'bg-emerald-900/50 text-emerald-300' : 'bg-amber-900/50 text-amber-300'}`}>
+                  {hypothesisMetricProgress.passes ? 'Cumple umbral' : 'Debajo del umbral'}
+                </p>
               </div>
-              <div className="mt-4 grid md:grid-cols-[1fr_220px] gap-4 items-center">
+
+              <div className="grid md:grid-cols-[1.2fr_1fr] gap-3 items-start">
                 <div>
-                  <div className="h-3 w-full rounded-full bg-slate-800 overflow-hidden">
+                  <p className="text-base font-semibold text-white">
+                    {hypothesisMetricProgress.metric || '-'}
+                    <span className="text-xs text-slate-400 ml-2">({hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold})</span>
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Actual: {hypothesisMetricProgress.currentValue.toFixed(2)} · Promedio en {hypothesisMetricProgress.videosEvaluated} videos
+                  </p>
+
+                  <div className="mt-3 h-2.5 w-full rounded-full bg-slate-800 overflow-hidden">
                     <div
                       className="h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 transition-all duration-700"
                       style={{ width: `${Math.min(100, hypothesisMetricProgress.progressPct)}%` }}
                     />
                   </div>
-                  <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
                     <span>0%</span>
-                    <span>Objetivo 100%</span>
-                    <span>Overdrive 200%</span>
+                    <span>Objetivo</span>
+                    <span>{hypothesisMetricProgress.progressPct.toFixed(1)}%</span>
                   </div>
                 </div>
-                <div className="mx-auto h-40 w-40 rounded-full border border-indigo-700/50 bg-slate-950/70 grid place-items-center relative">
-                  <svg viewBox="0 0 120 120" className="absolute inset-0 h-full w-full -rotate-90">
-                    <circle cx="60" cy="60" r="48" stroke="#1e293b" strokeWidth="10" fill="none" />
-                    <circle
-                      cx="60"
-                      cy="60"
-                      r="48"
-                      stroke="url(#metricProgressGradient)"
-                      strokeWidth="10"
-                      strokeLinecap="round"
-                      fill="none"
-                      strokeDasharray={2 * Math.PI * 48}
-                      strokeDashoffset={(2 * Math.PI * 48) * (1 - (hypothesisMetricProgress.ringPct / 100))}
-                    />
-                    <defs>
-                      <linearGradient id="metricProgressGradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stopColor="#22d3ee" />
-                        <stop offset="50%" stopColor="#6366f1" />
-                        <stop offset="100%" stopColor="#d946ef" />
-                      </linearGradient>
-                    </defs>
-                  </svg>
-                  <div className="text-center">
-                    <p className="text-2xl font-semibold text-white">{hypothesisMetricProgress.ringPct.toFixed(0)}%</p>
-                    <p className="text-[11px] text-slate-400 flex items-center justify-center gap-1"><TrendingUp className="w-3 h-3" /> avance Y</p>
-                  </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-[11px] text-slate-500 uppercase tracking-wide">Panel Y</p>
+                  <p className="text-xl font-semibold text-white mt-1 flex items-center gap-1">
+                    <TrendingUp className="w-4 h-4 text-indigo-300" />
+                    {hypothesisMetricProgress.currentValue.toFixed(2)}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">Threshold: {hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold}</p>
+                  <p className="text-xs text-slate-400">Progreso: {hypothesisMetricProgress.progressPct.toFixed(1)}%</p>
                 </div>
               </div>
             </div>
