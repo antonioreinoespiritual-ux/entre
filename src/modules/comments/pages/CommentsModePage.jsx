@@ -1416,11 +1416,29 @@ const CommentsModePage = () => {
     setCodeGenerationModalOpen(true);
 
     try {
-      let commentsForGeneration = Array.isArray(commentsTable.items) ? commentsTable.items : [];
-      if (!commentsForGeneration.length) {
-        const tableData = await commentsIngestionApi.listTable({ projectId, campaignId, limit: 500, offset: 0, q: '' });
-        commentsForGeneration = Array.isArray(tableData?.items) ? tableData.items : [];
+      const pageSize = 500;
+      let offset = 0;
+      let total = null;
+      const allComments = [];
+
+      while (total == null || offset < total) {
+        const page = await commentsIngestionApi.listTable({ projectId, campaignId, limit: pageSize, offset, q: '' });
+        const items = Array.isArray(page?.items) ? page.items : [];
+        total = Number(page?.total || 0);
+        allComments.push(...items);
+        if (!items.length) break;
+        offset += items.length;
       }
+
+      const seen = new Set();
+      const commentsForGeneration = allComments.filter((item) => {
+        const id = String(item?.id || item?.comment_id || item?.source_comment_id || '');
+        const text = String(item?.text || item?.comment_text || item?.body || item?.content || '').trim();
+        const key = id || text.slice(0, 180).toLowerCase();
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return Boolean(text);
+      });
 
       const response = await commentsIngestionApi.runCodeGenerationAgent({
         project_id: projectId,
@@ -1439,7 +1457,11 @@ const CommentsModePage = () => {
         subclusters: Array.isArray(proposal.subclusters) ? proposal.subclusters : [],
         generated_without_traceability: true,
       })));
-      setCodeGenerationMetrics(response?.metrics || null);
+      setCodeGenerationMetrics({
+        ...(response?.metrics || {}),
+        comments_fetched_for_generation: commentsForGeneration.length,
+        comments_total_from_table: total == null ? commentsForGeneration.length : total,
+      });
     } catch (error) {
       setCodeGenerationError(error?.message || 'No se pudo generar propuestas desde comentarios.');
     } finally {
@@ -2953,7 +2975,7 @@ const CommentsModePage = () => {
                   {codeGenerationError ? <p className="text-sm text-rose-600">{codeGenerationError}</p> : null}
                   {codeGenerationMetrics ? (
                     <p className="text-xs text-slate-500">
-                      Comentarios analizados: {Number(codeGenerationMetrics.comments_analyzed || 0)} · Clusters: {Number(codeGenerationMetrics.clusters_count || 0)} · Top-level: {Number(codeGenerationMetrics.top_level_clusters_count || 0)}
+                      Comentarios consultados: {Number(codeGenerationMetrics.comments_total_from_table || 0)} · enviados a generación: {Number(codeGenerationMetrics.comments_fetched_for_generation || 0)} · analizados por IA: {Number(codeGenerationMetrics.comments_analyzed || 0)} · Clusters: {Number(codeGenerationMetrics.clusters_count || 0)} · Top-level: {Number(codeGenerationMetrics.top_level_clusters_count || 0)}
                     </p>
                   ) : null}
 
