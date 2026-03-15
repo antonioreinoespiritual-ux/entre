@@ -2606,38 +2606,185 @@ async function requestAiChatCompletion(integration, payload) {
   };
 }
 
-function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText }) {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+
+function parseRateLimitRetryMs(errorMessage = '') {
+  const message = String(errorMessage || '');
+  const secondsMatch = message.match(/try again in\s*([0-9]+(?:\.[0-9]+)?)s/i);
+  if (secondsMatch && Number.isFinite(Number(secondsMatch[1]))) {
+    return Math.max(500, Math.ceil(Number(secondsMatch[1]) * 1000) + 250);
+  }
+  return 0;
+}
+
+function isRateLimitError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('rate limit') || message.includes('tpm') || message.includes('tokens per minute');
+}
+
+function isDailyTokenLimitError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('tokens per day') || message.includes('tpd');
+}
+
+async function requestAiChatCompletionWithRateLimitRetry(integration, payload, options = {}) {
+  const maxRetries = Math.max(0, Number(options.maxRetries) || 4);
+  const baseDelayMs = Math.max(300, Number(options.baseDelayMs) || 1200);
+  let attempt = 0;
+  let lastError = null;
+
+  while (attempt <= maxRetries) {
+    try {
+      return await requestAiChatCompletion(integration, payload);
+    } catch (error) {
+      lastError = error;
+      if (isDailyTokenLimitError(error)) throw error;
+      if (!isRateLimitError(error) || attempt >= maxRetries) throw error;
+
+      const parsedDelay = parseRateLimitRetryMs(error?.message);
+      const jitter = Math.floor(Math.random() * 350);
+      const delayMs = parsedDelay || (baseDelayMs * (attempt + 1)) + jitter;
+      await sleep(delayMs);
+      attempt += 1;
+    }
+  }
+
+  throw lastError || new Error('No se pudo completar el chat con IA por límite de tasa.');
+}
+
+function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText, existingCodes = [] }) {
+  const compact = (value, max = 220) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const codebook = (Array.isArray(existingCodes) ? existingCodes : [])
+    .slice(0, 200)
+    .map((code, index) => {
+      const slug = String(code?.slug || '').trim();
+      const name = String(code?.name || '').trim();
+      if (!slug || !name) return '';
+      const description = compact(code?.description || '', 180);
+      return `${index + 1}) slug=${slug} | nombre=${name}${description ? ` | descripcion=${description}` : ''}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+
   return [
-    'Eres un agente de fragmentación semántica robusta.',
-    'Tu única tarea es segmentar comentarios en unidades mínimas de significado psicológico o narrativo.',
-    'Reglas obligatorias:',
-    '1) Divide solo por unidades reales de significado.',
-    '2) No resumas, no reinterpretes, no inventes texto.',
-    '3) No fusiones ideas distintas ni cortes ideas incompletas.',
-    '4) Conserva exactamente las palabras originales y su orden.',
-    '5) Si hay una sola idea, devuelve un solo fragmento.',
-    '6) Ignora saludos, emojis sin significado psicológico y ruido de relleno.',
-    '7) Debes calcular semantic_confidence (0..1) según claridad, completitud y coherencia.',
-    'Respuesta requerida: JSON válido puro, sin markdown, con esta forma exacta:',
-    '{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0}]}',
+    'Eres una analista cualitativa experta en fragmentación y codificación semántica.',
+    'Objetivo: leer un comentario completo, extraer solo pasajes con alta riqueza semántica y codificarlos usando EXCLUSIVAMENTE códigos existentes.',
+    'Prohibiciones absolutas: no crear códigos nuevos, no crear subcódigos, no usar placeholders, no usar matching mecánico de keywords.',
+    'Reglas:',
+    '1) Analiza el comentario completo antes de fragmentar.',
+    '2) Extrae 0, 1 o máximo 2 fragmentos por comentario, solo si tienen valor analítico real y riqueza semántica suficiente.',
+    '3) Acepta fragmentos con match_fuerte o match_probable contra códigos existentes. Rechaza solo sin_match o baja riqueza.',
+    '4) Cada fragmento debe mapearse al código existente más adecuado por significado.',
+    '5) Si ningún código encaja de forma razonable, devuelve fragments: [] y reason_if_rejected.',
+    '6) Conserva texto exacto original en fragment_text.',
+    '7) Incluye offsets reales start_char_index y end_char_index.',
+    '8) Devuelve semantic_confidence y assignment_confidence (0..1).',
+    '9) Incluye assignment_rationale breve y match_level en {match_fuerte,match_probable,sin_match}.',
+    '10) Si no fragmentas, incluir reason_if_rejected en {baja_riqueza_semantica,sin_codigo_razonable,comentario_redundante,texto_demasiado_vago}.',
+    'Respuesta requerida: JSON válido puro, sin markdown.',
+    '{"comment_id":"","reason_if_rejected":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":"","match_level":"match_probable"}]}',
     `comment_id: ${commentId}`,
     `source_id: ${sourceId}`,
     `texto_completo_del_comentario: ${commentText}`,
+    'CODEBOOK_EXISTENTE (usar solo estos slugs):',
+    codebook || '- sin códigos disponibles -',
+  ].join('\n');
+}
+
+function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] }) {
+  const compact = (value, max = 240) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const safeComments = (Array.isArray(comments) ? comments : [])
+    .map((item) => ({
+      comment_id: String(item?.comment_id || '').trim(),
+      source_id: String(item?.source_id || '').trim(),
+      text: String(item?.texto_completo_del_comentario || item?.text || '').trim(),
+    }))
+    .filter((item) => item.comment_id && item.source_id && item.text)
+    .slice(0, 50);
+
+  const codebook = (Array.isArray(existingCodes) ? existingCodes : [])
+    .slice(0, 220)
+    .map((code, index) => {
+      const slug = String(code?.slug || '').trim();
+      const name = String(code?.name || '').trim();
+      if (!slug || !name) return '';
+      const description = compact(code?.description || '', 150);
+      return `${index + 1}) slug=${slug} | nombre=${name}${description ? ` | descripcion=${description}` : ''}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const serializedComments = safeComments
+    .map((item, index) => `${index + 1}) comment_index=${index + 1} | comment_id=${item.comment_id} | source_id=${item.source_id} | text=${compact(item.text, 700)}`)
+    .join('\n');
+
+  return [
+    'Eres una analista cualitativa experta en fragmentación y codificación semántica.',
+    'Procesa un BATCH de comentarios y devuelve fragmentos de alto valor analítico codificados usando EXCLUSIVAMENTE códigos existentes.',
+    'Prohibido: crear códigos/subcódigos nuevos, placeholders, o clasificación mecánica por keywords.',
+    'Reglas:',
+    '1) Analiza cada comentario completo antes de fragmentar.',
+    '2) Extrae 0..2 fragmentos por comentario cuando exista riqueza semántica suficiente y encaje semántico razonable.',
+    '3) Ignora relleno, cortesía, ruido y texto ambiguo sin valor analítico.',
+    '4) Clasifica cada decisión por comentario: match_fuerte, match_probable, sin_match.',
+    '5) Crear fragmentos para match_fuerte y match_probable (si hay riqueza suficiente).',
+    '6) Rechazar solo por baja_riqueza_semantica, sin_codigo_razonable, comentario_redundante o texto_demasiado_vago.',
+    '7) Conserva texto exacto del fragmento y offsets reales.',
+    '8) assignment_confidence y semantic_confidence en rango 0..1.',
+    'Devuelve JSON válido puro (sin markdown) con estructura EXACTA:',
+    '{"items":[{"comment_index":1,"comment_id":"","reason_if_rejected":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":"","match_level":"match_probable"}]}]}',
+    'CODEBOOK_EXISTENTE (usar solo estos slugs):',
+    codebook || '- sin códigos disponibles -',
+    'COMENTARIOS_DEL_BATCH:',
+    serializedComments || '- sin comentarios válidos -',
   ].join('\n');
 }
 
 function extractJsonObjectFromText(rawText = '') {
   const text = String(rawText || '').trim();
   if (!text) return null;
+  const unwrapped = text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
   try {
-    return JSON.parse(text);
+    return JSON.parse(unwrapped);
   } catch {
+    const startObj = unwrapped.indexOf('{');
+    const endObj = unwrapped.lastIndexOf('}');
+    if (startObj >= 0 && endObj > startObj) {
+      try {
+        return JSON.parse(unwrapped.slice(startObj, endObj + 1));
+      } catch {
+        // continue
+      }
+    }
+
+    const startArr = unwrapped.indexOf('[');
+    const endArr = unwrapped.lastIndexOf(']');
+    if (startArr >= 0 && endArr > startArr) {
+      try {
+        return JSON.parse(unwrapped.slice(startArr, endArr + 1));
+      } catch {
+        return null;
+      }
+    }
+
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start >= 0 && end > start) {
       try {
         return JSON.parse(text.slice(start, end + 1));
       } catch {
+        const arrStart = text.indexOf('[');
+        const arrEnd = text.lastIndexOf(']');
+        if (arrStart >= 0 && arrEnd > arrStart) {
+          try {
+            return JSON.parse(text.slice(arrStart, arrEnd + 1));
+          } catch {
+            return null;
+          }
+        }
         return null;
       }
     }
@@ -2651,6 +2798,51 @@ function clampConfidence(value, fallback = 0.75) {
   if (parsed < 0) return 0;
   if (parsed > 1) return 1;
   return Number(parsed.toFixed(3));
+}
+
+function normalizeLookupKey(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function buildExistingCodeResolvers(existingCodes = []) {
+  const codeRows = Array.isArray(existingCodes) ? existingCodes : [];
+  const slugByNormalizedSlug = new Map();
+  const slugByNormalizedName = new Map();
+
+  for (const code of codeRows) {
+    const slug = String(code?.slug || '').trim();
+    const name = String(code?.name || '').trim();
+    if (!slug) continue;
+    const slugKey = normalizeLookupKey(slug);
+    if (slugKey) slugByNormalizedSlug.set(slugKey, slug);
+    const nameKey = normalizeLookupKey(name);
+    if (nameKey) slugByNormalizedName.set(nameKey, slug);
+  }
+
+  return {
+    allowedCodeSlugs: new Set(codeRows.map((code) => String(code?.slug || '').trim()).filter(Boolean)),
+    resolveAssignedCodeSlug(rawValue = '') {
+      const raw = String(rawValue || '').trim();
+      if (!raw) return '';
+      if (/^\d+$/.test(raw)) {
+        const idx = Number(raw) - 1;
+        if (idx >= 0 && idx < codeRows.length) {
+          const indexedSlug = String(codeRows[idx]?.slug || '').trim();
+          if (indexedSlug) return indexedSlug;
+        }
+      }
+      const normalized = normalizeLookupKey(raw);
+      return slugByNormalizedSlug.get(normalized)
+        || slugByNormalizedName.get(normalized)
+        || '';
+    },
+  };
 }
 
 function fallbackSemanticSplit(commentId, commentText = '') {
@@ -2700,15 +2892,38 @@ function fallbackSemanticSplit(commentId, commentText = '') {
   };
 }
 
-function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, commentText }) {
+function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, commentText, existingCodes = [] }) {
   const text = String(commentText || '');
   const incoming = Array.isArray(parsed?.fragments) ? parsed.fragments : [];
   const normalized = [];
   let cursor = 0;
 
+  const { allowedCodeSlugs, resolveAssignedCodeSlug } = buildExistingCodeResolvers(existingCodes);
+
   for (const item of incoming) {
     const fragmentText = String(item?.fragment_text || '').trim();
     if (!fragmentText) continue;
+
+    const rawAssignedCode = String(
+      item?.assigned_code_slug
+      || item?.assigned_code
+      || item?.code_slug
+      || item?.assigned_code_name
+      || item?.code_name
+      || '',
+    ).trim();
+    const mappedSlug = resolveAssignedCodeSlug(rawAssignedCode);
+    if (!mappedSlug || !allowedCodeSlugs.has(mappedSlug)) continue;
+
+    const matchLevelRaw = String(item?.match_level || item?.match || '').trim().toLowerCase();
+    const matchLevel = matchLevelRaw === 'match_fuerte'
+      ? 'match_fuerte'
+      : matchLevelRaw === 'match_probable'
+        ? 'match_probable'
+        : matchLevelRaw === 'sin_match'
+          ? 'sin_match'
+          : 'match_probable';
+    if (matchLevel === 'sin_match') continue;
 
     let start = Number(item?.start_char_index);
     let end = Number(item?.end_char_index);
@@ -2737,26 +2952,105 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
       start_char_index: Math.max(0, Math.floor(start)),
       end_char_index: Math.max(0, Math.floor(end)),
       semantic_confidence: clampConfidence(item?.semantic_confidence, 0.75),
+      assigned_code_slug: mappedSlug,
+      assignment_confidence: clampConfidence(item?.assignment_confidence, 0.75),
+      assignment_rationale: String(item?.assignment_rationale || '').trim().slice(0, 280),
+      match_level: matchLevel,
     });
   }
 
-  if (!normalized.length) {
-    const fallback = fallbackSemanticSplit(commentId, text);
-    return {
-      comment_id: String(commentId || ''),
-      fragments: fallback.fragments.map((fragment) => ({
-        ...fragment,
-        comment_id: String(commentId || ''),
-        source_id: String(sourceId || ''),
-      })),
-    };
-  }
+  const rejectReason = normalizeRejectReason(
+    parsed?.reason_if_rejected
+    || parsed?.discard_reason
+    || parsed?.reject_reason
+    || '',
+  );
 
   return {
     comment_id: String(commentId || ''),
     fragments: normalized,
+    reason_if_rejected: normalized.length ? '' : (rejectReason || 'sin_codigo_razonable'),
   };
 }
+
+function normalizeSemanticFragmentBatchOutput({ parsed, comments = [], existingCodes = [] }) {
+  const byComment = new Map(
+    (Array.isArray(comments) ? comments : [])
+      .map((item) => {
+        const commentId = String(item?.comment_id || '').trim();
+        const sourceId = String(item?.source_id || '').trim();
+        const commentText = String(item?.texto_completo_del_comentario || item?.text || '').trim();
+        if (!commentId || !sourceId || !commentText) return null;
+        return [commentId, { comment_id: commentId, source_id: sourceId, comment_text: commentText }];
+      })
+      .filter(Boolean),
+  );
+
+  const incomingItems = Array.isArray(parsed?.items)
+    ? parsed.items
+    : Array.isArray(parsed?.results)
+      ? parsed.results
+      : Array.isArray(parsed?.comments)
+        ? parsed.comments
+        : Array.isArray(parsed)
+          ? parsed
+          : [];
+
+  const normalizedItems = [];
+  const consumed = new Set();
+
+  for (const item of incomingItems) {
+    const commentId = String(item?.comment_id || item?.id || '').trim();
+    let source = byComment.get(commentId);
+    if (!source) {
+      const rawIndex = Number(item?.comment_index ?? item?.index);
+      const sourceByIndex = Number.isInteger(rawIndex) && rawIndex > 0
+        ? comments[rawIndex - 1]
+        : null;
+      if (sourceByIndex) {
+        const fallbackCommentId = String(sourceByIndex?.comment_id || '').trim();
+        source = byComment.get(fallbackCommentId) || null;
+      }
+    }
+    if (!source) continue;
+    consumed.add(source.comment_id);
+    normalizedItems.push(normalizeSemanticFragmentAgentOutput({
+      parsed: item,
+      commentId: source.comment_id,
+      sourceId: source.source_id,
+      commentText: source.comment_text,
+      existingCodes,
+    }));
+  }
+
+  for (const [commentId, source] of byComment.entries()) {
+    if (consumed.has(commentId)) continue;
+    normalizedItems.push({ comment_id: source.comment_id, fragments: [], reason_if_rejected: 'sin_codigo_razonable' });
+  }
+
+  const diagnostics = {
+    baja_riqueza_semantica: 0,
+    sin_codigo_razonable: 0,
+    comentario_redundante: 0,
+    texto_demasiado_vago: 0,
+  };
+  for (const item of normalizedItems) {
+    const fragments = Array.isArray(item?.fragments) ? item.fragments : [];
+    if (fragments.length > 0) continue;
+    const reason = String(item?.reason_if_rejected || '').trim();
+    if (reason && Object.prototype.hasOwnProperty.call(diagnostics, reason)) {
+      diagnostics[reason] += 1;
+    } else {
+      diagnostics.sin_codigo_razonable += 1;
+    }
+  }
+
+  return {
+    items: normalizedItems,
+    diagnostics,
+  };
+}
+
 
 const AI_PROVIDERS = new Set([
   'openai',
@@ -3245,6 +3539,86 @@ function safeNumber(input, fallback = 0) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function jaccardSimilarity(setA, setB) {
+  const a = setA instanceof Set ? setA : new Set();
+  const b = setB instanceof Set ? setB : new Set();
+  if (!a.size && !b.size) return 0;
+  let intersection = 0;
+  a.forEach((token) => {
+    if (b.has(token)) intersection += 1;
+  });
+  const union = new Set([...a, ...b]).size;
+  return union ? intersection / union : 0;
+}
+
+function buildSemanticTokenSet(fragments = []) {
+  const stopwords = new Set([
+    'pero', 'aunque', 'porque', 'para', 'esto', 'esta', 'este', 'muy', 'mas', 'solo', 'como', 'cuando', 'donde',
+    'sobre', 'entre', 'desde', 'hasta', 'tambien', 'también', 'entonces', 'igual', 'siempre', 'nunca', 'cada',
+    'tengo', 'tener', 'hace', 'hacer', 'dice', 'dijo', 'digan', 'siento', 'sentir', 'estar', 'ser', 'fue', 'era',
+    'han', 'hay', 'del', 'las', 'los', 'una', 'uno', 'unos', 'unas', 'que', 'con', 'sin', 'por', 'sus', 'nos', 'les',
+  ]);
+  const counts = new Map();
+  fragments.forEach((fragment) => {
+    tokenizeFragment(String(fragment.excerpt || ''))
+      .filter((token) => token.length >= 4 && !stopwords.has(token))
+      .forEach((token) => counts.set(token, Number(counts.get(token) || 0) + 1));
+  });
+  return new Set(
+    Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([token]) => token),
+  );
+}
+
+function buildAbstractCodeLabel(clusterItems = []) {
+  const combined = clusterItems.map((item) => String(item.excerpt || '')).join(' ').toLowerCase();
+  const tokenSet = buildSemanticTokenSet(clusterItems);
+  const hasAny = (tokens) => tokens.some((token) => tokenSet.has(token) || combined.includes(token));
+
+  const semanticRules = [
+    { test: () => hasAny(['necesita', 'utiliza', 'interesa', 'conveniencia']), label: 'interacción instrumental' },
+    { test: () => hasAny(['miedo', 'temor', 'ansiedad', 'inseguridad']), label: 'ansiedad vincular' },
+    { test: () => hasAny(['distancia', 'frio', 'frío', 'indiferencia', 'desinteres']), label: 'distanciamiento afectivo' },
+    { test: () => hasAny(['discusion', 'pelea', 'conflicto', 'tension']), label: 'escalada de conflicto' },
+    { test: () => hasAny(['espera', 'demora', 'tarda', 'responde']), label: 'desfase comunicacional' },
+    { test: () => hasAny(['control', 'celos', 'vigilancia', 'prohibe']), label: 'dinámica de control' },
+    { test: () => hasAny(['culpa', 'culpable', 'responsable', 'reproche']), label: 'carga de culpa relacional' },
+    { test: () => hasAny(['cansancio', 'agotamiento', 'desgaste', 'fatiga']), label: 'desgaste emocional sostenido' },
+    { test: () => hasAny(['apoyo', 'escucha', 'contencion', 'acompaña']), label: 'búsqueda de sostén emocional' },
+  ];
+
+  const matched = semanticRules.find((rule) => rule.test());
+  if (matched) return matched.label;
+
+  const topTokens = Array.from(tokenSet).slice(0, 2);
+  if (topTokens.length === 2) return `patrón relacional ${topTokens[0]}-${topTokens[1]}`;
+  if (topTokens.length === 1) return `patrón relacional ${topTokens[0]}`;
+  return 'patrón relacional emergente';
+}
+
+function isLiteralLikeCodeName(name, fragments = []) {
+  const normalizedName = String(name || '').toLowerCase().trim();
+  if (!normalizedName) return true;
+  if (normalizedName.length > 48) return true;
+  if (normalizedName.split(/\s+/).filter(Boolean).length > 6) return true;
+  if (/[,.;:!?"'()]/.test(normalizedName)) return true;
+
+  const nameTokens = new Set(tokenizeFragment(normalizedName));
+  if (!nameTokens.size) return true;
+
+  return fragments.some((fragment) => {
+    const excerpt = String(fragment.excerpt || '').toLowerCase().trim();
+    if (!excerpt) return false;
+    if (excerpt.includes(normalizedName)) return true;
+    const fragmentTokens = new Set(tokenizeFragment(excerpt));
+    const overlap = [...nameTokens].filter((token) => fragmentTokens.has(token)).length;
+    const ratio = overlap / Math.max(1, nameTokens.size);
+    return ratio >= 0.8;
+  });
+}
+
 function rankAndSelectFragmentsForCoding(fragments = []) {
   const analyzed = (Array.isArray(fragments) ? fragments : [])
     .map((fragment) => {
@@ -3313,162 +3687,616 @@ function rankAndSelectFragmentsForCoding(fragments = []) {
 }
 
 function buildCompressedCodesFromSelectedFragments({ selectedFragments = [], existingCodes = [] }) {
-  const tokensToIgnore = new Set(['pero', 'aunque', 'porque', 'para', 'esto', 'esta', 'este', 'muy', 'mas', 'solo', 'como', 'cuando']);
-  const codeBySlug = new Map();
-  const semanticGroups = new Map();
-  const sourceSetsBySlug = new Map();
-
-  const existing = Array.isArray(existingCodes) ? existingCodes : [];
-  const existingBySlug = new Map(existing.map((code) => [String(code.slug), code]));
-
-  const buildGroupKey = (fragment) => {
-    const text = String(fragment.excerpt || '').toLowerCase();
-    const tokens = tokenizeFragment(text).filter((token) => !tokensToIgnore.has(token));
-    const anchor = tokens.slice(0, 3).join('-') || String(fragment.semantic_hash || '').slice(0, 8) || `cluster-${Math.floor(Math.random() * 1000)}`;
-    return anchor;
+  const cfg = {
+    minTextLength: 18,
+    minTokenCount: 3,
+    minSemanticQuality: 0.32,
+    assignThreshold: 0.24,
+    mergeThreshold: 0.34,
+    maxClusterSize: 36,
+    minClusterSize: 3,
+    maxDepth: 3,
+    minSplitGain: 0.07,
+    minCoherence: 0.29,
+    maxClusters: 60,
   };
 
-  selectedFragments.forEach((fragment) => {
-    const key = buildGroupKey(fragment);
-    if (!semanticGroups.has(key)) semanticGroups.set(key, []);
-    semanticGroups.get(key).push(fragment);
+  const raw = (Array.isArray(selectedFragments) ? selectedFragments : [])
+    .map((fragment, index) => {
+      const excerpt = String(fragment.excerpt || '').trim();
+      const tokens = tokenizeFragment(excerpt);
+      const semanticQuality = clamp(
+        0,
+        (0.34 * clamp(0, safeNumber(fragment.density_score, 0.4), 1))
+        + (0.3 * clamp(0, safeNumber(fragment.extraction_quality_score, 0.4), 1))
+        + (0.22 * clamp(0, safeNumber(fragment.novelty_score, 0.4), 1))
+        + (0.14 * (Math.min(30, tokens.length) / 30)),
+        1,
+      );
+      return {
+        ...fragment,
+        id: String(fragment.id || `comment_fragment_${Date.now()}_${index}`),
+        excerpt,
+        tokens,
+        tokenSet: buildSemanticTokenSet([{ excerpt }]),
+        semantic_quality: Number(semanticQuality.toFixed(4)),
+      };
+    })
+    .filter((fragment) => (
+      fragment.excerpt.length >= cfg.minTextLength
+      && fragment.tokens.length >= cfg.minTokenCount
+      && fragment.semantic_quality >= cfg.minSemanticQuality
+    ));
+
+  const bySemanticFingerprint = new Map();
+  raw.forEach((fragment) => {
+    const hash = String(fragment.semantic_hash || '');
+    const key = hash || Array.from(fragment.tokenSet).sort().slice(0, 6).join('|');
+    if (!key) return;
+    const prev = bySemanticFingerprint.get(key);
+    if (!prev || Number(fragment.semantic_quality || 0) > Number(prev.semantic_quality || 0)) {
+      bySemanticFingerprint.set(key, fragment);
+    }
   });
+  const fragments = Array.from(bySemanticFingerprint.values());
 
-  let clusters = Array.from(semanticGroups.entries()).map(([key, items]) => ({
-    key,
-    items,
-    strength: items.reduce((acc, item) => acc + Number(item.ai_candidate_score || 0), 0),
-  }));
+  const avgPairwise = (items = []) => {
+    if (items.length <= 1) return 1;
+    let pairs = 0;
+    let acc = 0;
+    for (let i = 0; i < items.length; i += 1) {
+      for (let j = i + 1; j < items.length; j += 1) {
+        acc += jaccardSimilarity(items[i].tokenSet, items[j].tokenSet);
+        pairs += 1;
+      }
+    }
+    return pairs ? acc / pairs : 0;
+  };
 
-  clusters.sort((a, b) => b.strength - a.strength);
+  const centroidTokenSet = (items = []) => buildSemanticTokenSet(items.map((item) => ({ excerpt: item.excerpt })));
 
-  const targetCodes = clamp(25, clusters.length, 30);
-  const hardMaxCodes = 40;
-  if (clusters.length > hardMaxCodes) {
-    clusters = clusters.slice(0, hardMaxCodes);
-  }
+  const scoreInterpretability = (items = []) => {
+    if (!items.length) return 0;
+    const counts = new Map();
+    items.forEach((item) => {
+      item.tokenSet.forEach((token) => counts.set(token, Number(counts.get(token) || 0) + 1));
+    });
+    const top = Array.from(counts.values()).sort((a, b) => b - a).slice(0, 3);
+    const concentration = top.reduce((acc, value) => acc + value, 0) / Math.max(1, items.length * 3);
+    return clamp(0, concentration, 1);
+  };
 
-  const compressed = clusters.slice(0, targetCodes).map((cluster, index) => {
-    const representative = cluster.items[0] || {};
-    const text = String(representative.excerpt || '').trim();
-    const label = text.split(/[.!?\n]/)[0].trim().slice(0, 72) || `Código ${index + 1}`;
+  const buildInitialClusters = (items = []) => {
+    const clusters = [];
+    items.forEach((item) => {
+      let best = null;
+      let bestScore = 0;
+      clusters.forEach((cluster) => {
+        const sim = jaccardSimilarity(item.tokenSet, cluster.centroid);
+        if (sim > bestScore) {
+          bestScore = sim;
+          best = cluster;
+        }
+      });
+      if (best && bestScore >= cfg.assignThreshold) {
+        best.items.push(item);
+        best.centroid = centroidTokenSet(best.items);
+      } else {
+        clusters.push({
+          id: `cluster_seed_${clusters.length + 1}`,
+          items: [item],
+          centroid: centroidTokenSet([item]),
+          parent_id: null,
+          depth: 0,
+        });
+      }
+    });
+    return clusters;
+  };
 
-    // Reutilización disciplinada: primero intentar código existente más cercano.
-    let chosenCode = null;
+  const refineAssignments = (seedClusters = []) => {
+    if (!seedClusters.length) return [];
+    let clusters = seedClusters.map((cluster) => ({ ...cluster, items: [...cluster.items] }));
+    for (let iter = 0; iter < 2; iter += 1) {
+      const allItems = clusters.flatMap((cluster) => cluster.items);
+      const emptied = clusters.map((cluster) => ({ ...cluster, items: [] }));
+      allItems.forEach((item) => {
+        let bestIndex = 0;
+        let bestScore = -1;
+        emptied.forEach((cluster, idx) => {
+          const sim = jaccardSimilarity(item.tokenSet, cluster.centroid);
+          if (sim > bestScore) {
+            bestScore = sim;
+            bestIndex = idx;
+          }
+        });
+        emptied[bestIndex].items.push(item);
+      });
+      clusters = emptied
+        .filter((cluster) => cluster.items.length)
+        .map((cluster) => ({ ...cluster, centroid: centroidTokenSet(cluster.items) }));
+    }
+    return clusters;
+  };
+
+  const splitClusterRecursively = (cluster, depth = 0) => {
+    const coherence = avgPairwise(cluster.items);
+    const canSplit = depth < cfg.maxDepth && cluster.items.length >= (cfg.minClusterSize * 2);
+    const shouldSplit = canSplit && (cluster.items.length > cfg.maxClusterSize || coherence < cfg.minCoherence);
+    if (!shouldSplit) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroidTokenSet(cluster.items) }];
+    }
+
+    let seedA = cluster.items[0];
+    let seedB = cluster.items[cluster.items.length - 1];
+    let minSim = 1;
+    for (let i = 0; i < cluster.items.length; i += 1) {
+      for (let j = i + 1; j < cluster.items.length; j += 1) {
+        const sim = jaccardSimilarity(cluster.items[i].tokenSet, cluster.items[j].tokenSet);
+        if (sim < minSim) {
+          minSim = sim;
+          seedA = cluster.items[i];
+          seedB = cluster.items[j];
+        }
+      }
+    }
+
+    const left = [];
+    const right = [];
+    cluster.items.forEach((item) => {
+      const l = jaccardSimilarity(item.tokenSet, seedA.tokenSet);
+      const r = jaccardSimilarity(item.tokenSet, seedB.tokenSet);
+      if (l >= r) left.push(item);
+      else right.push(item);
+    });
+
+    if (left.length < cfg.minClusterSize || right.length < cfg.minClusterSize) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroidTokenSet(cluster.items) }];
+    }
+
+    const before = coherence;
+    const after = ((avgPairwise(left) * left.length) + (avgPairwise(right) * right.length)) / Math.max(1, cluster.items.length);
+    if ((after - before) < cfg.minSplitGain) {
+      return [{ ...cluster, depth, coherence: Number(coherence.toFixed(4)), centroid: centroidTokenSet(cluster.items) }];
+    }
+
+    return [
+      ...splitClusterRecursively({
+        id: `${cluster.id}.a`,
+        items: left,
+        centroid: centroidTokenSet(left),
+        parent_id: cluster.id,
+      }, depth + 1),
+      ...splitClusterRecursively({
+        id: `${cluster.id}.b`,
+        items: right,
+        centroid: centroidTokenSet(right),
+        parent_id: cluster.id,
+      }, depth + 1),
+    ];
+  };
+
+  const mergeTinyClusters = (clusters = []) => {
+    const pool = clusters.map((cluster) => ({ ...cluster, items: [...cluster.items], centroid: centroidTokenSet(cluster.items) }));
+    const stable = [];
+
+    while (pool.length) {
+      const cluster = pool.shift();
+      if (!cluster) break;
+      if (cluster.items.length >= cfg.minClusterSize) {
+        stable.push(cluster);
+        continue;
+      }
+
+      let bestTarget = null;
+      let bestScore = 0;
+      [...pool, ...stable].forEach((candidate) => {
+        const sim = jaccardSimilarity(cluster.centroid, candidate.centroid);
+        if (sim > bestScore) {
+          bestScore = sim;
+          bestTarget = candidate;
+        }
+      });
+
+      if (bestTarget && bestScore >= cfg.mergeThreshold) {
+        bestTarget.items.push(...cluster.items);
+        bestTarget.centroid = centroidTokenSet(bestTarget.items);
+      } else {
+        stable.push(cluster);
+      }
+    }
+
+    return stable;
+  };
+
+  const clustersSeeded = refineAssignments(buildInitialClusters(fragments));
+  const clustersSplit = clustersSeeded.flatMap((cluster) => splitClusterRecursively(cluster, 0));
+  let clusters = mergeTinyClusters(clustersSplit)
+    .filter((cluster) => cluster.items.length >= cfg.minClusterSize)
+    .slice(0, cfg.maxClusters);
+
+  const nearestExistingCode = (items = []) => {
+    const clusterSet = centroidTokenSet(items);
+    let bestCode = null;
     let bestScore = 0;
-    existing.forEach((code) => {
-      const score = (() => {
-        const fragTokens = new Set(tokenizeFragment(text));
-        const codeTokens = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
-        const inter = [...fragTokens].filter((t) => codeTokens.has(t)).length;
-        const union = new Set([...fragTokens, ...codeTokens]).size;
-        return union ? inter / union : 0;
-      })();
+    (Array.isArray(existingCodes) ? existingCodes : []).forEach((code) => {
+      const codeSet = new Set(tokenizeFragment(`${code.name || ''} ${code.description || ''}`));
+      const score = jaccardSimilarity(clusterSet, codeSet);
       if (score > bestScore) {
         bestScore = score;
-        chosenCode = code;
+        bestCode = code;
       }
     });
+    return {
+      code: bestCode ? { slug: String(bestCode.slug || ''), name: String(bestCode.name || '') } : null,
+      score: Number(bestScore.toFixed(4)),
+    };
+  };
 
-    const shouldReuse = Boolean(chosenCode) && bestScore >= 0.26;
-    let slug;
-    let name;
-    let decisionType;
-    if (shouldReuse) {
-      slug = String(chosenCode.slug);
-      name = String(chosenCode.name || chosenCode.slug || 'Código');
-      decisionType = 'reutilizacion';
-    } else {
-      const baseSlug = slugify(label).slice(0, 64) || `code-${Date.now()}-${index}`;
-      let candidate = baseSlug;
-      let suffix = 1;
-      while (codeBySlug.has(candidate) || existingBySlug.has(candidate)) {
-        suffix += 1;
-        candidate = `${baseSlug}-${suffix}`;
-      }
-      slug = candidate;
-      name = label;
-      decisionType = 'nuevo';
-    }
+  const semanticClusters = clusters.map((cluster, index) => {
+    const coherence = Number(avgPairwise(cluster.items).toFixed(4));
+    const centroid = centroidTokenSet(cluster.items);
+    const similarityToCentroid = cluster.items.map((item) => jaccardSimilarity(item.tokenSet, centroid));
+    const density = Number((similarityToCentroid.reduce((acc, value) => acc + value, 0) / Math.max(1, similarityToCentroid.length)).toFixed(4));
+    const interpretability = Number(scoreInterpretability(cluster.items).toFixed(4));
 
-    if (!codeBySlug.has(slug)) {
-      codeBySlug.set(slug, {
-        suggested_code_slug: slug,
-        suggested_code_name: name,
-        decision_type: decisionType,
-        cluster_strength: Number(cluster.strength.toFixed(4)),
-        fragments: [],
-      });
-      sourceSetsBySlug.set(slug, new Set());
-    }
-
-    const bucket = codeBySlug.get(slug);
-    cluster.items.forEach((item) => {
-      bucket.fragments.push(item);
-      const sourceKey = `${item.source_video_id || item.video_id || ''}|${item.source_run_id || ''}|${item.source_comment_id || ''}`;
-      if (sourceKey !== '||') sourceSetsBySlug.get(slug).add(sourceKey);
+    let nearestNeighborSimilarity = 0;
+    clusters.forEach((candidate) => {
+      if (candidate.id === cluster.id) return;
+      nearestNeighborSimilarity = Math.max(nearestNeighborSimilarity, jaccardSimilarity(centroid, candidate.centroid));
     });
+    const separation = Number((1 - nearestNeighborSimilarity).toFixed(4));
 
-    return bucket;
+    const quality = clamp(0, (0.36 * coherence) + (0.27 * density) + (0.22 * separation) + (0.15 * interpretability), 1);
+    let clusterState = 'valido';
+    if (quality < 0.56 || coherence < cfg.minCoherence) clusterState = 'debil';
+    if (quality < 0.44 || coherence < 0.2) clusterState = 'ruido';
+
+    let patternName = buildAbstractCodeLabel(cluster.items);
+    if (isLiteralLikeCodeName(patternName, cluster.items)) patternName = `patrón semántico ${index + 1}`;
+
+    const close = nearestExistingCode(cluster.items);
+    let suggestedDecision = 'crear';
+    if (clusterState === 'ruido') suggestedDecision = 'ignorar';
+    else if (close.code && close.score >= 0.4) suggestedDecision = 'reutilizar';
+    else if (cluster.items.length > cfg.maxClusterSize * 0.75 && coherence < 0.48) suggestedDecision = 'dividir';
+
+    const sourceSpread = new Set(cluster.items.map((item) => `${item.source_video_id || ''}|${item.source_comment_id || item.id}`)).size;
+
+    return {
+      id: `semantic_cluster_${index + 1}`,
+      parent_id: cluster.parent_id || null,
+      depth: Number(cluster.depth || 0),
+      size: cluster.items.length,
+      coherence,
+      density,
+      separation,
+      interpretability,
+      quality_score: Number(quality.toFixed(4)),
+      cluster_state: clusterState,
+      suggested_pattern_name: patternName,
+      suggested_code_type: (/(miedo|ansiedad|culpa|emocional|afectivo)/i.test(patternName) ? 'emocional' : /(vincul|comunic|interacci|relacional)/i.test(patternName) ? 'relacional' : 'emergente'),
+      suggested_decision: suggestedDecision,
+      confidence: Number(clamp(0.1, (0.55 * quality) + (0.25 * close.score) + (0.2 * Math.min(1, cluster.items.length / 18)), 0.95).toFixed(4)),
+      source_dispersion: Number((sourceSpread / Math.max(1, cluster.items.length)).toFixed(4)),
+      representative_fragments: cluster.items
+        .map((item) => ({
+          fragment_id: String(item.id || ''),
+          excerpt: String(item.excerpt || ''),
+          centroid_similarity: jaccardSimilarity(item.tokenSet, centroid),
+        }))
+        .sort((a, b) => b.centroid_similarity - a.centroid_similarity)
+        .slice(0, 4),
+      fragment_ids: cluster.items.map((item) => String(item.id || '')),
+      similar_existing_code: close.code,
+      existing_similarity_score: close.score,
+      can_split: cluster.items.length >= (cfg.minClusterSize * 2),
+      can_merge: Boolean(cluster.parent_id),
+    };
   });
 
-  const proposals = [];
-  let proposalCounter = 0;
+  const usefulClusters = semanticClusters
+    .filter((cluster) => cluster.cluster_state !== 'ruido' || cluster.size >= cfg.minClusterSize + 1)
+    .sort((a, b) => Number(b.quality_score || 0) - Number(a.quality_score || 0));
 
-  codeBySlug.forEach((bucket, slug) => {
-    const fragmentsForCode = Array.isArray(bucket.fragments) ? bucket.fragments : [];
-    const codeFrequency = fragmentsForCode.length;
-    const sourceDispersion = Number(sourceSetsBySlug.get(slug)?.size || 0);
-    const consistency = (() => {
-      if (fragmentsForCode.length <= 1) return 0.82;
-      const avgRedundancy = fragmentsForCode.reduce((acc, f) => acc + Number(f.redundancy_score || 0), 0) / fragmentsForCode.length;
-      return clamp(0, 1 - avgRedundancy, 1);
-    })();
-    const intensity = fragmentsForCode.reduce((acc, f) => acc + Number(f.density_score || 0), 0) / Math.max(1, fragmentsForCode.length);
-    const scoreIa = clamp(0, (0.35 * clamp(0, codeFrequency / Math.max(1, selectedFragments.length), 1)) + (0.3 * clamp(0, sourceDispersion / Math.max(1, selectedFragments.length), 1)) + (0.2 * consistency) + (0.15 * intensity), 1);
-
-    fragmentsForCode.forEach((fragment) => {
-      proposalCounter += 1;
-      proposals.push({
-        id: `code_proposal_ai_${Date.now()}_${proposalCounter}`,
-        fragment_id: String(fragment.id || ''),
-        fragment_excerpt: String(fragment.excerpt || ''),
-        suggested_code_slug: slug,
-        suggested_code_name: bucket.suggested_code_name,
-        decision_type: bucket.decision_type,
-        confidence: Number(clamp(0.05, (Number(fragment.ai_candidate_score || 0) * 0.65) + (scoreIa * 0.35), 0.99).toFixed(2)),
-        justification: bucket.decision_type === 'reutilizacion'
-          ? `Compresión semántica: fragmento asignado a código existente con narrativa compartida.`
-          : 'Compresión semántica: no hubo código existente suficientemente cercano; se propone núcleo nuevo.',
-        alternatives: [],
-        status: 'propuesto',
-        created_at: nowIso(),
-        updated_at: nowIso(),
-        review_log: [],
-        parent_candidate_slug: null,
-        ai_code_score: Number((scoreIa * 100).toFixed(2)),
-        traceability: {
-          source_comment_id: fragment.source_comment_id || fragment.comment_id || null,
-          source_video_id: fragment.source_video_id || fragment.video_id || null,
-          source_run_id: fragment.source_run_id || null,
-          semantic_hash: fragment.semantic_hash || null,
-        },
-      });
-    });
-  });
-
-  const generatedCodes = Array.from(codeBySlug.values()).map((bucket) => ({
-    suggested_code_slug: bucket.suggested_code_slug,
-    suggested_code_name: bucket.suggested_code_name,
-    decision_type: bucket.decision_type,
-    fragments_count: Array.isArray(bucket.fragments) ? bucket.fragments.length : 0,
-  }));
+  const noiseClusters = semanticClusters.filter((cluster) => cluster.cluster_state === 'ruido');
 
   return {
-    proposals,
-    generatedCodes,
+    proposals: [],
+    generatedCodes: [],
+    semanticClusters: usefulClusters,
+    noiseClusters,
+    meta: {
+      assistant_mode: true,
+      auto_code_generation: false,
+      analyzed_fragments_count: fragments.length,
+      clusters_count: usefulClusters.length,
+      noise_clusters_count: noiseClusters.length,
+      generated_at: nowIso(),
+    },
   };
 }
+
+
+function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes = 40, stage = 'final' }) {
+  const compactText = (value, max = 180) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
+  const normalizedComments = (Array.isArray(comments) ? comments : [])
+    .map((item, index) => {
+      const id = String(item.id || item.comment_id || item.source_comment_id || `comment_${index + 1}`);
+      const text = String(item.text || item.comment_text || item.body || item.content || '').trim();
+      return { id, text };
+    })
+    .filter((item) => item.text);
+
+  const commentsBlock = normalizedComments
+    .map((item, index) => `${index + 1}) ${compactText(item.text, 180)}`)
+    .join('\n');
+
+  const stageConfig = String(stage || 'final').toLowerCase() === 'chunk'
+    ? {
+      min: Math.max(4, Number(minCodes) || 6),
+      max: Math.max(6, Number(maxCodes) || 12),
+      target: 'Devuelve candidatos compactos: 6-12 códigos por bloque.',
+    }
+    : {
+      min: Math.max(12, Number(minCodes) || 20),
+      max: Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40),
+      target: 'Taxonomía final: 20-40 códigos usando saturación semántica.',
+    };
+
+  return `Tarea: crear taxonomía conceptual jerárquica desde comentarios completos.
+No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
+Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
+Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin números secuenciales.
+Prohibido en títulos: código, cluster, conceptual, tema, grupo, placeholders o prefijos vacíos.
+El título debe comprimir la narrativa dominante (problema/emoción/conducta), no reciclar keywords sueltas.
+Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
+Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
+Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
+Regla: los subclusters deben ser conceptuales y no redundantes.
+Formato de salida: JSON válido, sin texto adicional.
+{
+  "proposals": [
+    {
+      "suggested_code_name": "string",
+      "description": "string",
+      "naming_rationale": "string",
+      "coherence_level": "alta|media|baja",
+      "pattern_size": "bajo|medio|alto",
+      "recommendation": "crear|fusionar|descartar",
+      "subclusters": [
+        {
+          "suggested_subcode_name": "string",
+          "description": "string",
+          "naming_rationale": "string",
+          "coherence_level": "alta|media|baja",
+          "pattern_size": "bajo|medio|alto",
+          "recommendation": "crear|fusionar|descartar"
+        }
+      ]
+    }
+  ]
+}
+
+COMENTARIOS A ANALIZAR (unidad: comentario completo):
+${commentsBlock}`;
+}
+
+function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, maxCodes = 40 }) {
+  const compactText = (value, max = 180) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
+  const candidateLines = (Array.isArray(candidates) ? candidates : [])
+    .slice(0, 120)
+    .map((item, index) => `${index + 1}) ${compactText(item.suggested_code_name, 90)} :: ${compactText(item.description, 140)}`)
+    .join('\n');
+
+  return `Consolida esta lista de candidatos en taxonomía final sin trazabilidad.
+Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, maximizando cobertura semántica y deteniéndose por saturación.
+Fusiona redundancias, descarta ruido y conserva solo nombres conceptuales reutilizables.
+Regla de naming: títulos de 2-5 palabras, sin números secuenciales ni términos genéricos (código/cluster/conceptual/tema/grupo).
+Incluye subcódigos útiles y marca recommendation.
+Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
+
+CANDIDATOS:
+${candidateLines}`;
+}
+
+function flattenSubclustersAsCodeProposals(proposals = []) {
+  const normalized = Array.isArray(proposals) ? proposals : [];
+  const extra = [];
+  normalized.forEach((proposal) => {
+    const parentName = String(proposal?.suggested_code_name || proposal?.cluster_name || '').trim();
+    const subclusters = Array.isArray(proposal?.subclusters) ? proposal.subclusters : [];
+    subclusters.forEach((sub) => {
+      const subName = String(sub?.suggested_subcode_name || sub?.cluster_name || '').trim();
+      if (!subName) return;
+      extra.push({
+        cluster_name: String(sub.cluster_name || subName || '').trim(),
+        suggested_code_name: subName,
+        description: String(sub.description || `Subpatrón derivado de ${parentName || 'cluster principal'}.`).trim(),
+        naming_rationale: String(sub.naming_rationale || 'Subcluster convertido en código independiente por utilidad conceptual.').trim(),
+        coherence_level: String(sub.coherence_level || proposal.coherence_level || 'media').toLowerCase(),
+        pattern_size: String(sub.pattern_size || 'medio').toLowerCase(),
+        recommendation: String(sub.recommendation || 'crear').toLowerCase(),
+        saturation_score: Number.isFinite(Number(sub.saturation_score)) ? Number(sub.saturation_score) : null,
+        subclusters: [],
+        generated_without_traceability: true,
+        conceptual_taxonomy_stage: 'discovery',
+      });
+    });
+  });
+  return [...normalized, ...extra];
+}
+
+function dedupeCodeProposalsByName(proposals = [], maxItems = 60) {
+  const normalized = Array.isArray(proposals) ? proposals : [];
+  const keyOf = (name) => String(name || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const map = new Map();
+  normalized.forEach((item) => {
+    const key = keyOf(item?.suggested_code_name || item?.cluster_name);
+    if (!key) return;
+    if (!map.has(key)) {
+      map.set(key, item);
+      return;
+    }
+    const current = map.get(key);
+    const currentSubCount = Array.isArray(current?.subclusters) ? current.subclusters.length : 0;
+    const nextSubCount = Array.isArray(item?.subclusters) ? item.subclusters.length : 0;
+    if (nextSubCount > currentSubCount) map.set(key, item);
+  });
+
+  return Array.from(map.values()).slice(0, Math.max(1, maxItems));
+}
+
+function chunkCommentsForGeneration(comments = [], chunkSize = 120) {
+  const normalized = Array.isArray(comments) ? comments : [];
+  const size = Math.max(20, Number(chunkSize) || 120);
+  const chunks = [];
+  for (let i = 0; i < normalized.length; i += size) {
+    chunks.push(normalized.slice(i, i + size));
+  }
+  return chunks;
+}
+
+function normalizeCodeGenerationAgentOutput(parsed) {
+  const bannedTitleTokens = new Set([
+    'codigo', 'cluster', 'conceptual', 'tema', 'grupo', 'placeholder',
+    'patron', 'relacional', 'subcluster', 'subcodigo', 'generic',
+  ]);
+
+  const conceptualRules = [
+    { test: /(abandono|reemplaz|dejar|dejo|dejó|perderlo|perderla|perder)/, label: 'miedo a ser reemplazado' },
+    { test: /(ignora|ignorado|indiferenc|desinteres|distancia|alejam)/, label: 'percepción de desinterés' },
+    { test: /(culpa|culpable|reproche|arrepent)/, label: 'culpa por ruptura' },
+    { test: /(ansiedad|angustia|temor|miedo|inseguridad)/, label: 'ansiedad vincular persistente' },
+    { test: /(validac|atencion|atención|escucha|apoyo|afecto)/, label: 'búsqueda de validación afectiva' },
+    { test: /(reconcili|volver|retomar|recuperar)/, label: 'deseo de reconciliación' },
+    { test: /(celos|compar|nueva pareja|tercera persona)/, label: 'comparación con nueva pareja' },
+    { test: /(intermitente|aparece|desaparece|inconsistente)/, label: 'apego intermitente' },
+    { test: /(espera|esperanza|aun puede|aún puede|todavia|todavía)/, label: 'esperanza unilateral' },
+    { test: /(control|manipul|presion|presión|exigencia)/, label: 'dinámica de control afectivo' },
+  ];
+
+  const formatAsTitle = (value) => String(value || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+    .join(' ');
+
+  const looksGeneric = (value) => {
+    const normalized = String(value || '').toLowerCase().trim();
+    if (!normalized) return true;
+    if (/\b\d+\b/.test(normalized)) return true;
+    const tokens = normalized.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2 || tokens.length > 5) return true;
+    const useful = tokens.filter((token) => !bannedTitleTokens.has(token));
+    return useful.length < 2;
+  };
+
+  const inferConceptualFallbackName = (description, fallback = 'dinámica emocional emergente') => {
+    const source = String(description || '').toLowerCase();
+    if (!source) return formatAsTitle(fallback);
+
+    const matched = conceptualRules.find((rule) => rule.test.test(source));
+    if (matched) return formatAsTitle(matched.label);
+
+    const tokens = source
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((token) => token.length >= 4 && !bannedTitleTokens.has(token));
+    const unique = Array.from(new Set(tokens));
+    const compressed = unique.slice(0, 3).join(' ').trim();
+    if (!compressed || compressed.split(/\s+/).length < 2) return formatAsTitle(fallback);
+    return formatAsTitle(compressed);
+  };
+
+  const normalizeConceptualName = (raw, description, fallback = 'dinámica emocional emergente') => {
+    let value = String(raw || '').toLowerCase().trim();
+    value = value
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[_-]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/[^a-z0-9\s]/g, '')
+      .trim();
+
+    value = value
+      .replace(/^patron\s+relacional\s*/g, '')
+      .replace(/^patron\s+conceptual\s*/g, '')
+      .replace(/^cluster\s+conceptual\s*/g, '')
+      .replace(/^subcluster\s+conceptual\s*/g, '')
+      .replace(/^codigo\s+conceptual\s*/g, '')
+      .replace(/^subcodigo\s+conceptual\s*/g, '')
+      .replace(/^patron\s*/g, '')
+      .trim();
+
+    const compact = value
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((token) => !bannedTitleTokens.has(token))
+      .slice(0, 5)
+      .join(' ')
+      .trim();
+
+    if (looksGeneric(compact)) return inferConceptualFallbackName(description, fallback);
+    return formatAsTitle(compact);
+  };
+
+  const inferNameRationale = (name, description) => {
+    const n = String(name || '').toLowerCase();
+    const d = String(description || '').toLowerCase();
+    if (/miedo|ansiedad|abandono|inseguridad/.test(n + d)) {
+      return 'El nombre resume un patrón emocional dominante y reutilizable del cluster.';
+    }
+    if (/desinteres|indiferencia|alejamiento|distancia/.test(n + d)) {
+      return 'El nombre abstrae la interpretación recurrente de pérdida o distancia en el vínculo.';
+    }
+    if (/validacion|apoyo|seguridad|reconex/.test(n + d)) {
+      return 'El nombre representa una necesidad psicológica compartida entre múltiples comentarios.';
+    }
+    return 'El nombre condensa el significado dominante del cluster en una etiqueta conceptual reutilizable.';
+  };
+
+  const proposals = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
+  return proposals.slice(0, 40).map((proposal, index) => ({
+    cluster_name: normalizeConceptualName(proposal.cluster_name || proposal.suggested_code_name, proposal.description, `dinámica conceptual ${index + 1}`),
+    suggested_code_name: normalizeConceptualName(proposal.suggested_code_name || proposal.cluster_name, proposal.description, `patrón narrativo ${index + 1}`),
+    description: String(proposal.description || 'Patrón conceptual propuesto sin trazabilidad inicial.').trim(),
+    naming_rationale: inferNameRationale(proposal.suggested_code_name || proposal.cluster_name, proposal.description),
+    coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
+    pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
+    recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
+    subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub, subIndex) => ({
+      cluster_name: normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, `subpatrón ${subIndex + 1}`),
+      suggested_subcode_name: normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, `subnarrativa ${subIndex + 1}`),
+      description: String(sub.description || 'Subpatrón conceptual propuesto sin trazabilidad inicial.').trim(),
+      naming_rationale: inferNameRationale(sub.suggested_subcode_name || sub.cluster_name, sub.description),
+      coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
+      pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
+      recommendation: ['crear', 'fusionar', 'descartar'].includes(String(sub.recommendation || '').toLowerCase()) ? String(sub.recommendation).toLowerCase() : 'crear',
+    })),
+    generated_without_traceability: true,
+    conceptual_taxonomy_stage: 'discovery',
+  }));
+}
+
 
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
@@ -5220,13 +6048,37 @@ const server = http.createServer(async (req, res) => {
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
 
       const body = await readBody(req);
+      const batchComments = Array.isArray(body?.comments)
+        ? body.comments
+          .map((item) => ({
+            comment_id: String(item?.comment_id || '').trim(),
+            source_id: String(item?.source_id || '').trim(),
+            texto_completo_del_comentario: String(item?.texto_completo_del_comentario || item?.text || '').trim(),
+          }))
+          .filter((item) => item.comment_id && item.source_id && item.texto_completo_del_comentario)
+        : [];
       const commentId = String(body?.comment_id || '').trim();
       const sourceId = String(body?.source_id || '').trim();
       const commentText = String(body?.texto_completo_del_comentario || '').trim();
+      const hasBatch = batchComments.length > 0;
+      const existingCodes = Array.isArray(body?.existing_codes)
+        ? body.existing_codes
+          .map((code) => ({
+            slug: String(code?.slug || '').trim(),
+            name: String(code?.name || '').trim(),
+            description: String(code?.description || '').trim(),
+          }))
+          .filter((code) => code.slug && code.name)
+        : [];
 
-      if (!commentId || !sourceId || !commentText) {
+      if (!hasBatch && (!commentId || !sourceId || !commentText)) {
         return sendJson(req, res, 400, {
-          error: 'comment_id, source_id y texto_completo_del_comentario son obligatorios.',
+          error: 'Debes enviar comments[] (batch) o comment_id + source_id + texto_completo_del_comentario.',
+        });
+      }
+      if (!existingCodes.length) {
+        return sendJson(req, res, 400, {
+          error: 'Debes enviar existing_codes con los códigos existentes del codebook para autofragmentar y codificar.',
         });
       }
 
@@ -5237,14 +6089,17 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const prompt = buildSemanticFragmentAgentPrompt({
-        commentId,
-        sourceId,
-        commentText,
-      });
+      const prompt = hasBatch
+        ? buildSemanticFragmentBatchPrompt({ comments: batchComments, existingCodes })
+        : buildSemanticFragmentAgentPrompt({
+          commentId,
+          sourceId,
+          commentText,
+          existingCodes,
+        });
 
       try {
-        const completion = await requestAiChatCompletion(integration, [
+        const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
           {
             role: 'system',
             content: 'Responde exclusivamente con JSON válido, sin markdown ni texto adicional.',
@@ -5256,11 +6111,47 @@ const server = http.createServer(async (req, res) => {
         ]);
 
         const parsed = extractJsonObjectFromText(completion.content);
+        if (hasBatch) {
+          const normalized = normalizeSemanticFragmentBatchOutput({
+            parsed,
+            comments: batchComments,
+            existingCodes,
+          });
+          return sendJson(req, res, 200, {
+            data: {
+              items: normalized.items.map((item) => ({
+                comment_id: item.comment_id,
+                reason_if_rejected: String(item?.reason_if_rejected || '').trim() || null,
+                fragments: (Array.isArray(item.fragments) ? item.fragments : []).map((fragment) => ({
+                  fragment_id: fragment.fragment_id,
+                  fragment_text: fragment.fragment_text,
+                  start_char_index: fragment.start_char_index,
+                  end_char_index: fragment.end_char_index,
+                  semantic_confidence: fragment.semantic_confidence,
+                  assigned_code_slug: fragment.assigned_code_slug,
+                  assignment_confidence: fragment.assignment_confidence,
+                  assignment_rationale: fragment.assignment_rationale,
+                  match_level: String(fragment?.match_level || '').trim() || 'match_probable',
+                })),
+              })),
+              meta: {
+                diagnostics: normalized.diagnostics || {
+                  baja_riqueza_semantica: 0,
+                  sin_codigo_razonable: 0,
+                  comentario_redundante: 0,
+                  texto_demasiado_vago: 0,
+                },
+              },
+            },
+          });
+        }
+
         const normalized = normalizeSemanticFragmentAgentOutput({
           parsed,
           commentId,
           sourceId,
           commentText,
+          existingCodes,
         });
 
         return sendJson(req, res, 200, {
@@ -5272,17 +6163,17 @@ const server = http.createServer(async (req, res) => {
               start_char_index: fragment.start_char_index,
               end_char_index: fragment.end_char_index,
               semantic_confidence: fragment.semantic_confidence,
+              assigned_code_slug: fragment.assigned_code_slug,
+              assignment_confidence: fragment.assignment_confidence,
+              assignment_rationale: fragment.assignment_rationale,
+              match_level: String(fragment?.match_level || '').trim() || 'match_probable',
             })),
+            reason_if_rejected: String(normalized?.reason_if_rejected || '').trim() || null,
           },
         });
       } catch (error) {
-        const fallback = fallbackSemanticSplit(commentId, commentText);
-        return sendJson(req, res, 200, {
-          data: {
-            comment_id: fallback.comment_id,
-            fragments: fallback.fragments,
-          },
-          warning: error?.message || 'Se aplicó fallback de fragmentación.',
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo ejecutar autofragmentación y codificación con IA.',
         });
       }
     }
@@ -5605,44 +6496,45 @@ const server = http.createServer(async (req, res) => {
       }
 
       const ranked = rankAndSelectFragmentsForCoding(fragments);
-      const compressed = buildCompressedCodesFromSelectedFragments({
+      const clustered = buildCompressedCodesFromSelectedFragments({
         selectedFragments: ranked.selected,
         existingCodes,
       });
 
-      const totalAnalyzed = ranked.analyzed.length;
-      const totalSelected = ranked.selected.length;
-      const finalCodeCount = compressed.generatedCodes.length;
-      const compressionRatio = totalAnalyzed > 0 ? Number((totalSelected / totalAnalyzed).toFixed(4)) : 0;
-
       return sendJson(req, res, 200, {
         data: {
           selected_fragments: ranked.selected,
-          clusters_internal: compressed.generatedCodes,
-          final_code_proposals: compressed.proposals,
+          clusters_internal: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters : [],
+          semantic_clusters: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters : [],
+          noise_clusters: Array.isArray(clustered.noiseClusters) ? clustered.noiseClusters : [],
+          final_code_proposals: [],
           metrics: {
-            total_fragments_analyzed: totalAnalyzed,
-            total_fragments_selected: totalSelected,
-            compression_ratio: compressionRatio,
-            final_codes_count: finalCodeCount,
-            code_budget_target: 30,
-            code_budget_max: 40,
+            total_fragments_analyzed: ranked.analyzed.length,
+            total_fragments_selected: ranked.selected.length,
+            compression_ratio: ranked.ratio,
+            final_codes_count: 0,
+            semantic_clusters_count: Array.isArray(clustered.semanticClusters) ? clustered.semanticClusters.length : 0,
+            noise_clusters_count: Array.isArray(clustered.noiseClusters) ? clustered.noiseClusters.length : 0,
+            assistant_mode: true,
+            auto_code_generation: false,
+            reason: 'semantic_cluster_assistant_requires_human_decision',
           },
+          meta: clustered.meta || { assistant_mode: true, auto_code_generation: false },
         },
       });
     }
 
-    if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
+    if (url.pathname === '/api/comment-base/code-generation-agent' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
 
       const body = await readBody(req);
       const projectId = String(body.project_id || '').trim();
       const campaignId = String(body.campaign_id || '').trim();
-      const proposalId = String(body.proposal_id || '').trim();
-      const action = String(body.action || '').trim();
-      if (!projectId || !campaignId || !proposalId || !action) {
-        return sendJson(req, res, 400, { error: 'project_id, campaign_id, proposal_id and action are required' });
+      const comments = Array.isArray(body.comments) ? body.comments : [];
+
+      if (!projectId || !campaignId) {
+        return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
       }
 
       const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
@@ -5651,85 +6543,223 @@ const server = http.createServer(async (req, res) => {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
 
-      const reviewId = buildEntityId('comment_code_review');
-      const createdAt = nowIso();
-      const metadata = body.metadata && typeof body.metadata === 'object' ? body.metadata : {};
-      await pool.query(
-        `INSERT INTO comment_code_proposal_reviews
-          (id, user_id, project_id, campaign_id, proposal_id, fragment_id, action, decision_status, decision_type, confidence, justification, suggested_code_slug, suggested_code_name, final_code_slug, final_code_name, metadata_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          reviewId,
-          user.id,
-          projectId,
-          campaignId,
-          proposalId,
-          String(body.fragment_id || '').trim() || null,
-          action,
-          String(body.decision_status || '').trim() || null,
-          String(body.decision_type || '').trim() || null,
-          Number.isFinite(Number(body.confidence)) ? Number(body.confidence) : null,
-          String(body.justification || '').trim() || null,
-          String(body.suggested_code_slug || '').trim() || null,
-          String(body.suggested_code_name || '').trim() || null,
-          String(body.final_code_slug || '').trim() || null,
-          String(body.final_code_name || '').trim() || null,
-          JSON.stringify(metadata),
-          createdAt,
-          createdAt,
-        ],
-      );
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial para usar Generar.',
+          meta: {
+            generated_without_traceability: true,
+            unit: 'comments',
+            flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+            source: 'llm_required',
+          },
+        });
+      }
 
-      return sendJson(req, res, 200, {
-        data: {
-          id: reviewId,
-          proposal_id: proposalId,
-          action,
-          created_at: createdAt,
-        },
+      try {
+        const commentsInput = Array.isArray(comments) ? comments : [];
+        const [dbRows] = await pool.query(
+          `SELECT id, source_comment_id, text
+           FROM comment_dataset_comments
+           WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+           ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC`,
+          [user.id, projectId, campaignId],
+        );
+
+        const dbComments = (Array.isArray(dbRows) ? dbRows : []).map((row) => ({
+          id: row.source_comment_id || row.id,
+          text: row.text,
+        }));
+
+        const mergedById = new Map();
+        [...dbComments, ...commentsInput].forEach((item, index) => {
+          const id = String(item?.id || item?.comment_id || item?.source_comment_id || `comment_${index + 1}`);
+          const text = String(item?.text || item?.comment_text || item?.body || item?.content || '').trim();
+          if (!text) return;
+          if (!mergedById.has(id)) mergedById.set(id, { id, text });
+        });
+        const allComments = Array.from(mergedById.values());
+
+        if (!allComments.length) {
+          return sendJson(req, res, 200, {
+            data: {
+              proposals: [],
+              metrics: {
+                comments_analyzed: 0,
+                clusters_count: 0,
+                top_level_clusters_count: 0,
+                generated_without_traceability: true,
+              },
+              meta: {
+                generated_without_traceability: true,
+                unit: 'comments',
+                flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+                prompt_version: 'fase_22_3_full_db_iterative_llm',
+                provider: integration.provider,
+                model: integration.model,
+                source: 'ai_model',
+              },
+            },
+          });
+        }
+
+        const MIN_CODES = 20;
+        const MAX_CODES = 40;
+        const CHUNK_SIZE = 120;
+        const MAX_CHUNKS = 18;
+        const MAX_GENERATION_MS = 90000;
+        const startedAtMs = Date.now();
+        const commentChunks = chunkCommentsForGeneration(allComments, CHUNK_SIZE);
+        let mergedProposals = [];
+        let chunkCalls = 0;
+        let stagnantRounds = 0;
+        let previousUniqueCount = 0;
+        let stoppedBy = 'all_chunks';
+        let tokenBudgetError = '';
+
+        for (const chunk of commentChunks) {
+          if (chunkCalls >= MAX_CHUNKS) {
+            stoppedBy = 'max_chunks';
+            break;
+          }
+
+          const elapsedMs = Date.now() - startedAtMs;
+          if (elapsedMs >= MAX_GENERATION_MS) {
+            stoppedBy = 'max_generation_time';
+            break;
+          }
+
+          const prompt = buildCodeGenerationAgentPrompt({ comments: chunk, minCodes: 6, maxCodes: 12, stage: 'chunk' });
+          let completion;
+          try {
+            completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+              { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+              { role: 'user', content: prompt },
+            ], { maxRetries: 2, baseDelayMs: 1200 });
+          } catch (error) {
+            if (isDailyTokenLimitError(error)) {
+              tokenBudgetError = String(error?.message || 'daily_token_limit_reached');
+              stoppedBy = 'daily_token_limit';
+              break;
+            }
+            throw error;
+          }
+          const parsed = extractJsonObjectFromText(completion.content);
+          const chunkProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsed));
+          mergedProposals = dedupeCodeProposalsByName([...mergedProposals, ...chunkProposals], 160);
+          chunkCalls += 1;
+
+          const uniqueCount = mergedProposals.length;
+          const growth = uniqueCount - previousUniqueCount;
+          if (growth <= 1) stagnantRounds += 1;
+          else stagnantRounds = 0;
+          previousUniqueCount = uniqueCount;
+
+          const saturationReached = uniqueCount >= 30 && stagnantRounds >= 3;
+          if (saturationReached) {
+            stoppedBy = 'semantic_saturation';
+            break;
+          }
+        }
+
+        let finalProposals = mergedProposals;
+        if (mergedProposals.length > MAX_CODES) {
+          const synthesisPrompt = buildCodeGenerationSynthesisPrompt({
+            candidates: mergedProposals,
+            minCodes: MIN_CODES,
+            maxCodes: MAX_CODES,
+          });
+          let synthesized;
+          try {
+            synthesized = await requestAiChatCompletionWithRateLimitRetry(integration, [
+              { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+              { role: 'user', content: synthesisPrompt },
+            ], { maxRetries: 3, baseDelayMs: 1200 });
+          } catch (error) {
+            if (isDailyTokenLimitError(error)) {
+              tokenBudgetError = String(error?.message || 'daily_token_limit_reached');
+              stoppedBy = 'daily_token_limit';
+              finalProposals = dedupeCodeProposalsByName(flattenSubclustersAsCodeProposals(mergedProposals), MAX_CODES);
+              synthesized = null;
+            } else {
+              throw error;
+            }
+          }
+          if (synthesized) {
+            const parsedSynthesis = extractJsonObjectFromText(synthesized.content);
+            const synthesizedProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsedSynthesis));
+            finalProposals = dedupeCodeProposalsByName(synthesizedProposals, MAX_CODES);
+          }
+        } else {
+          finalProposals = dedupeCodeProposalsByName(flattenSubclustersAsCodeProposals(mergedProposals), MAX_CODES);
+        }
+
+        return sendJson(req, res, 200, {
+          data: {
+            proposals: finalProposals,
+            metrics: {
+              comments_analyzed: allComments.length,
+              chunks_analyzed: chunkCalls,
+              clusters_count: finalProposals.length,
+              top_level_clusters_count: finalProposals.length,
+              generated_without_traceability: true,
+              semantic_saturation_reached: finalProposals.length >= 30,
+              generation_elapsed_ms: Date.now() - startedAtMs,
+              stop_reason: stoppedBy,
+              token_budget_limited: stoppedBy === 'daily_token_limit',
+            },
+            meta: {
+              generated_without_traceability: true,
+              unit: 'comments',
+              flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+              prompt_version: 'fase_22_3_full_db_iterative_llm',
+              provider: integration.provider,
+              model: integration.model,
+              source: 'ai_model',
+              chunk_size: CHUNK_SIZE,
+              max_chunks: MAX_CHUNKS,
+              max_generation_ms: MAX_GENERATION_MS,
+              token_budget_error: tokenBudgetError || null,
+            },
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo generar clusters/códigos con el modelo IA.',
+          meta: {
+            generated_without_traceability: true,
+            unit: 'comments',
+            flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
+            source: 'llm_only_no_fallback',
+          },
+        });
+      }
+    }
+
+
+    if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      return sendJson(req, res, 410, {
+        error: 'Code proposal reviews are disabled in comments mode.',
+        code_generation_disabled: true,
+        reason: 'comment_mode_fragment_to_code_disabled',
       });
     }
 
     if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'GET') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
-      const projectId = String(url.searchParams.get('projectId') || '').trim();
-      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
-      const limit = Math.max(1, Math.min(5000, Number(url.searchParams.get('limit') || 500)));
-      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
-
-      const [rows] = await pool.query(
-        `SELECT * FROM comment_code_proposal_reviews
-         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
-         ORDER BY created_at DESC
-         LIMIT ?`,
-        [user.id, projectId, campaignId, limit],
-      );
-
-      const items = rows.map((row) => ({
-        ...row,
-        metadata: (() => {
-          try { return JSON.parse(row.metadata_json || '{}'); } catch { return {}; }
-        })(),
-      }));
-
-      const summaryByCode = {};
-      items.forEach((item) => {
-        const slug = String(item.final_code_slug || item.suggested_code_slug || '').trim();
-        if (!slug) return;
-        if (!summaryByCode[slug]) {
-          summaryByCode[slug] = { code_slug: slug, accepted: 0, rejected: 0, reassigned: 0, corrected: 0, fused: 0, total: 0 };
-        }
-        summaryByCode[slug].total += 1;
-        const status = String(item.decision_status || '').trim();
-        if (status === 'aceptado') summaryByCode[slug].accepted += 1;
-        if (status === 'rechazado') summaryByCode[slug].rejected += 1;
-        if (status === 'reasignado') summaryByCode[slug].reassigned += 1;
-        if (status === 'corregido') summaryByCode[slug].corrected += 1;
-        if (status === 'fusionado') summaryByCode[slug].fused += 1;
+      return sendJson(req, res, 200, {
+        data: {
+          items: [],
+          summaryByCode: {},
+          meta: {
+            code_generation_disabled: true,
+            reason: 'comment_mode_fragment_to_code_disabled',
+          },
+        },
       });
-
-      return sendJson(req, res, 200, { data: { items, summaryByCode } });
     }
 
     if (url.pathname === '/api/comment-base/ingest' && req.method === 'POST') {
@@ -8209,13 +9239,56 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+const MAX_PORT_RETRIES = 10;
+
+function startServerWithPortRetry(initialPort) {
+  let attempts = 0;
+  let currentPort = Number(initialPort);
+
+  const tryListen = () => {
+    const onListening = () => {
+      server.off('error', onError);
+      if (attempts > 0) {
+        console.warn(`Port ${port} was busy. Backend started on fallback port ${currentPort}.`);
+      }
+      console.log(`SQLite backend running on port ${currentPort}`);
+    };
+
+    const onError = (error) => {
+      server.off('listening', onListening);
+      if (error?.code === 'EADDRINUSE' && attempts < MAX_PORT_RETRIES) {
+        attempts += 1;
+        currentPort += 1;
+        console.warn(`Port ${currentPort - 1} is already in use. Retrying on ${currentPort}...`);
+        setTimeout(tryListen, 50);
+        return;
+      }
+      console.error(`Failed to start backend on port ${currentPort}:`, error);
+      process.exit(1);
+    };
+
+    server.once('listening', onListening);
+    server.once('error', onError);
+    server.listen(currentPort);
+  };
+
+  tryListen();
+}
+
 runMigrations()
   .then(() => {
-    server.listen(port, () => {
-      console.log(`SQLite backend running on port ${port}`);
-    });
+    startServerWithPortRetry(port);
   })
   .catch((error) => {
     console.error('Failed to initialize backend:', error);
     process.exit(1);
   });
+  const normalizeRejectReason = (value) => {
+    const reason = String(value || '').trim().toLowerCase();
+    if (!reason) return '';
+    if (reason.includes('redund')) return 'comentario_redundante';
+    if (reason.includes('vago')) return 'texto_demasiado_vago';
+    if (reason.includes('riqueza') || reason.includes('semantic') || reason.includes('semantica')) return 'baja_riqueza_semantica';
+    if (reason.includes('codigo') || reason.includes('match') || reason.includes('encaje')) return 'sin_codigo_razonable';
+    return '';
+  };

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Activity, ArrowLeft, MoreHorizontal, Plus, Trash2, Video } from 'lucide-react';
+import { Activity, ArrowLeft, BarChart3, CheckCircle2, Gauge, Layers3, MoreHorizontal, Plus, Target, Trash2, TrendingUp, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
@@ -33,6 +33,7 @@ const HypothesisDetailPage = () => {
   const [sessionFilter, setSessionFilter] = useState('all');
   const [showActionsMenu, setShowActionsMenu] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
+  const [showHypothesisCardModal, setShowHypothesisCardModal] = useState(false);
   const [projectsOptions, setProjectsOptions] = useState([]);
   const [campaignOptions, setCampaignOptions] = useState([]);
   const [moveForm, setMoveForm] = useState({
@@ -96,6 +97,109 @@ const HypothesisDetailPage = () => {
     hypothesisId,
   }), [videos, hypothesis, hypothesisId]);
 
+
+
+  const hypothesisMetricProgress = useMemo(() => {
+    const metric = String(hypothesis?.metrica_objetivo_y || 'views').trim();
+    const operator = String(hypothesis?.umbral_operador || '>=').trim() || '>=';
+    const threshold = Number(hypothesis?.umbral_valor ?? 0);
+
+    const toNumber = (value) => {
+      const parsed = Number(value);
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const normalizedMetric = metric.toLowerCase();
+    const metricAliasToField = {
+      'views finish %': 'views_finish_pct',
+      'retention %': 'retencion_pct',
+      'avg watch time': 'tiempo_prom_seg',
+      'live peak viewers': 'pico_viewers',
+      'live avg viewers': 'viewers_prom',
+      'live new followers': 'nuevos_seguidores',
+      lead_form: 'formulario_lead',
+    };
+    const resolvedMetricField = metricAliasToField[normalizedMetric] || metric;
+
+    const countMetrics = new Set([
+      'views',
+      'clicks',
+      'initiate_checkouts',
+      'view_content',
+      'formulario_lead',
+      'lead_form',
+      'purchase',
+      'likes',
+      'comments',
+      'shares',
+      'saves',
+      'nuevos_seguidores',
+      'new_followers',
+      'pico_viewers',
+    ]);
+
+    const metricValueForVideo = (video = {}) => toNumber(video[resolvedMetricField]);
+
+    const values = videos.map((video) => metricValueForVideo(video));
+    const totalValue = values.reduce((acc, value) => acc + toNumber(value), 0);
+    const averageValue = values.length ? (totalValue / values.length) : 0;
+    const useTotalMode = countMetrics.has(String(resolvedMetricField || '').toLowerCase());
+    const currentValue = useTotalMode ? totalValue : averageValue;
+
+    const passes = (() => {
+      if (operator === '>=') return currentValue >= threshold;
+      if (operator === '>') return currentValue > threshold;
+      if (operator === '<=') return currentValue <= threshold;
+      if (operator === '<') return currentValue < threshold;
+      return currentValue >= threshold;
+    })();
+
+    const progressRaw = (() => {
+      if (threshold <= 0) return currentValue > 0 ? 100 : 0;
+      if (operator === '>=' || operator === '>') return (currentValue / threshold) * 100;
+      return currentValue <= 0 ? 200 : (threshold / currentValue) * 100;
+    })();
+
+    const progressPct = Math.max(0, Math.min(200, Number.isFinite(progressRaw) ? progressRaw : 0));
+    const ringPct = Math.max(0, Math.min(100, progressPct));
+
+    return {
+      metric,
+      operator,
+      threshold,
+      currentValue,
+      totalValue,
+      averageValue,
+      useTotalMode,
+      videosEvaluated: values.length,
+      progressPct,
+      ringPct,
+      passes,
+    };
+  }, [hypothesis, videos]);
+
+  const hypothesisCardKpis = useMemo(() => {
+    const paidCount = videos.filter((video) => (video.video_type || 'organic') === 'paid').length;
+    const organicCount = videos.filter((video) => (video.video_type || 'organic') === 'organic').length;
+    const liveCount = videos.filter((video) => (video.video_type || 'organic') === 'live').length;
+    const withAudienceCount = videos.filter((video) => String(video.audience_id || '').trim()).length;
+    const completionRatio = volume.minimum > 0 ? Math.min(1, volume.current / Math.max(1, volume.minimum)) : (videos.length ? 1 : 0);
+    const completionPct = Math.round(completionRatio * 100);
+    const statusLabel = completionPct >= 100 ? 'Objetivo alcanzado' : completionPct >= 70 ? 'En aceleración' : 'Etapa inicial';
+
+    return {
+      totalVideos: videos.length,
+      paidCount,
+      organicCount,
+      liveCount,
+      withAudienceCount,
+      withoutAudienceCount: Math.max(0, videos.length - withAudienceCount),
+      completionPct,
+      statusLabel,
+      sessionCount: availableSessions.length,
+    };
+  }, [videos, volume.minimum, volume.current, availableSessions.length]);
+
   const openCreateVideoModal = async () => {
     setShowLibraryModal(true);
   };
@@ -125,6 +229,12 @@ const HypothesisDetailPage = () => {
       setProjectsOptions([]);
       setCampaignOptions([]);
     }
+  };
+
+
+  const openHypothesisCardModal = () => {
+    setShowHypothesisCardModal(true);
+    setShowActionsMenu(false);
   };
 
   const updateMoveProject = async (nextProjectId) => {
@@ -228,6 +338,7 @@ const HypothesisDetailPage = () => {
                 {showActionsMenu ? (
                   <div className="absolute right-0 mt-1 w-44 bg-white border rounded-lg shadow-lg z-20 p-1">
                     <button className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 rounded" onClick={openMoveModal}>Mover hipótesis</button>
+                    <button className="w-full text-left px-3 py-2 text-sm hover:bg-gray-100 rounded" onClick={openHypothesisCardModal}>Ver tarjeta</button>
                   </div>
                 ) : null}
               </div>
@@ -321,6 +432,119 @@ const HypothesisDetailPage = () => {
           await fetchVideos(hypothesisId);
         }}
       />
+
+
+      {showHypothesisCardModal ? (
+        <div className="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
+          <div className="w-full max-w-4xl rounded-2xl border border-cyan-700/60 bg-slate-950 text-slate-100 shadow-[0_0_60px_rgba(34,211,238,0.2)] p-6 my-6 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <p className="text-xs uppercase tracking-[0.2em] text-cyan-300">Tarjeta de hipótesis</p>
+                <h3 className="text-2xl font-semibold text-white">{hypothesis?.title || 'Hipótesis activa'}</h3>
+                <p className="text-sm text-slate-300 mt-1">Estado operativo: <span className="text-cyan-300 font-medium">{hypothesisCardKpis.statusLabel}</span></p>
+              </div>
+              <Button className="bg-slate-800 text-slate-200 hover:bg-slate-700" onClick={() => setShowHypothesisCardModal(false)}>Cerrar</Button>
+            </div>
+
+            <div className="grid md:grid-cols-4 gap-3 mb-4">
+              <div className="rounded-xl border border-cyan-700/40 bg-slate-900/80 p-3">
+                <p className="text-xs text-slate-400">Progreso de volumen</p>
+                <p className="text-2xl font-semibold text-cyan-300">{hypothesisCardKpis.completionPct}%</p>
+                <p className="text-xs text-slate-400 mt-1">{volume.current} / {volume.minimum || 0} {volume.unit}</p>
+              </div>
+              <div className="rounded-xl border border-indigo-700/40 bg-slate-900/80 p-3">
+                <p className="text-xs text-slate-400">Videos vinculados</p>
+                <p className="text-2xl font-semibold text-indigo-300">{hypothesisCardKpis.totalVideos}</p>
+                <p className="text-xs text-slate-400 mt-1">Sesiones detectadas: {hypothesisCardKpis.sessionCount}</p>
+              </div>
+              <div className="rounded-xl border border-emerald-700/40 bg-slate-900/80 p-3">
+                <p className="text-xs text-slate-400">Públicos mapeados</p>
+                <p className="text-2xl font-semibold text-emerald-300">{hypothesisCardKpis.withAudienceCount}</p>
+                <p className="text-xs text-slate-400 mt-1">Sin público: {hypothesisCardKpis.withoutAudienceCount}</p>
+              </div>
+              <div className="rounded-xl border border-fuchsia-700/40 bg-slate-900/80 p-3">
+                <p className="text-xs text-slate-400">Mix de tipo</p>
+                <p className="text-sm text-slate-200 mt-2">Paid {hypothesisCardKpis.paidCount} · Organic {hypothesisCardKpis.organicCount} · Live {hypothesisCardKpis.liveCount}</p>
+              </div>
+            </div>
+
+            <div className="mb-4 rounded-xl border border-indigo-700/30 bg-slate-900/70 p-3">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <div className="flex items-center gap-2 text-indigo-300">
+                  <Target className="w-4 h-4" />
+                  <p className="text-sm font-medium">Métrica Y seleccionada</p>
+                </div>
+                <p className={`text-xs font-medium px-2 py-1 rounded-full ${hypothesisMetricProgress.passes ? 'bg-emerald-900/50 text-emerald-300' : 'bg-amber-900/50 text-amber-300'}`}>
+                  {hypothesisMetricProgress.passes ? 'Cumple umbral' : 'Debajo del umbral'}
+                </p>
+              </div>
+
+              <div className="grid md:grid-cols-[1.2fr_1fr] gap-3 items-start">
+                <div>
+                  <p className="text-base font-semibold text-white">
+                    {hypothesisMetricProgress.metric || '-'}
+                    <span className="text-xs text-slate-400 ml-2">({hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold})</span>
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {hypothesisMetricProgress.useTotalMode
+                      ? `Total entre videos: ${hypothesisMetricProgress.totalValue.toFixed(2)} · Videos evaluados: ${hypothesisMetricProgress.videosEvaluated}`
+                      : `Promedio actual: ${hypothesisMetricProgress.averageValue.toFixed(2)} · Videos evaluados: ${hypothesisMetricProgress.videosEvaluated}`}
+                  </p>
+
+                  <div className="mt-3 h-2.5 w-full rounded-full bg-slate-800 overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-fuchsia-500 transition-all duration-700"
+                      style={{ width: `${Math.min(100, hypothesisMetricProgress.progressPct)}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between text-[11px] text-slate-500">
+                    <span>0%</span>
+                    <span>Objetivo</span>
+                    <span>{hypothesisMetricProgress.progressPct.toFixed(1)}%</span>
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-slate-700 bg-slate-950/60 p-3">
+                  <p className="text-[11px] text-slate-500 uppercase tracking-wide">Panel Y</p>
+                  <p className="text-xl font-semibold text-white mt-1 flex items-center gap-1">
+                    <TrendingUp className="w-4 h-4 text-indigo-300" />
+                    {hypothesisMetricProgress.currentValue.toFixed(2)}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-1">{hypothesisMetricProgress.useTotalMode ? 'Modo total acumulado' : 'Modo promedio'}</p>
+                  <p className="text-xs text-slate-400">Threshold: {hypothesisMetricProgress.operator} {hypothesisMetricProgress.threshold}</p>
+                  <p className="text-xs text-slate-400">Progreso: {hypothesisMetricProgress.progressPct.toFixed(1)}%</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-3">
+              <div className="rounded-xl border border-slate-700 bg-slate-900/80 p-4">
+                <div className="flex items-center gap-2 text-cyan-300 mb-2"><Gauge className="w-4 h-4" /><p className="text-sm font-medium">Meta y umbral</p></div>
+                <p className="text-sm text-slate-300">Y objetivo: {hypothesis?.metrica_objetivo_y || '-'}</p>
+                <p className="text-sm text-slate-300">Umbral: {hypothesis?.umbral_operador || ''} {hypothesis?.umbral_valor ?? '-'}</p>
+                <p className="text-xs text-slate-500 mt-2">X variable: {hypothesis?.variable_x || '-'}</p>
+              </div>
+              <div className="rounded-xl border border-slate-700 bg-slate-900/80 p-4">
+                <div className="flex items-center gap-2 text-indigo-300 mb-2"><BarChart3 className="w-4 h-4" /><p className="text-sm font-medium">Distribución operativa</p></div>
+                <p className="text-sm text-slate-300">Canal principal: {hypothesis?.canal_principal || '-'}</p>
+                <p className="text-sm text-slate-300">Tipo: {hypothesis?.type || '-'}</p>
+                <p className="text-xs text-slate-500 mt-2">Actualizado para seguimiento táctico de performance.</p>
+              </div>
+              <div className="rounded-xl border border-slate-700 bg-slate-900/80 p-4">
+                <div className="flex items-center gap-2 text-emerald-300 mb-2"><CheckCircle2 className="w-4 h-4" /><p className="text-sm font-medium">Salud de datos</p></div>
+                <p className="text-sm text-slate-300">Volumen mínimo cumplido: {volume.meets_minimum ? 'Sí' : 'No'}</p>
+                <p className="text-sm text-slate-300">Estructura activa: {hypothesisCardKpis.totalVideos > 0 ? 'Con datos' : 'Sin videos'}</p>
+                <p className="text-xs text-slate-500 mt-2">Usa esta tarjeta para evaluar madurez antes de mover o escalar hipótesis.</p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-cyan-700/30 bg-slate-900/60 p-3">
+              <div className="flex items-center gap-2 text-cyan-300"><Layers3 className="w-4 h-4" /><p className="text-sm font-medium">Statement operativo</p></div>
+              <p className="text-sm text-slate-200 mt-2">{hypothesis?.hypothesis_statement || hypothesis?.condition || 'Sin statement'}</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {showMoveModal ? (
         <div className="fixed inset-0 z-50 bg-black/50 p-4 flex items-center justify-center">

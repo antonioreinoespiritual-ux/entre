@@ -69,6 +69,8 @@ const buildClusters = (codes = [], fragments = []) => {
     .sort((a, b) => b.fragments_count - a.fragments_count);
 };
 
+const COMMENT_CODE_EVOLUTION_DISABLED = true;
+
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
   const storageKey = `comments-mode:${projectId}:${campaignId}`;
@@ -85,6 +87,17 @@ const CommentsModePage = () => {
   const [semanticAgentBusy, setSemanticAgentBusy] = useState(false);
   const [semanticAgentError, setSemanticAgentError] = useState('');
   const [semanticAgentProgress, setSemanticAgentProgress] = useState({ done: 0, total: 0 });
+  const [semanticClusterModalOpen, setSemanticClusterModalOpen] = useState(false);
+  const [semanticClusterCards, setSemanticClusterCards] = useState([]);
+  const [clusterDecisionDrafts, setClusterDecisionDrafts] = useState({});
+  const [clusterDecisionLog, setClusterDecisionLog] = useState([]);
+  const [codeGenerationModalOpen, setCodeGenerationModalOpen] = useState(false);
+  const [codeGenerationBusy, setCodeGenerationBusy] = useState(false);
+  const [codeGenerationError, setCodeGenerationError] = useState('');
+  const [generatedCodeProposals, setGeneratedCodeProposals] = useState([]);
+  const [codeGenerationMetrics, setCodeGenerationMetrics] = useState(null);
+  const [codeGenerationDeleteMenuOpen, setCodeGenerationDeleteMenuOpen] = useState(false);
+  const [codeGenerationDeleteMode, setCodeGenerationDeleteMode] = useState('none');
   const [commentsTable, setCommentsTable] = useState({ loading: false, error: '', items: [], total: 0, limit: 100, offset: 0, q: '' });
   const [readerViewMode, setReaderViewMode] = useState('document');
   const [readerSelection, setReaderSelection] = useState({ text: '', start: null, end: null, commentId: '' });
@@ -169,6 +182,12 @@ const CommentsModePage = () => {
     });
   };
 
+  const guardCodeEvolution = () => {
+    if (!COMMENT_CODE_EVOLUTION_DISABLED) return false;
+    setSemanticAgentError('La evolución de fragmentos a códigos está deshabilitada en Modo Comentarios.');
+    return true;
+  };
+
   useEffect(() => {
     let cancelled = false;
     const hydrateStore = async () => {
@@ -200,6 +219,26 @@ const CommentsModePage = () => {
     const selected = readerComments.find((item) => String(item.id) === String(selectedReaderCommentId));
     return selected || readerComments[0] || null;
   }, [readerComments, selectedReaderCommentId]);
+
+  const codeGenerationProgress = useMemo(() => {
+    const tableTotalRaw = Number(codeGenerationMetrics?.comments_total_from_table || 0);
+    const analyzedRaw = Number(codeGenerationMetrics?.comments_analyzed || 0);
+    const fetchedRaw = Number(codeGenerationMetrics?.comments_fetched_for_generation || 0);
+
+    const tableTotal = Number.isFinite(tableTotalRaw) ? Math.max(0, tableTotalRaw) : 0;
+    const analyzed = Number.isFinite(analyzedRaw) ? Math.max(0, analyzedRaw) : 0;
+    const fetched = Number.isFinite(fetchedRaw) ? Math.max(0, fetchedRaw) : 0;
+
+    const denominator = tableTotal > 0 ? tableTotal : Math.max(analyzed, fetched, 0);
+    const ratio = denominator > 0 ? Math.min(1, analyzed / denominator) : 0;
+
+    return {
+      totalComments: denominator,
+      analyzedComments: analyzed,
+      fetchedComments: fetched,
+      pct: Math.round(ratio * 100),
+    };
+  }, [codeGenerationMetrics]);
 
   const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
 
@@ -397,6 +436,28 @@ const CommentsModePage = () => {
     }));
   };
 
+
+  const getClusterDraft = (clusterId) => {
+    const key = String(clusterId || '');
+    const existing = clusterDecisionDrafts[key] || {};
+    return {
+      editedName: String(existing.editedName || ''),
+      conceptualType: String(existing.conceptualType || ''),
+      targetCodeSlug: String(existing.targetCodeSlug || ''),
+    };
+  };
+
+  const updateClusterDraft = (clusterId, patch) => {
+    const key = String(clusterId || '');
+    setClusterDecisionDrafts((prev) => ({
+      ...prev,
+      [key]: {
+        ...getClusterDraft(key),
+        ...patch,
+      },
+    }));
+  };
+
   const createUniqueCode = ({ name, description = '', parentSlug = null, createdManual = false }) => {
     const safeName = String(name || '').trim() || `Código ${new Date().toLocaleTimeString()}`;
     const baseSlug = slugify(safeName).slice(0, 64) || `code-${Date.now()}`;
@@ -443,17 +504,9 @@ const CommentsModePage = () => {
   };
 
   const runCodeProposalAgent = async () => {
-    const acceptedByFragment = new Map();
-    codeProposals.forEach((proposal) => {
-      if (proposal.status !== 'aceptado') return;
-      acceptedByFragment.set(String(proposal.fragment_id), proposal);
-    });
-
     const targetFragments = fragments.filter((fragment) => {
-      const fragmentId = String(fragment.id);
-      const hasAcceptedProposal = acceptedByFragment.has(fragmentId);
       const hasAcceptedCoding = Array.isArray(fragment.code_slugs) && fragment.code_slugs.length > 0;
-      return !hasAcceptedProposal && !hasAcceptedCoding;
+      return !hasAcceptedCoding;
     });
 
     if (!targetFragments.length) return;
@@ -466,43 +519,15 @@ const CommentsModePage = () => {
         existing_codes: codes,
       });
 
-      const generatedProposals = Array.isArray(response?.final_code_proposals) ? response.final_code_proposals : [];
       const selectedFragments = Array.isArray(response?.selected_fragments) ? response.selected_fragments : [];
       const selectedById = new Map(selectedFragments.map((fragment) => [String(fragment.id), fragment]));
-
-      const now = new Date().toISOString();
-      const acceptedProposals = codeProposals.filter((proposal) => proposal.status === 'aceptado');
-      const normalizedGenerated = generatedProposals.map((proposal, index) => ({
-        id: String(proposal.id || `code_proposal_ai_${Date.now()}_${index + 1}`),
-        fragment_id: String(proposal.fragment_id || ''),
-        fragment_excerpt: String(proposal.fragment_excerpt || ''),
-        suggested_code_slug: String(proposal.suggested_code_slug || ''),
-        suggested_code_name: String(proposal.suggested_code_name || 'Código sugerido'),
-        decision_type: String(proposal.decision_type || 'nuevo'),
-        confidence: Number.isFinite(Number(proposal.confidence)) ? Number(proposal.confidence) : 0.5,
-        justification: String(proposal.justification || 'Propuesta generada por compresión semántica IA.'),
-        alternatives: Array.isArray(proposal.alternatives) ? proposal.alternatives : [],
-        status: 'propuesto',
-        created_at: String(proposal.created_at || now),
-        updated_at: String(proposal.updated_at || now),
-        review_log: [],
-        parent_candidate_slug: null,
-        ai_code_score: Number.isFinite(Number(proposal.ai_code_score)) ? Number(proposal.ai_code_score) : null,
-        traceability: proposal.traceability || null,
-      }));
+      const clusters = Array.isArray(response?.semantic_clusters)
+        ? response.semantic_clusters
+        : (Array.isArray(response?.clusters_internal) ? response.clusters_internal : []);
 
       const nextFragments = fragments.map((fragment) => {
         const selected = selectedById.get(String(fragment.id));
-        if (!selected) {
-          if (targetFragments.some((target) => String(target.id) === String(fragment.id))) {
-            return {
-              ...fragment,
-              fragment_status: 'rejected',
-              ai_candidate_score: Number.isFinite(Number(fragment.ai_candidate_score)) ? Number(fragment.ai_candidate_score) : null,
-            };
-          }
-          return fragment;
-        }
+        if (!selected) return fragment;
         return {
           ...fragment,
           ...selected,
@@ -510,18 +535,97 @@ const CommentsModePage = () => {
         };
       });
 
-      persist({
-        ...store,
-        fragments: nextFragments,
-        codeProposals: [...acceptedProposals, ...normalizedGenerated],
-      });
+      const normalizedCards = clusters.map((cluster, index) => ({
+        id: String(cluster.id || `semantic_cluster_${index + 1}`),
+        suggested_pattern_name: String(cluster.suggested_pattern_name || `Patrón ${index + 1}`),
+        suggested_code_type: String(cluster.suggested_code_type || 'emergente'),
+        suggested_decision: String(cluster.suggested_decision || 'crear'),
+        cluster_state: String(cluster.cluster_state || 'valido'),
+        quality_score: Number(cluster.quality_score || 0),
+        confidence: Number(cluster.confidence || 0),
+        coherence: Number(cluster.coherence || 0),
+        density: Number(cluster.density || 0),
+        separation: Number(cluster.separation || 0),
+        interpretability: Number(cluster.interpretability || 0),
+        size: Number(cluster.size || 0),
+        depth: Number(cluster.depth || 0),
+        source_dispersion: Number(cluster.source_dispersion || 0),
+        similar_existing_code: cluster.similar_existing_code || null,
+        representative_fragments: Array.isArray(cluster.representative_fragments) ? cluster.representative_fragments : [],
+        fragment_ids: Array.isArray(cluster.fragment_ids) ? cluster.fragment_ids.map((id) => String(id)) : [],
+      }));
+
+      setSemanticClusterCards(normalizedCards);
+      setSemanticClusterModalOpen(true);
+      persist({ ...store, fragments: nextFragments });
       setCodeSelectionMetrics(response?.metrics || null);
     } catch (error) {
-      setIngestionError(error?.message || 'No se pudo ejecutar el motor IA de selección de fragmentos y compresión de códigos.');
+      setIngestionError(error?.message || 'No se pudo ejecutar el agente de clusterización semántica.');
     }
   };
 
+  const applyClusterDecision = (cluster, action) => {
+    if (!cluster) return;
+    const draft = getClusterDraft(cluster.id);
+    const editedName = String(draft.editedName || cluster.suggested_pattern_name || '').trim();
+    const conceptualType = String(draft.conceptualType || cluster.suggested_code_type || 'emergente').trim();
+    const fragmentIdSet = new Set((cluster.fragment_ids || []).map((id) => String(id)));
+
+    let nextCodes = [...codes];
+    let targetSlug = '';
+    let targetName = '';
+
+    if (action === 'crear') {
+      const newCode = createUniqueCode({
+        name: editedName || 'Código conceptual',
+        description: `Código creado desde cluster ${cluster.id} · tipo ${conceptualType}.`,
+        createdManual: true,
+      });
+      nextCodes = [newCode, ...nextCodes];
+      targetSlug = String(newCode.slug);
+      targetName = String(newCode.name);
+    }
+
+    if (action === 'reutilizar') {
+      const reused = codes.find((code) => String(code.slug) === String(draft.targetCodeSlug || cluster?.similar_existing_code?.slug || ''));
+      if (!reused) return;
+      targetSlug = String(reused.slug);
+      targetName = String(reused.name || reused.slug);
+    }
+
+    let nextFragments = fragments;
+    if (targetSlug) {
+      nextFragments = fragments.map((fragment) => {
+        if (!fragmentIdSet.has(String(fragment.id))) return fragment;
+        const merged = Array.from(new Set([...(fragment.code_slugs || []), targetSlug]));
+        return {
+          ...fragment,
+          code_slugs: merged,
+          last_cluster_id: String(cluster.id || ''),
+        };
+      });
+    }
+
+    const logEntry = {
+      id: `cluster_decision_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+      cluster_id: String(cluster.id || ''),
+      action,
+      final_code_slug: targetSlug || null,
+      final_code_name: targetName || null,
+      edited_name: editedName || null,
+      conceptual_type: conceptualType || null,
+      fragment_count: Number(cluster.size || 0),
+      created_at: new Date().toISOString(),
+    };
+
+    setClusterDecisionLog((prev) => [logEntry, ...prev]);
+    setSemanticClusterCards((prev) => prev.filter((item) => String(item.id) !== String(cluster.id)));
+    persist({ ...store, fragments: nextFragments, codes: nextCodes });
+  };
+
+
   const acceptCodeProposal = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const fragmentId = String(proposal.fragment_id || '');
     if (!fragmentId) return;
@@ -595,6 +699,7 @@ const CommentsModePage = () => {
   };
 
   const assignExistingCodeToProposal = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const targetSlug = String(draft.assignExistingSlug || '').trim();
@@ -626,6 +731,7 @@ const CommentsModePage = () => {
   };
 
   const createManualCodeForProposal = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const manualName = String(draft.manualCodeName || '').trim();
@@ -661,6 +767,7 @@ const CommentsModePage = () => {
   };
 
   const renameSuggestedProposalCode = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const renamed = String(draft.renameSuggestedName || '').trim();
@@ -695,6 +802,7 @@ const CommentsModePage = () => {
   };
 
   const splitSuggestedProposalCode = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const nameA = String(draft.splitNameA || '').trim();
@@ -722,6 +830,7 @@ const CommentsModePage = () => {
   };
 
   const mergeSuggestedWithExistingCode = (proposal) => {
+    if (guardCodeEvolution()) return;
     if (!proposal) return;
     const draft = getDraftForProposal(proposal.id);
     const targetSlug = String(draft.mergeTargetSlug || '').trim();
@@ -1212,7 +1321,7 @@ const CommentsModePage = () => {
   const saveFragmentEditor = async () => {
     const title = String(fragmentEditor.title || '').trim();
     const excerpt = String(fragmentEditor.excerpt || '').trim();
-    const linkedCode = String(fragmentEditor.linkedCode || '').trim();
+    const linkedCode = COMMENT_CODE_EVOLUTION_DISABLED ? '' : String(fragmentEditor.linkedCode || '').trim();
     const codeSlugs = linkedCode ? [linkedCode] : [];
 
     if (!excerpt) return;
@@ -1322,6 +1431,81 @@ const CommentsModePage = () => {
     setReaderSelection({ text: '', start: null, end: null, commentId: '' });
   };
 
+
+  const runGenerateCodesWithoutTraceability = async () => {
+    setCodeGenerationError('');
+    setCodeGenerationBusy(true);
+    setCodeGenerationModalOpen(true);
+
+    try {
+      const tableTotalEstimate = Number(commentsTable.total || 0);
+
+      const response = await commentsIngestionApi.runCodeGenerationAgent({
+        project_id: projectId,
+        campaign_id: campaignId,
+        comments: [],
+      });
+
+      const proposals = Array.isArray(response?.proposals) ? response.proposals : [];
+      setGeneratedCodeProposals(proposals.map((proposal, index) => ({
+        id: `generated_code_proposal_${Date.now()}_${index + 1}`,
+        cluster_name: String(proposal.cluster_name || `Cluster ${index + 1}`),
+        suggested_code_name: String(proposal.suggested_code_name || `Código ${index + 1}`),
+        description: String(proposal.description || 'Propuesta conceptual generada sin trazabilidad inicial.'),
+        confidence: Number(proposal.confidence || 0),
+        size_estimate: Number(proposal.size_estimate || 0),
+        subclusters: Array.isArray(proposal.subclusters) ? proposal.subclusters : [],
+        generated_without_traceability: true,
+      })));
+      setCodeGenerationMetrics({
+        ...(response?.metrics || {}),
+        comments_fetched_for_generation: Number(response?.metrics?.comments_analyzed || 0),
+        comments_total_from_table: Number(response?.metrics?.comments_analyzed || 0) || tableTotalEstimate,
+      });
+    } catch (error) {
+      setCodeGenerationError(error?.message || 'No se pudo generar propuestas desde comentarios.');
+    } finally {
+      setCodeGenerationBusy(false);
+    }
+  };
+
+  const createCodeFromGeneratedProposal = (proposal) => {
+    if (!proposal) return;
+    const parentCode = createUniqueCode({
+      name: String(proposal.suggested_code_name || proposal.cluster_name || 'Código generado').trim(),
+      description: `${String(proposal.description || '').trim()} [GENERADO SIN TRAZABILIDAD]`,
+      createdManual: true,
+    });
+
+    const children = (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).map((subcluster) => createUniqueCode({
+      name: String(subcluster.suggested_subcode_name || subcluster.cluster_name || 'Subcódigo generado').trim(),
+      description: `${String(subcluster.description || 'Subpatrón generado sin trazabilidad inicial.').trim()} [GENERADO SIN TRAZABILIDAD]`,
+      parentSlug: parentCode.slug,
+      createdManual: true,
+    }));
+
+    const taggedParent = {
+      ...parentCode,
+      generated_without_traceability: true,
+      generation_source: 'comments_cluster_generation',
+      taxonomy_stage: 'discovery',
+    };
+
+    const taggedChildren = children.map((item) => ({
+      ...item,
+      generated_without_traceability: true,
+      generation_source: 'comments_subcluster_generation',
+      taxonomy_stage: 'discovery',
+    }));
+
+    persist({
+      ...store,
+      codes: [taggedParent, ...taggedChildren, ...codes],
+    });
+
+    setGeneratedCodeProposals((prev) => prev.filter((item) => String(item.id) !== String(proposal.id)));
+  };
+
   const filteredFragments = useMemo(() => {
     const query = fragmentQuery.trim().toLowerCase();
     return fragments.filter((fragment) => {
@@ -1354,31 +1538,8 @@ const CommentsModePage = () => {
     );
   };
 
-  const evolveFragmentToCode = (fragment) => {
-    const baseName = String(fragment.title || fragment.excerpt || '').trim();
-    if (!baseName) return;
-    const baseSlug = slugify(baseName).slice(0, 50) || `code-${Date.now()}`;
-    let candidate = baseSlug;
-    let suffix = 1;
-    while (codes.some((code) => code.slug === candidate)) {
-      suffix += 1;
-      candidate = `${baseSlug}-${suffix}`;
-    }
-
-    const nextCode = {
-      id: `code_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      name: baseName,
-      slug: candidate,
-      parent_slug: null,
-    };
-
-    const mergedCodeSlugs = Array.from(new Set([...(fragment.code_slugs || []), candidate]));
-
-    persist({
-      ...store,
-      codes: [nextCode, ...codes],
-      fragments: fragments.map((item) => (String(item.id) === String(fragment.id) ? { ...item, code_slugs: mergedCodeSlugs } : item)),
-    });
+  const evolveFragmentToCode = () => {
+    guardCodeEvolution();
   };
 
   const createCommentFragment = async ({ text, comment, sourceType = 'selection', selectionStart = null, selectionEnd = null }) => {
@@ -1458,6 +1619,19 @@ const CommentsModePage = () => {
         return;
       }
 
+      const existingCodeCatalog = codes
+        .map((code) => ({
+          slug: String(code?.slug || '').trim(),
+          name: String(code?.name || '').trim(),
+          description: String(code?.description || '').trim(),
+        }))
+        .filter((code) => code.slug && code.name);
+
+      if (!existingCodeCatalog.length) {
+        setSemanticAgentError('Auto-fragmentar con IA requiere códigos existentes en el codebook.');
+        return;
+      }
+
       const existingSourceIds = new Set(
         fragments
           .map((fragment) => String(fragment.source_comment_id || fragment.comment_id || '').trim())
@@ -1474,33 +1648,40 @@ const CommentsModePage = () => {
         return;
       }
 
+      const BATCH_SIZE = Math.max(10, Math.min(20, Number(import.meta.env.VITE_AUTOFRAGMENT_BATCH_SIZE) || 10));
+      const MAX_CONCURRENCY = Math.max(3, Math.min(5, Number(import.meta.env.VITE_AUTOFRAGMENT_CONCURRENCY) || 3));
+      const MAX_BATCH_RETRIES = 2;
       const createdFragments = [];
+      const rejectionDiagnostics = {
+        baja_riqueza_semantica: 0,
+        sin_codigo_razonable: 0,
+        comentario_redundante: 0,
+        texto_demasiado_vago: 0,
+      };
       let failed = 0;
+      let processed = 0;
+      let persistedCount = 0;
+      let persistedFragments = [];
+      const attemptedCommentIds = new Set();
       setSemanticAgentProgress({ done: 0, total: pendingComments.length });
 
-      for (let index = 0; index < pendingComments.length; index += 1) {
-        const comment = pendingComments[index];
-        const sourceCommentId = String(comment.source_comment_id || comment.id || '').trim();
-        const sourceText = String(comment.text || '').trim();
-        if (!sourceCommentId || !sourceText) {
-          failed += 1;
-          setSemanticAgentProgress({ done: index + 1, total: pendingComments.length });
-          continue;
-        }
+      const commentsById = new Map(
+        pendingComments.map((comment) => [String(comment.source_comment_id || comment.id || '').trim(), comment]),
+      );
 
-        try {
-          const response = await commentsIngestionApi.extractSemanticFragments({
-            comment_id: sourceCommentId,
-            source_id: String(comment.source || 'youtube'),
-            texto_completo_del_comentario: sourceText,
-          });
-
-          const generatedFragments = Array.isArray(response.fragments) ? response.fragments : [];
+      const mapFragmentsFromResponse = ({ responseItems = [] }) => {
+        const mapped = [];
+        for (const item of responseItems) {
+          const sourceCommentId = String(item?.comment_id || '').trim();
+          const comment = commentsById.get(sourceCommentId);
+          const sourceText = String(comment?.text || '').trim();
+          if (!comment || !sourceCommentId || !sourceText) continue;
+          const generatedFragments = Array.isArray(item?.fragments) ? item.fragments : [];
           const timestamp = new Date().toISOString();
           for (const fragment of generatedFragments) {
             const text = String(fragment?.fragment_text || '').trim();
             if (!text) continue;
-            createdFragments.push({
+            mapped.push({
               id: String(fragment?.fragment_id || `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`),
               title: '',
               excerpt: text,
@@ -1511,23 +1692,220 @@ const CommentsModePage = () => {
               selection_start: Number.isFinite(Number(fragment?.start_char_index)) ? Number(fragment.start_char_index) : null,
               selection_end: Number.isFinite(Number(fragment?.end_char_index)) ? Number(fragment.end_char_index) : null,
               semantic_confidence: Number.isFinite(Number(fragment?.semantic_confidence)) ? Number(fragment.semantic_confidence) : null,
-              source_type: 'semantic_agent',
+              source_type: 'autofragmentar_ia',
               source_run_id: comment.source_run_id || null,
               author_name: comment.author_name || null,
               video_id: comment.video_id || null,
-              code_slugs: [],
+              code_slugs: String(fragment?.assigned_code_slug || '').trim() ? [String(fragment.assigned_code_slug).trim()] : [],
+              assignment_confidence: Number.isFinite(Number(fragment?.assignment_confidence)) ? Number(fragment.assignment_confidence) : null,
+              assignment_rationale: String(fragment?.assignment_rationale || '').trim() || null,
+              execution_origin: 'autofragmentar_ia',
               created_at: timestamp,
             });
           }
-        } catch {
-          failed += 1;
+        }
+        return mapped;
+      };
+
+      const persistIncremental = (nextFragments) => {
+        if (!nextFragments.length) return;
+        const batchSlice = nextFragments.slice(persistedCount);
+        if (!batchSlice.length) return;
+        persistedCount = nextFragments.length;
+        persistedFragments = [...batchSlice, ...persistedFragments];
+        persist({
+          ...store,
+          fragments: [...persistedFragments, ...fragments],
+        });
+      };
+
+      const buildBatches = (items, size) => {
+        const batches = [];
+        for (let i = 0; i < items.length; i += size) {
+          batches.push(items.slice(i, i + size));
+        }
+        return batches;
+      };
+
+      const tokenize = (value) => String(value || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 3);
+
+      const scoreCodeForComment = (commentText, code) => {
+        const commentTokens = new Set(tokenize(commentText));
+        if (!commentTokens.size) return 0;
+        const codeTokens = tokenize(`${code?.name || ''} ${code?.description || ''}`);
+        if (!codeTokens.length) return 0;
+        let hits = 0;
+        for (const token of codeTokens) {
+          if (commentTokens.has(token)) hits += 1;
+        }
+        return hits / Math.max(1, codeTokens.length);
+      };
+
+      const buildShortlistedCodesForBatch = (batchComments) => {
+        const unionSlugs = new Set();
+        for (const comment of batchComments) {
+          const text = String(comment?.text || '').trim();
+          if (!text) continue;
+          const topForComment = [...existingCodeCatalog]
+            .map((code) => ({ code, score: scoreCodeForComment(text, code) }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 18)
+            .map((entry) => entry.code.slug)
+            .filter(Boolean);
+          for (const slug of topForComment) unionSlugs.add(slug);
+          if (unionSlugs.size >= 90) break;
+        }
+        const shortlisted = existingCodeCatalog.filter((code) => unionSlugs.has(code.slug)).slice(0, 90);
+        if (shortlisted.length >= 10) return shortlisted;
+        return existingCodeCatalog.slice(0, 60);
+      };
+
+      const initialBatches = buildBatches(pendingComments, BATCH_SIZE).map((batch, index) => ({
+        id: `batch_${index + 1}`,
+        attempts: 0,
+        splitDepth: 0,
+        comments: batch,
+      }));
+
+      const processBatch = async (batch) => {
+        for (const comment of batch.comments) {
+          const cid = String(comment?.source_comment_id || comment?.id || '').trim();
+          if (cid) attemptedCommentIds.add(cid);
+        }
+        setSemanticAgentProgress({
+          done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+          total: pendingComments.length,
+        });
+
+        const accumulateDiagnostics = (meta) => {
+          const diagnostics = meta?.diagnostics;
+          if (!diagnostics || typeof diagnostics !== 'object') return;
+          rejectionDiagnostics.baja_riqueza_semantica += Number(diagnostics.baja_riqueza_semantica || 0);
+          rejectionDiagnostics.sin_codigo_razonable += Number(diagnostics.sin_codigo_razonable || 0);
+          rejectionDiagnostics.comentario_redundante += Number(diagnostics.comentario_redundante || 0);
+          rejectionDiagnostics.texto_demasiado_vago += Number(diagnostics.texto_demasiado_vago || 0);
+        };
+
+        const shortlistedCodes = buildShortlistedCodesForBatch(batch.comments);
+        const payloadComments = batch.comments
+          .map((comment) => ({
+            comment_id: String(comment.source_comment_id || comment.id || '').trim(),
+            source_id: String(comment.source || 'youtube'),
+            texto_completo_del_comentario: String(comment.text || '').trim(),
+          }))
+          .filter((item) => item.comment_id && item.source_id && item.texto_completo_del_comentario);
+
+        if (!payloadComments.length) {
+          return { done: batch.comments.length, failed: batch.comments.length, fragments: [] };
         }
 
-        setSemanticAgentProgress({ done: index + 1, total: pendingComments.length });
-      }
+        const response = await commentsIngestionApi.extractSemanticFragments({
+          comments: payloadComments,
+          existing_codes: shortlistedCodes,
+        });
+        accumulateDiagnostics(response?.meta);
+        let responseItems = Array.isArray(response?.items) ? response.items : [];
+        let hasAnyFragments = responseItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
+
+        if (!hasAnyFragments && shortlistedCodes.length < existingCodeCatalog.length) {
+          const fullCatalogResponse = await commentsIngestionApi.extractSemanticFragments({
+            comments: payloadComments,
+            existing_codes: existingCodeCatalog,
+          });
+          accumulateDiagnostics(fullCatalogResponse?.meta);
+          const fullItems = Array.isArray(fullCatalogResponse?.items) ? fullCatalogResponse.items : [];
+          const fullHasAny = fullItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
+          if (fullHasAny) {
+            responseItems = fullItems;
+            hasAnyFragments = true;
+          }
+        }
+
+        return {
+          done: batch.comments.length,
+          failed: hasAnyFragments ? Math.max(0, batch.comments.length - responseItems.length) : 0,
+          fragments: mapFragmentsFromResponse({ responseItems }),
+        };
+      };
+
+      const MAX_SPLIT_DEPTH = 3;
+      const queue = [...initialBatches];
+      const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
+        while (queue.length) {
+          const nextBatch = queue.shift();
+          if (!nextBatch) continue;
+          try {
+            const result = await processBatch(nextBatch);
+            failed += Number(result.failed || 0);
+            if (Array.isArray(result.fragments) && result.fragments.length) {
+              createdFragments.push(...result.fragments);
+              persistIncremental(createdFragments);
+            }
+            processed += Number(result.done || nextBatch.comments.length);
+            setSemanticAgentProgress({
+              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              total: pendingComments.length,
+            });
+          } catch {
+            if (nextBatch.attempts + 1 < MAX_BATCH_RETRIES) {
+              queue.push({ ...nextBatch, attempts: nextBatch.attempts + 1 });
+              continue;
+            }
+
+            const canSplit = Array.isArray(nextBatch.comments)
+              && nextBatch.comments.length > 1
+              && Number(nextBatch.splitDepth || 0) < MAX_SPLIT_DEPTH;
+
+            if (canSplit) {
+              const mid = Math.ceil(nextBatch.comments.length / 2);
+              const left = nextBatch.comments.slice(0, mid);
+              const right = nextBatch.comments.slice(mid);
+              if (left.length) {
+                queue.push({
+                  id: `${nextBatch.id}_a`,
+                  attempts: 0,
+                  splitDepth: Number(nextBatch.splitDepth || 0) + 1,
+                  comments: left,
+                });
+              }
+              if (right.length) {
+                queue.push({
+                  id: `${nextBatch.id}_b`,
+                  attempts: 0,
+                  splitDepth: Number(nextBatch.splitDepth || 0) + 1,
+                  comments: right,
+                });
+              }
+              continue;
+            }
+
+            failed += nextBatch.comments.length;
+            processed += nextBatch.comments.length;
+            setSemanticAgentProgress({
+              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              total: pendingComments.length,
+            });
+          }
+        }
+      });
+
+      await Promise.all(workers);
 
       if (!createdFragments.length) {
-        setSemanticAgentError('La IA no pudo extraer fragmentos semánticos de los comentarios pendientes.');
+        setSemanticAgentError(
+          `La IA no encontró fragmentos con riqueza semántica suficiente y ajuste razonable. `
+          + `Descartes: baja_riqueza_semantica=${rejectionDiagnostics.baja_riqueza_semantica}, `
+          + `sin_codigo_razonable=${rejectionDiagnostics.sin_codigo_razonable}, `
+          + `comentario_redundante=${rejectionDiagnostics.comentario_redundante}, `
+          + `texto_demasiado_vago=${rejectionDiagnostics.texto_demasiado_vago}.`,
+        );
         return;
       }
 
@@ -1629,6 +2007,10 @@ const CommentsModePage = () => {
   };
 
   const loadProposalReviews = async () => {
+    if (COMMENT_CODE_EVOLUTION_DISABLED) {
+      setProposalFeedbackSummary({});
+      return;
+    }
     try {
       const data = await commentsIngestionApi.listCodeProposalReviews({ projectId, campaignId, limit: 2000 });
       setProposalFeedbackSummary(data?.summaryByCode && typeof data.summaryByCode === 'object' ? data.summaryByCode : {});
@@ -2209,7 +2591,7 @@ const CommentsModePage = () => {
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Editar fragmento</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { goToFragmentOrigin(fragment); setFragmentMenuId(''); }}>Ir a origen</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openFragmentEditor(fragment, 'edit')}>Vincular código</button>
-                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { evolveFragmentToCode(fragment); setFragmentMenuId(''); }}>Evolucionar a código</button>
+                              <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { if (!COMMENT_CODE_EVOLUTION_DISABLED) evolveFragmentToCode(fragment); setFragmentMenuId(''); }} disabled={COMMENT_CODE_EVOLUTION_DISABLED}>Evolución deshabilitada</button>
                               <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => { deleteSingleFragment(fragmentId); setFragmentMenuId(''); }}>Eliminar fragmento</button>
                             </div>
                           ) : null}
@@ -2286,12 +2668,12 @@ const CommentsModePage = () => {
                           if (fragmentEditor.mode !== 'edit') return;
                           const target = fragments.find((fragment) => String(fragment.id) === String(fragmentEditor.fragmentId));
                           if (!target) return;
-                          evolveFragmentToCode({ ...target, title: fragmentEditor.title || target.title, excerpt: fragmentEditor.excerpt || target.excerpt });
+                          if (!COMMENT_CODE_EVOLUTION_DISABLED) evolveFragmentToCode({ ...target, title: fragmentEditor.title || target.title, excerpt: fragmentEditor.excerpt || target.excerpt });
                           closeFragmentEditor();
                         }}
                         disabled={fragmentEditor.mode !== 'edit'}
                       >
-                        Evolucionar a código
+                        Evolución deshabilitada
                       </Button>
                       <div className="flex items-center gap-2">
                         <Button className="bg-white border text-slate-700" onClick={closeFragmentEditor}>Cancelar</Button>
@@ -2313,10 +2695,13 @@ const CommentsModePage = () => {
                 </div>
                 <div className="flex items-center gap-2">
                   <Button className="bg-violet-600 text-white" onClick={runCodeProposalAgent}>
-                    Agente 2 · Proponer códigos
+                    Agente 2 · Clusterizar pendientes
                   </Button>
                   <Button className="bg-white border text-slate-700" title="Mapa de códigos" onClick={() => setCodeMapOpen(true)}>
                     🕸️ Mapa de códigos
+                  </Button>
+                  <Button className="bg-emerald-600 text-white" onClick={runGenerateCodesWithoutTraceability}>
+                    Generar
                   </Button>
                   <Button className="bg-indigo-600 text-white" onClick={() => openCodeEditor('create')}>
                     <Plus className="mr-1 h-4 w-4" /> Crear código
@@ -2437,7 +2822,7 @@ const CommentsModePage = () => {
                 ) : null}
 
                 {!codeProposals.length ? (
-                  <p className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">Sin propuestas aún. Ejecuta “Agente 2 · Proponer códigos”.</p>
+                  <p className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">Sin propuestas aún. Ejecuta “Agente 2 · Clusterizar pendientes”.</p>
                 ) : !humanPanelProposals.length ? (
                   <div className="rounded-lg border border-dashed bg-slate-50 p-3 text-xs text-slate-500">
                     <p>No hay propuestas para los filtros actuales.</p>
@@ -2784,6 +3169,196 @@ const CommentsModePage = () => {
               ) : null}
             </div>
           )}
+
+
+
+          {codeGenerationModalOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+              <div className="max-h-[88vh] w-full max-w-5xl overflow-auto rounded-xl bg-white shadow-2xl">
+                <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Generación automática de códigos (sin trazabilidad inicial)</h3>
+                    <p className="text-xs text-slate-500">Comentarios → Clusterización → Subclusterización → Propuesta de códigos.</p>
+                  </div>
+                  <div className="relative flex items-center gap-2">
+                    <Button className="bg-white border text-rose-700" onClick={() => setCodeGenerationDeleteMenuOpen((prev) => !prev)}>Eliminar</Button>
+                    {codeGenerationDeleteMenuOpen ? (
+                      <div className="absolute right-0 top-11 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg">
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50"
+                          onClick={() => {
+                            setGeneratedCodeProposals([]);
+                            setCodeGenerationDeleteMenuOpen(false);
+                          }}
+                        >
+                          Eliminar todo
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-slate-100"
+                          onClick={() => {
+                            setCodeGenerationDeleteMode('single');
+                            setCodeGenerationDeleteMenuOpen(false);
+                          }}
+                        >
+                          Eliminar uno a uno
+                        </button>
+                        <button
+                          type="button"
+                          className="w-full rounded px-2 py-1.5 text-left text-xs text-slate-500 hover:bg-slate-100"
+                          onClick={() => {
+                            setCodeGenerationDeleteMode('none');
+                            setCodeGenerationDeleteMenuOpen(false);
+                          }}
+                        >
+                          Salir modo eliminar
+                        </button>
+                      </div>
+                    ) : null}
+                    <Button className="bg-white border text-slate-700" onClick={() => setCodeGenerationModalOpen(false)}>Cerrar</Button>
+                  </div>
+                </div>
+                <div className="space-y-3 p-4 text-sm">
+                  <div className="grid gap-2 md:grid-cols-3">
+                    <div className="rounded border bg-slate-50 px-3 py-2 text-xs">1) Clusterización comentarios</div>
+                    <div className="rounded border bg-slate-50 px-3 py-2 text-xs">2) Subclusterización patrones</div>
+                    <div className="rounded border bg-slate-50 px-3 py-2 text-xs">3) Propuesta de códigos/subcódigos</div>
+                  </div>
+                  {codeGenerationBusy ? <p className="text-sm text-slate-600">Generando propuesta conceptual...</p> : null}
+                  {codeGenerationError ? <p className="text-sm text-rose-600">{codeGenerationError}</p> : null}
+                  {codeGenerationMetrics ? (
+                    <div className="space-y-2 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-2">
+                      <div className="flex items-center justify-between text-xs text-indigo-900">
+                        <p className="font-medium">Total comentarios procesados</p>
+                        <p>{codeGenerationProgress.analyzedComments} / {codeGenerationProgress.totalComments}</p>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-indigo-100">
+                        <div
+                          className="h-full bg-gradient-to-r from-indigo-500 to-cyan-500 transition-all duration-500"
+                          style={{ width: `${codeGenerationProgress.pct}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-indigo-800/80">
+                        <span>Progreso real del análisis de comentarios</span>
+                        <span>{codeGenerationProgress.pct}%</span>
+                      </div>
+
+                      <p className="text-xs text-slate-600">
+                        Total base: {Number(codeGenerationMetrics.comments_total_from_table || 0)} · Enviados a generación: {codeGenerationProgress.fetchedComments} · Analizados por IA: {codeGenerationProgress.analyzedComments} · Clusters: {Number(codeGenerationMetrics.clusters_count || 0)} · Top-level: {Number(codeGenerationMetrics.top_level_clusters_count || 0)}
+                      </p>
+                    </div>
+                  ) : null}
+                  {codeGenerationDeleteMode === 'single' ? (
+                    <p className="text-xs text-rose-700">Modo eliminación uno a uno activo.</p>
+                  ) : null}
+
+                  <div className="space-y-2">
+                    {!generatedCodeProposals.length ? (
+                      !codeGenerationBusy ? <p className="text-sm text-slate-500">Aún no hay propuestas generadas.</p> : null
+                    ) : generatedCodeProposals.map((proposal) => (
+                      <div key={proposal.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-slate-900">{proposal.suggested_code_name}</p>
+                            <p className="text-xs text-slate-500">Cluster: {proposal.cluster_name} · Confianza IA: {Math.round(Number(proposal.confidence || 0) * 100)}%</p>
+                          </div>
+                          <span className="rounded border bg-white px-2 py-0.5 text-xs">Sin trazabilidad inicial</span>
+                        </div>
+                        <p className="text-xs text-slate-700">{proposal.description}</p>
+                        <p className="text-xs text-slate-500">Tamaño estimado: {proposal.size_estimate}</p>
+                        {(proposal.subclusters || []).length ? (
+                          <div>
+                            <p className="mb-1 text-xs font-semibold text-slate-700">Subcódigos sugeridos</p>
+                            <div className="space-y-1">
+                              {proposal.subclusters.map((sub, idx) => (
+                                <p key={`${proposal.id}_sub_${idx}`} className="rounded border bg-white px-2 py-1 text-xs text-slate-700">
+                                  {sub.suggested_subcode_name || sub.cluster_name} · conf. {Math.round(Number(sub.confidence || 0) * 100)}%
+                                </p>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                        <div className="flex gap-2">
+                          <Button className="bg-indigo-600 text-white" onClick={() => createCodeFromGeneratedProposal(proposal)}>Crear en codebook</Button>
+                          {codeGenerationDeleteMode === 'single' ? (
+                            <Button className="bg-white border text-rose-700" onClick={() => setGeneratedCodeProposals((prev) => prev.filter((item) => String(item.id) !== String(proposal.id)))}>Eliminar</Button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {semanticClusterModalOpen ? (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+              <div className="max-h-[88vh] w-full max-w-6xl overflow-auto rounded-xl bg-white shadow-2xl">
+                <div className="sticky top-0 z-10 flex items-center justify-between border-b bg-white px-4 py-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-900">Modal · Propuestas de codificación asistida por clusters</h3>
+                    <p className="text-xs text-slate-500">IA propone estructuras semánticas; la decisión final siempre es humana.</p>
+                  </div>
+                  <Button className="bg-white border text-slate-700" onClick={() => setSemanticClusterModalOpen(false)}>Cerrar</Button>
+                </div>
+                <div className="grid gap-3 p-4 md:grid-cols-2">
+                  {semanticClusterCards.length === 0 ? (
+                    <p className="text-sm text-slate-500">No hay clusters pendientes de decisión.</p>
+                  ) : semanticClusterCards.map((cluster) => {
+                    const draft = getClusterDraft(cluster.id);
+                    return (
+                      <div key={cluster.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-slate-900">{cluster.suggested_pattern_name}</p>
+                            <p className="text-xs text-slate-500">Tipo: {cluster.suggested_code_type} · Decisión IA: {cluster.suggested_decision}</p>
+                          </div>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className="rounded bg-white px-2 py-0.5 text-xs border">conf. {Math.round(Number(cluster.confidence || 0) * 100)}%</span>
+                            <span className="rounded bg-white px-2 py-0.5 text-xs border">{cluster.cluster_state}</span>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+                          <div className="rounded border bg-white px-2 py-1">Tamaño: {cluster.size}</div>
+                          <div className="rounded border bg-white px-2 py-1">Coherencia: {cluster.coherence}</div>
+                          <div className="rounded border bg-white px-2 py-1">Profundidad: {cluster.depth}</div>
+                          <div className="rounded border bg-white px-2 py-1">Dispersión: {cluster.source_dispersion}</div>
+                          <div className="rounded border bg-white px-2 py-1">Calidad: {cluster.quality_score}</div>
+                          <div className="rounded border bg-white px-2 py-1">Separación: {cluster.separation}</div>
+                        </div>
+                        <div>
+                          <p className="mb-1 text-xs font-semibold text-slate-700">Fragmentos representativos</p>
+                          <div className="space-y-1">
+                            {cluster.representative_fragments.slice(0, 3).map((item) => (
+                              <p key={String(item.fragment_id)} className="rounded border bg-white px-2 py-1 text-xs text-slate-700">{item.excerpt}</p>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                          <input className="rounded border px-2 py-1 text-xs" placeholder="Editar nombre sugerido" value={draft.editedName} onChange={(e) => updateClusterDraft(cluster.id, { editedName: e.target.value })} />
+                          <input className="rounded border px-2 py-1 text-xs" placeholder="Tipo conceptual" value={draft.conceptualType} onChange={(e) => updateClusterDraft(cluster.id, { conceptualType: e.target.value })} />
+                        </div>
+                        <select className="w-full rounded border px-2 py-1 text-xs" value={draft.targetCodeSlug} onChange={(e) => updateClusterDraft(cluster.id, { targetCodeSlug: e.target.value })}>
+                          <option value="">Seleccionar código existente (reutilizar)</option>
+                          {codes.map((code) => <option key={code.slug} value={code.slug}>{code.name}</option>)}
+                        </select>
+                        <div className="flex flex-wrap gap-1">
+                          <Button className="bg-indigo-600 text-white" onClick={() => applyClusterDecision(cluster, 'crear')}>Crear código</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'reutilizar')}>Reutilizar</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'dividir')}>Dividir</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'fusionar')}>Fusionar</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'ignorar')}>Ignorar</Button>
+                          <Button className="bg-white border text-slate-700" onClick={() => applyClusterDecision(cluster, 'posponer')}>Posponer</Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {tab === 'clusters' && (
             <div className="rounded-xl border bg-white p-4 space-y-3">
