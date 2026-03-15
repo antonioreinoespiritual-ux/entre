@@ -1662,6 +1662,7 @@ const CommentsModePage = () => {
       let processed = 0;
       let persistedCount = 0;
       let persistedFragments = [];
+      const attemptedCommentIds = new Set();
       setSemanticAgentProgress({ done: 0, total: pendingComments.length });
 
       const commentsById = new Map(
@@ -1774,6 +1775,15 @@ const CommentsModePage = () => {
       }));
 
       const processBatch = async (batch) => {
+        for (const comment of batch.comments) {
+          const cid = String(comment?.source_comment_id || comment?.id || '').trim();
+          if (cid) attemptedCommentIds.add(cid);
+        }
+        setSemanticAgentProgress({
+          done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+          total: pendingComments.length,
+        });
+
         const accumulateDiagnostics = (meta) => {
           const diagnostics = meta?.diagnostics;
           if (!diagnostics || typeof diagnostics !== 'object') return;
@@ -1839,7 +1849,10 @@ const CommentsModePage = () => {
               persistIncremental(createdFragments);
             }
             processed += Number(result.done || nextBatch.comments.length);
-            setSemanticAgentProgress({ done: Math.min(processed, pendingComments.length), total: pendingComments.length });
+            setSemanticAgentProgress({
+              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              total: pendingComments.length,
+            });
           } catch {
             if (nextBatch.attempts + 1 < MAX_BATCH_RETRIES) {
               queue.push({ ...nextBatch, attempts: nextBatch.attempts + 1 });
@@ -1875,7 +1888,10 @@ const CommentsModePage = () => {
 
             failed += nextBatch.comments.length;
             processed += nextBatch.comments.length;
-            setSemanticAgentProgress({ done: Math.min(processed, pendingComments.length), total: pendingComments.length });
+            setSemanticAgentProgress({
+              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              total: pendingComments.length,
+            });
           }
         }
       });
