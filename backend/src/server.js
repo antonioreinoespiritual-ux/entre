@@ -2714,7 +2714,7 @@ function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] })
     .join('\n');
 
   const serializedComments = safeComments
-    .map((item, index) => `${index + 1}) comment_id=${item.comment_id} | source_id=${item.source_id} | text=${compact(item.text, 700)}`)
+    .map((item, index) => `${index + 1}) comment_index=${index + 1} | comment_id=${item.comment_id} | source_id=${item.source_id} | text=${compact(item.text, 700)}`)
     .join('\n');
 
   return [
@@ -2729,7 +2729,7 @@ function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] })
     '5) Si no hay encaje semántico claro para un comentario: fragments=[].',
     '6) assignment_confidence y semantic_confidence en rango 0..1.',
     'Devuelve JSON válido puro (sin markdown) con estructura EXACTA:',
-    '{"items":[{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":""}]}]}',
+    '{"items":[{"comment_index":1,"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":""}]}]}',
     'CODEBOOK_EXISTENTE (usar solo estos slugs):',
     codebook || '- sin códigos disponibles -',
     'COMENTARIOS_DEL_BATCH:',
@@ -2762,6 +2762,44 @@ function clampConfidence(value, fallback = 0.75) {
   if (parsed < 0) return 0;
   if (parsed > 1) return 1;
   return Number(parsed.toFixed(3));
+}
+
+function normalizeLookupKey(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
+function buildExistingCodeResolvers(existingCodes = []) {
+  const codeRows = Array.isArray(existingCodes) ? existingCodes : [];
+  const slugByNormalizedSlug = new Map();
+  const slugByNormalizedName = new Map();
+
+  for (const code of codeRows) {
+    const slug = String(code?.slug || '').trim();
+    const name = String(code?.name || '').trim();
+    if (!slug) continue;
+    const slugKey = normalizeLookupKey(slug);
+    if (slugKey) slugByNormalizedSlug.set(slugKey, slug);
+    const nameKey = normalizeLookupKey(name);
+    if (nameKey) slugByNormalizedName.set(nameKey, slug);
+  }
+
+  return {
+    allowedCodeSlugs: new Set(codeRows.map((code) => String(code?.slug || '').trim()).filter(Boolean)),
+    resolveAssignedCodeSlug(rawValue = '') {
+      const raw = String(rawValue || '').trim();
+      if (!raw) return '';
+      const normalized = normalizeLookupKey(raw);
+      return slugByNormalizedSlug.get(normalized)
+        || slugByNormalizedName.get(normalized)
+        || '';
+    },
+  };
 }
 
 function fallbackSemanticSplit(commentId, commentText = '') {
@@ -2817,22 +2855,7 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
   const normalized = [];
   let cursor = 0;
 
-  const codeRows = Array.isArray(existingCodes) ? existingCodes : [];
-  const allowedCodeSlugs = new Set(
-    codeRows
-      .map((code) => String(code?.slug || '').trim())
-      .filter(Boolean),
-  );
-  const slugByName = new Map(
-    codeRows
-      .map((code) => {
-        const slug = String(code?.slug || '').trim();
-        const name = String(code?.name || '').trim().toLowerCase();
-        if (!slug || !name) return null;
-        return [name, slug];
-      })
-      .filter(Boolean),
-  );
+  const { allowedCodeSlugs, resolveAssignedCodeSlug } = buildExistingCodeResolvers(existingCodes);
 
   for (const item of incoming) {
     const fragmentText = String(item?.fragment_text || '').trim();
@@ -2846,9 +2869,7 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
       || item?.code_name
       || '',
     ).trim();
-    const mappedSlug = allowedCodeSlugs.has(rawAssignedCode)
-      ? rawAssignedCode
-      : slugByName.get(rawAssignedCode.toLowerCase()) || '';
+    const mappedSlug = resolveAssignedCodeSlug(rawAssignedCode);
     if (!mappedSlug || !allowedCodeSlugs.has(mappedSlug)) continue;
 
     let start = Number(item?.start_char_index);
@@ -2905,14 +2926,30 @@ function normalizeSemanticFragmentBatchOutput({ parsed, comments = [], existingC
 
   const incomingItems = Array.isArray(parsed?.items)
     ? parsed.items
-    : (Array.isArray(parsed) ? parsed : []);
+    : Array.isArray(parsed?.results)
+      ? parsed.results
+      : Array.isArray(parsed?.comments)
+        ? parsed.comments
+        : Array.isArray(parsed)
+          ? parsed
+          : [];
 
   const normalizedItems = [];
   const consumed = new Set();
 
   for (const item of incomingItems) {
-    const commentId = String(item?.comment_id || '').trim();
-    const source = byComment.get(commentId);
+    const commentId = String(item?.comment_id || item?.id || '').trim();
+    let source = byComment.get(commentId);
+    if (!source) {
+      const rawIndex = Number(item?.comment_index ?? item?.index);
+      const sourceByIndex = Number.isInteger(rawIndex) && rawIndex > 0
+        ? comments[rawIndex - 1]
+        : null;
+      if (sourceByIndex) {
+        const fallbackCommentId = String(sourceByIndex?.comment_id || '').trim();
+        source = byComment.get(fallbackCommentId) || null;
+      }
+    }
     if (!source) continue;
     consumed.add(commentId);
     normalizedItems.push(normalizeSemanticFragmentAgentOutput({
