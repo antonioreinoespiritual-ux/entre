@@ -1650,16 +1650,14 @@ const CommentsModePage = () => {
 
       const createdFragments = [];
       let failed = 0;
+      let processed = 0;
       setSemanticAgentProgress({ done: 0, total: pendingComments.length });
 
-      for (let index = 0; index < pendingComments.length; index += 1) {
-        const comment = pendingComments[index];
+      const processSingleComment = async (comment) => {
         const sourceCommentId = String(comment.source_comment_id || comment.id || '').trim();
         const sourceText = String(comment.text || '').trim();
         if (!sourceCommentId || !sourceText) {
-          failed += 1;
-          setSemanticAgentProgress({ done: index + 1, total: pendingComments.length });
-          continue;
+          return { failed: 1, fragments: [] };
         }
 
         try {
@@ -1672,10 +1670,11 @@ const CommentsModePage = () => {
 
           const generatedFragments = Array.isArray(response.fragments) ? response.fragments : [];
           const timestamp = new Date().toISOString();
+          const mapped = [];
           for (const fragment of generatedFragments) {
             const text = String(fragment?.fragment_text || '').trim();
             if (!text) continue;
-            createdFragments.push({
+            mapped.push({
               id: String(fragment?.fragment_id || `comment_fragment_${Date.now()}_${Math.floor(Math.random() * 1000)}`),
               title: '',
               excerpt: text,
@@ -1697,12 +1696,32 @@ const CommentsModePage = () => {
               created_at: timestamp,
             });
           }
+          return { failed: 0, fragments: mapped };
         } catch {
-          failed += 1;
+          return { failed: 1, fragments: [] };
         }
+      };
 
-        setSemanticAgentProgress({ done: index + 1, total: pendingComments.length });
-      }
+      const runWithConcurrency = async (items, worker, concurrency = 4) => {
+        const size = Math.max(1, Math.min(concurrency, 8));
+        const queue = [...items];
+        const runners = Array.from({ length: Math.min(size, queue.length) }, async () => {
+          while (queue.length) {
+            const item = queue.shift();
+            if (!item) continue;
+            const result = await worker(item);
+            failed += Number(result?.failed || 0);
+            if (Array.isArray(result?.fragments) && result.fragments.length) {
+              createdFragments.push(...result.fragments);
+            }
+            processed += 1;
+            setSemanticAgentProgress({ done: processed, total: pendingComments.length });
+          }
+        });
+        await Promise.all(runners);
+      };
+
+      await runWithConcurrency(pendingComments, processSingleComment, 4);
 
       if (!createdFragments.length) {
         setSemanticAgentError('La IA no encontró fragmentos con riqueza semántica y ajuste claro a códigos existentes.');
