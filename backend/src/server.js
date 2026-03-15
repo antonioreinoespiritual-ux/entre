@@ -3803,7 +3803,9 @@ function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes
   return `Tarea: crear taxonomía conceptual jerárquica desde comentarios completos.
 No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
 Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
-Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin prefijos vacíos ni keywords sueltas.
+Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin números secuenciales.
+Prohibido en títulos: código, cluster, conceptual, tema, grupo, placeholders o prefijos vacíos.
+El título debe comprimir la narrativa dominante (problema/emoción/conducta), no reciclar keywords sueltas.
 Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
 Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
 Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
@@ -3850,6 +3852,7 @@ function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, ma
   return `Consolida esta lista de candidatos en taxonomía final sin trazabilidad.
 Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, maximizando cobertura semántica y deteniéndose por saturación.
 Fusiona redundancias, descarta ruido y conserva solo nombres conceptuales reutilizables.
+Regla de naming: títulos de 2-5 palabras, sin números secuenciales ni términos genéricos (código/cluster/conceptual/tema/grupo).
 Incluye subcódigos útiles y marca recommendation.
 Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
 
@@ -3922,9 +3925,62 @@ function chunkCommentsForGeneration(comments = [], chunkSize = 120) {
 }
 
 function normalizeCodeGenerationAgentOutput(parsed) {
-  const normalizeConceptualName = (raw, fallback = 'código conceptual') => {
+  const bannedTitleTokens = new Set([
+    'codigo', 'cluster', 'conceptual', 'tema', 'grupo', 'placeholder',
+    'patron', 'relacional', 'subcluster', 'subcodigo', 'generic',
+  ]);
+
+  const conceptualRules = [
+    { test: /(abandono|reemplaz|dejar|dejo|dejó|perderlo|perderla|perder)/, label: 'miedo a ser reemplazado' },
+    { test: /(ignora|ignorado|indiferenc|desinteres|distancia|alejam)/, label: 'percepción de desinterés' },
+    { test: /(culpa|culpable|reproche|arrepent)/, label: 'culpa por ruptura' },
+    { test: /(ansiedad|angustia|temor|miedo|inseguridad)/, label: 'ansiedad vincular persistente' },
+    { test: /(validac|atencion|atención|escucha|apoyo|afecto)/, label: 'búsqueda de validación afectiva' },
+    { test: /(reconcili|volver|retomar|recuperar)/, label: 'deseo de reconciliación' },
+    { test: /(celos|compar|nueva pareja|tercera persona)/, label: 'comparación con nueva pareja' },
+    { test: /(intermitente|aparece|desaparece|inconsistente)/, label: 'apego intermitente' },
+    { test: /(espera|esperanza|aun puede|aún puede|todavia|todavía)/, label: 'esperanza unilateral' },
+    { test: /(control|manipul|presion|presión|exigencia)/, label: 'dinámica de control afectivo' },
+  ];
+
+  const formatAsTitle = (value) => String(value || '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
+    .join(' ');
+
+  const looksGeneric = (value) => {
+    const normalized = String(value || '').toLowerCase().trim();
+    if (!normalized) return true;
+    if (/\b\d+\b/.test(normalized)) return true;
+    const tokens = normalized.split(/\s+/).filter(Boolean);
+    if (tokens.length < 2 || tokens.length > 5) return true;
+    const useful = tokens.filter((token) => !bannedTitleTokens.has(token));
+    return useful.length < 2;
+  };
+
+  const inferConceptualFallbackName = (description, fallback = 'dinámica emocional emergente') => {
+    const source = String(description || '').toLowerCase();
+    if (!source) return formatAsTitle(fallback);
+
+    const matched = conceptualRules.find((rule) => rule.test.test(source));
+    if (matched) return formatAsTitle(matched.label);
+
+    const tokens = source
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((token) => token.length >= 4 && !bannedTitleTokens.has(token));
+    const unique = Array.from(new Set(tokens));
+    const compressed = unique.slice(0, 3).join(' ').trim();
+    if (!compressed || compressed.split(/\s+/).length < 2) return formatAsTitle(fallback);
+    return formatAsTitle(compressed);
+  };
+
+  const normalizeConceptualName = (raw, description, fallback = 'dinámica emocional emergente') => {
     let value = String(raw || '').toLowerCase().trim();
-    if (!value) return fallback;
     value = value
       .normalize('NFD')
       .replace(/\p{Diacritic}/gu, '')
@@ -3933,26 +3989,26 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       .replace(/[^a-z0-9\s]/g, '')
       .trim();
 
-    const bannedStarts = [
-      'patron relacional',
-      'patron conceptual',
-      'patron',
-    ];
-    if (bannedStarts.some((prefix) => value.startsWith(prefix))) {
-      value = value
-        .replace(/^patron\s+relacional\s*/g, '')
-        .replace(/^patron\s+conceptual\s*/g, '')
-        .replace(/^patron\s*/g, '')
-        .trim();
-    }
+    value = value
+      .replace(/^patron\s+relacional\s*/g, '')
+      .replace(/^patron\s+conceptual\s*/g, '')
+      .replace(/^cluster\s+conceptual\s*/g, '')
+      .replace(/^subcluster\s+conceptual\s*/g, '')
+      .replace(/^codigo\s+conceptual\s*/g, '')
+      .replace(/^subcodigo\s+conceptual\s*/g, '')
+      .replace(/^patron\s*/g, '')
+      .trim();
 
-    const filler = new Set(['excelente', 'gracias', 'hola', 'buenas', 'ok', 'si', 'no']);
-    const tokens = value.split(/\s+/).filter(Boolean).filter((token) => !filler.has(token));
-    const compact = tokens.slice(0, 5).join(' ').trim();
-    if (!compact || compact.length < 8) return fallback;
+    const compact = value
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((token) => !bannedTitleTokens.has(token))
+      .slice(0, 5)
+      .join(' ')
+      .trim();
 
-    const title = compact.replace(/\b\w/g, (m) => m.toUpperCase());
-    return title;
+    if (looksGeneric(compact)) return inferConceptualFallbackName(description, fallback);
+    return formatAsTitle(compact);
   };
 
   const inferNameRationale = (name, description) => {
@@ -3972,16 +4028,16 @@ function normalizeCodeGenerationAgentOutput(parsed) {
 
   const proposals = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
   return proposals.slice(0, 40).map((proposal, index) => ({
-    cluster_name: normalizeConceptualName(proposal.cluster_name || `cluster conceptual ${index + 1}`, `Cluster Conceptual ${index + 1}`),
-    suggested_code_name: normalizeConceptualName(proposal.suggested_code_name || proposal.cluster_name || `codigo conceptual ${index + 1}`, `Código Conceptual ${index + 1}`),
+    cluster_name: normalizeConceptualName(proposal.cluster_name || proposal.suggested_code_name, proposal.description, `dinámica conceptual ${index + 1}`),
+    suggested_code_name: normalizeConceptualName(proposal.suggested_code_name || proposal.cluster_name, proposal.description, `patrón narrativo ${index + 1}`),
     description: String(proposal.description || 'Patrón conceptual propuesto sin trazabilidad inicial.').trim(),
     naming_rationale: inferNameRationale(proposal.suggested_code_name || proposal.cluster_name, proposal.description),
     coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
     pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
     recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
     subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub, subIndex) => ({
-      cluster_name: normalizeConceptualName(sub.cluster_name || `subcluster conceptual ${subIndex + 1}`, `Subcluster Conceptual ${subIndex + 1}`),
-      suggested_subcode_name: normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name || `subcodigo conceptual ${subIndex + 1}`, `Subcódigo Conceptual ${subIndex + 1}`),
+      cluster_name: normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, `subpatrón ${subIndex + 1}`),
+      suggested_subcode_name: normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, `subnarrativa ${subIndex + 1}`),
       description: String(sub.description || 'Subpatrón conceptual propuesto sin trazabilidad inicial.').trim(),
       naming_rationale: inferNameRationale(sub.suggested_subcode_name || sub.cluster_name, sub.description),
       coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
@@ -3992,6 +4048,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     conceptual_taxonomy_stage: 'discovery',
   }));
 }
+
 
 async function ensureYouTubeAccessToken(connection, config) {
   if (!connection) return null;
