@@ -1652,6 +1652,12 @@ const CommentsModePage = () => {
       const MAX_CONCURRENCY = Math.max(3, Math.min(5, Number(import.meta.env.VITE_AUTOFRAGMENT_CONCURRENCY) || 3));
       const MAX_BATCH_RETRIES = 2;
       const createdFragments = [];
+      const rejectionDiagnostics = {
+        baja_riqueza_semantica: 0,
+        sin_codigo_razonable: 0,
+        comentario_redundante: 0,
+        texto_demasiado_vago: 0,
+      };
       let failed = 0;
       let processed = 0;
       let persistedCount = 0;
@@ -1749,15 +1755,15 @@ const CommentsModePage = () => {
           const topForComment = [...existingCodeCatalog]
             .map((code) => ({ code, score: scoreCodeForComment(text, code) }))
             .sort((a, b) => b.score - a.score)
-            .slice(0, 12)
+            .slice(0, 18)
             .map((entry) => entry.code.slug)
             .filter(Boolean);
           for (const slug of topForComment) unionSlugs.add(slug);
-          if (unionSlugs.size >= 60) break;
+          if (unionSlugs.size >= 90) break;
         }
-        const shortlisted = existingCodeCatalog.filter((code) => unionSlugs.has(code.slug)).slice(0, 60);
+        const shortlisted = existingCodeCatalog.filter((code) => unionSlugs.has(code.slug)).slice(0, 90);
         if (shortlisted.length >= 10) return shortlisted;
-        return existingCodeCatalog.slice(0, 40);
+        return existingCodeCatalog.slice(0, 60);
       };
 
       const initialBatches = buildBatches(pendingComments, BATCH_SIZE).map((batch, index) => ({
@@ -1767,6 +1773,15 @@ const CommentsModePage = () => {
       }));
 
       const processBatch = async (batch) => {
+        const accumulateDiagnostics = (meta) => {
+          const diagnostics = meta?.diagnostics;
+          if (!diagnostics || typeof diagnostics !== 'object') return;
+          rejectionDiagnostics.baja_riqueza_semantica += Number(diagnostics.baja_riqueza_semantica || 0);
+          rejectionDiagnostics.sin_codigo_razonable += Number(diagnostics.sin_codigo_razonable || 0);
+          rejectionDiagnostics.comentario_redundante += Number(diagnostics.comentario_redundante || 0);
+          rejectionDiagnostics.texto_demasiado_vago += Number(diagnostics.texto_demasiado_vago || 0);
+        };
+
         const shortlistedCodes = buildShortlistedCodesForBatch(batch.comments);
         const payloadComments = batch.comments
           .map((comment) => ({
@@ -1784,6 +1799,7 @@ const CommentsModePage = () => {
           comments: payloadComments,
           existing_codes: shortlistedCodes,
         });
+        accumulateDiagnostics(response?.meta);
         let responseItems = Array.isArray(response?.items) ? response.items : [];
         let hasAnyFragments = responseItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
 
@@ -1792,6 +1808,7 @@ const CommentsModePage = () => {
             comments: payloadComments,
             existing_codes: existingCodeCatalog,
           });
+          accumulateDiagnostics(fullCatalogResponse?.meta);
           const fullItems = Array.isArray(fullCatalogResponse?.items) ? fullCatalogResponse.items : [];
           const fullHasAny = fullItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
           if (fullHasAny) {
@@ -1836,7 +1853,13 @@ const CommentsModePage = () => {
       await Promise.all(workers);
 
       if (!createdFragments.length) {
-        setSemanticAgentError('La IA no encontró fragmentos con riqueza semántica y ajuste claro a códigos existentes.');
+        setSemanticAgentError(
+          `La IA no encontró fragmentos con riqueza semántica suficiente y ajuste razonable. `
+          + `Descartes: baja_riqueza_semantica=${rejectionDiagnostics.baja_riqueza_semantica}, `
+          + `sin_codigo_razonable=${rejectionDiagnostics.sin_codigo_razonable}, `
+          + `comentario_redundante=${rejectionDiagnostics.comentario_redundante}, `
+          + `texto_demasiado_vago=${rejectionDiagnostics.texto_demasiado_vago}.`,
+        );
         return;
       }
 

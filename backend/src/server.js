@@ -2672,16 +2672,17 @@ function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText, ex
     'Prohibiciones absolutas: no crear códigos nuevos, no crear subcódigos, no usar placeholders, no usar matching mecánico de keywords.',
     'Reglas:',
     '1) Analiza el comentario completo antes de fragmentar.',
-    '2) Extrae 0, 1 o máximo 2 fragmentos por comentario, solo si tienen valor analítico real.',
-    '3) No fragmentes saludos, relleno, cortesía, ambigüedad o texto sin encaje claro.',
+    '2) Extrae 0, 1 o máximo 2 fragmentos por comentario, solo si tienen valor analítico real y riqueza semántica suficiente.',
+    '3) Acepta fragmentos con match_fuerte o match_probable contra códigos existentes. Rechaza solo sin_match o baja riqueza.',
     '4) Cada fragmento debe mapearse al código existente más adecuado por significado.',
-    '5) Si ningún código encaja con claridad, devuelve fragments: [].',
+    '5) Si ningún código encaja de forma razonable, devuelve fragments: [] y reason_if_rejected.',
     '6) Conserva texto exacto original en fragment_text.',
     '7) Incluye offsets reales start_char_index y end_char_index.',
     '8) Devuelve semantic_confidence y assignment_confidence (0..1).',
-    '9) Incluye assignment_rationale breve.',
+    '9) Incluye assignment_rationale breve y match_level en {match_fuerte,match_probable,sin_match}.',
+    '10) Si no fragmentas, incluir reason_if_rejected en {baja_riqueza_semantica,sin_codigo_razonable,comentario_redundante,texto_demasiado_vago}.',
     'Respuesta requerida: JSON válido puro, sin markdown.',
-    '{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":""}]}',
+    '{"comment_id":"","reason_if_rejected":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":"","match_level":"match_probable"}]}',
     `comment_id: ${commentId}`,
     `source_id: ${sourceId}`,
     `texto_completo_del_comentario: ${commentText}`,
@@ -2723,13 +2724,15 @@ function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] })
     'Prohibido: crear códigos/subcódigos nuevos, placeholders, o clasificación mecánica por keywords.',
     'Reglas:',
     '1) Analiza cada comentario completo antes de fragmentar.',
-    '2) Extrae 0..2 fragmentos por comentario solo si hay riqueza semántica y encaje claro a un código existente.',
+    '2) Extrae 0..2 fragmentos por comentario cuando exista riqueza semántica suficiente y encaje semántico razonable.',
     '3) Ignora relleno, cortesía, ruido y texto ambiguo sin valor analítico.',
-    '4) Conserva texto exacto del fragmento y offsets reales.',
-    '5) Si no hay encaje semántico claro para un comentario: fragments=[].',
-    '6) assignment_confidence y semantic_confidence en rango 0..1.',
+    '4) Clasifica cada decisión por comentario: match_fuerte, match_probable, sin_match.',
+    '5) Crear fragmentos para match_fuerte y match_probable (si hay riqueza suficiente).',
+    '6) Rechazar solo por baja_riqueza_semantica, sin_codigo_razonable, comentario_redundante o texto_demasiado_vago.',
+    '7) Conserva texto exacto del fragmento y offsets reales.',
+    '8) assignment_confidence y semantic_confidence en rango 0..1.',
     'Devuelve JSON válido puro (sin markdown) con estructura EXACTA:',
-    '{"items":[{"comment_index":1,"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":""}]}]}',
+    '{"items":[{"comment_index":1,"comment_id":"","reason_if_rejected":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":"","match_level":"match_probable"}]}]}',
     'CODEBOOK_EXISTENTE (usar solo estos slugs):',
     codebook || '- sin códigos disponibles -',
     'COMENTARIOS_DEL_BATCH:',
@@ -2912,6 +2915,16 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
     const mappedSlug = resolveAssignedCodeSlug(rawAssignedCode);
     if (!mappedSlug || !allowedCodeSlugs.has(mappedSlug)) continue;
 
+    const matchLevelRaw = String(item?.match_level || item?.match || '').trim().toLowerCase();
+    const matchLevel = matchLevelRaw === 'match_fuerte'
+      ? 'match_fuerte'
+      : matchLevelRaw === 'match_probable'
+        ? 'match_probable'
+        : matchLevelRaw === 'sin_match'
+          ? 'sin_match'
+          : 'match_probable';
+    if (matchLevel === 'sin_match') continue;
+
     let start = Number(item?.start_char_index);
     let end = Number(item?.end_char_index);
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start || start < 0 || end > text.length) {
@@ -2942,12 +2955,21 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
       assigned_code_slug: mappedSlug,
       assignment_confidence: clampConfidence(item?.assignment_confidence, 0.75),
       assignment_rationale: String(item?.assignment_rationale || '').trim().slice(0, 280),
+      match_level: matchLevel,
     });
   }
+
+  const rejectReason = normalizeRejectReason(
+    parsed?.reason_if_rejected
+    || parsed?.discard_reason
+    || parsed?.reject_reason
+    || '',
+  );
 
   return {
     comment_id: String(commentId || ''),
     fragments: normalized,
+    reason_if_rejected: normalized.length ? '' : (rejectReason || 'sin_codigo_razonable'),
   };
 }
 
@@ -2991,7 +3013,7 @@ function normalizeSemanticFragmentBatchOutput({ parsed, comments = [], existingC
       }
     }
     if (!source) continue;
-    consumed.add(commentId);
+    consumed.add(source.comment_id);
     normalizedItems.push(normalizeSemanticFragmentAgentOutput({
       parsed: item,
       commentId: source.comment_id,
@@ -3003,11 +3025,29 @@ function normalizeSemanticFragmentBatchOutput({ parsed, comments = [], existingC
 
   for (const [commentId, source] of byComment.entries()) {
     if (consumed.has(commentId)) continue;
-    normalizedItems.push({ comment_id: source.comment_id, fragments: [] });
+    normalizedItems.push({ comment_id: source.comment_id, fragments: [], reason_if_rejected: 'sin_codigo_razonable' });
+  }
+
+  const diagnostics = {
+    baja_riqueza_semantica: 0,
+    sin_codigo_razonable: 0,
+    comentario_redundante: 0,
+    texto_demasiado_vago: 0,
+  };
+  for (const item of normalizedItems) {
+    const fragments = Array.isArray(item?.fragments) ? item.fragments : [];
+    if (fragments.length > 0) continue;
+    const reason = String(item?.reason_if_rejected || '').trim();
+    if (reason && Object.prototype.hasOwnProperty.call(diagnostics, reason)) {
+      diagnostics[reason] += 1;
+    } else {
+      diagnostics.sin_codigo_razonable += 1;
+    }
   }
 
   return {
     items: normalizedItems,
+    diagnostics,
   };
 }
 
@@ -6081,6 +6121,7 @@ const server = http.createServer(async (req, res) => {
             data: {
               items: normalized.items.map((item) => ({
                 comment_id: item.comment_id,
+                reason_if_rejected: String(item?.reason_if_rejected || '').trim() || null,
                 fragments: (Array.isArray(item.fragments) ? item.fragments : []).map((fragment) => ({
                   fragment_id: fragment.fragment_id,
                   fragment_text: fragment.fragment_text,
@@ -6090,8 +6131,17 @@ const server = http.createServer(async (req, res) => {
                   assigned_code_slug: fragment.assigned_code_slug,
                   assignment_confidence: fragment.assignment_confidence,
                   assignment_rationale: fragment.assignment_rationale,
+                  match_level: String(fragment?.match_level || '').trim() || 'match_probable',
                 })),
               })),
+              meta: {
+                diagnostics: normalized.diagnostics || {
+                  baja_riqueza_semantica: 0,
+                  sin_codigo_razonable: 0,
+                  comentario_redundante: 0,
+                  texto_demasiado_vago: 0,
+                },
+              },
             },
           });
         }
@@ -6116,7 +6166,9 @@ const server = http.createServer(async (req, res) => {
               assigned_code_slug: fragment.assigned_code_slug,
               assignment_confidence: fragment.assignment_confidence,
               assignment_rationale: fragment.assignment_rationale,
+              match_level: String(fragment?.match_level || '').trim() || 'match_probable',
             })),
+            reason_if_rejected: String(normalized?.reason_if_rejected || '').trim() || null,
           },
         });
       } catch (error) {
@@ -9231,3 +9283,12 @@ runMigrations()
     console.error('Failed to initialize backend:', error);
     process.exit(1);
   });
+  const normalizeRejectReason = (value) => {
+    const reason = String(value || '').trim().toLowerCase();
+    if (!reason) return '';
+    if (reason.includes('redund')) return 'comentario_redundante';
+    if (reason.includes('vago')) return 'texto_demasiado_vago';
+    if (reason.includes('riqueza') || reason.includes('semantic') || reason.includes('semantica')) return 'baja_riqueza_semantica';
+    if (reason.includes('codigo') || reason.includes('match') || reason.includes('encaje')) return 'sin_codigo_razonable';
+    return '';
+  };
