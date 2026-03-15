@@ -2740,15 +2740,48 @@ function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] })
 function extractJsonObjectFromText(rawText = '') {
   const text = String(rawText || '').trim();
   if (!text) return null;
+  const unwrapped = text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/```$/i, '')
+    .trim();
   try {
-    return JSON.parse(text);
+    return JSON.parse(unwrapped);
   } catch {
+    const startObj = unwrapped.indexOf('{');
+    const endObj = unwrapped.lastIndexOf('}');
+    if (startObj >= 0 && endObj > startObj) {
+      try {
+        return JSON.parse(unwrapped.slice(startObj, endObj + 1));
+      } catch {
+        // continue
+      }
+    }
+
+    const startArr = unwrapped.indexOf('[');
+    const endArr = unwrapped.lastIndexOf(']');
+    if (startArr >= 0 && endArr > startArr) {
+      try {
+        return JSON.parse(unwrapped.slice(startArr, endArr + 1));
+      } catch {
+        return null;
+      }
+    }
+
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start >= 0 && end > start) {
       try {
         return JSON.parse(text.slice(start, end + 1));
       } catch {
+        const arrStart = text.indexOf('[');
+        const arrEnd = text.lastIndexOf(']');
+        if (arrStart >= 0 && arrEnd > arrStart) {
+          try {
+            return JSON.parse(text.slice(arrStart, arrEnd + 1));
+          } catch {
+            return null;
+          }
+        }
         return null;
       }
     }
@@ -2794,6 +2827,13 @@ function buildExistingCodeResolvers(existingCodes = []) {
     resolveAssignedCodeSlug(rawValue = '') {
       const raw = String(rawValue || '').trim();
       if (!raw) return '';
+      if (/^\d+$/.test(raw)) {
+        const idx = Number(raw) - 1;
+        if (idx >= 0 && idx < codeRows.length) {
+          const indexedSlug = String(codeRows[idx]?.slug || '').trim();
+          if (indexedSlug) return indexedSlug;
+        }
+      }
       const normalized = normalizeLookupKey(raw);
       return slugByNormalizedSlug.get(normalized)
         || slugByNormalizedName.get(normalized)
