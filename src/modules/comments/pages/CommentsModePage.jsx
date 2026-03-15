@@ -1744,6 +1744,10 @@ const CommentsModePage = () => {
           existing_codes: existingCodeCatalog,
         });
         const responseItems = Array.isArray(response?.items) ? response.items : [];
+        const hasAnyFragments = responseItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
+        if (!hasAnyFragments) {
+          throw new Error('empty_batch_fragments');
+        }
         return {
           done: batch.comments.length,
           failed: Math.max(0, batch.comments.length - responseItems.length),

@@ -2817,9 +2817,20 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
   const normalized = [];
   let cursor = 0;
 
+  const codeRows = Array.isArray(existingCodes) ? existingCodes : [];
   const allowedCodeSlugs = new Set(
-    (Array.isArray(existingCodes) ? existingCodes : [])
+    codeRows
       .map((code) => String(code?.slug || '').trim())
+      .filter(Boolean),
+  );
+  const slugByName = new Map(
+    codeRows
+      .map((code) => {
+        const slug = String(code?.slug || '').trim();
+        const name = String(code?.name || '').trim().toLowerCase();
+        if (!slug || !name) return null;
+        return [name, slug];
+      })
       .filter(Boolean),
   );
 
@@ -2827,8 +2838,18 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
     const fragmentText = String(item?.fragment_text || '').trim();
     if (!fragmentText) continue;
 
-    const assignedCodeSlug = String(item?.assigned_code_slug || '').trim();
-    if (!assignedCodeSlug || !allowedCodeSlugs.has(assignedCodeSlug)) continue;
+    const rawAssignedCode = String(
+      item?.assigned_code_slug
+      || item?.assigned_code
+      || item?.code_slug
+      || item?.assigned_code_name
+      || item?.code_name
+      || '',
+    ).trim();
+    const mappedSlug = allowedCodeSlugs.has(rawAssignedCode)
+      ? rawAssignedCode
+      : slugByName.get(rawAssignedCode.toLowerCase()) || '';
+    if (!mappedSlug || !allowedCodeSlugs.has(mappedSlug)) continue;
 
     let start = Number(item?.start_char_index);
     let end = Number(item?.end_char_index);
@@ -2857,7 +2878,7 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
       start_char_index: Math.max(0, Math.floor(start)),
       end_char_index: Math.max(0, Math.floor(end)),
       semantic_confidence: clampConfidence(item?.semantic_confidence, 0.75),
-      assigned_code_slug: assignedCodeSlug,
+      assigned_code_slug: mappedSlug,
       assignment_confidence: clampConfidence(item?.assignment_confidence, 0.75),
       assignment_rationale: String(item?.assignment_rationale || '').trim().slice(0, 280),
     });
