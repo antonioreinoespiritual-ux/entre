@@ -1769,6 +1769,7 @@ const CommentsModePage = () => {
       const initialBatches = buildBatches(pendingComments, BATCH_SIZE).map((batch, index) => ({
         id: `batch_${index + 1}`,
         attempts: 0,
+        splitDepth: 0,
         comments: batch,
       }));
 
@@ -1824,6 +1825,7 @@ const CommentsModePage = () => {
         };
       };
 
+      const MAX_SPLIT_DEPTH = 3;
       const queue = [...initialBatches];
       const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
         while (queue.length) {
@@ -1843,6 +1845,34 @@ const CommentsModePage = () => {
               queue.push({ ...nextBatch, attempts: nextBatch.attempts + 1 });
               continue;
             }
+
+            const canSplit = Array.isArray(nextBatch.comments)
+              && nextBatch.comments.length > 1
+              && Number(nextBatch.splitDepth || 0) < MAX_SPLIT_DEPTH;
+
+            if (canSplit) {
+              const mid = Math.ceil(nextBatch.comments.length / 2);
+              const left = nextBatch.comments.slice(0, mid);
+              const right = nextBatch.comments.slice(mid);
+              if (left.length) {
+                queue.push({
+                  id: `${nextBatch.id}_a`,
+                  attempts: 0,
+                  splitDepth: Number(nextBatch.splitDepth || 0) + 1,
+                  comments: left,
+                });
+              }
+              if (right.length) {
+                queue.push({
+                  id: `${nextBatch.id}_b`,
+                  attempts: 0,
+                  splitDepth: Number(nextBatch.splitDepth || 0) + 1,
+                  comments: right,
+                });
+              }
+              continue;
+            }
+
             failed += nextBatch.comments.length;
             processed += nextBatch.comments.length;
             setSemanticAgentProgress({ done: Math.min(processed, pendingComments.length), total: pendingComments.length });
