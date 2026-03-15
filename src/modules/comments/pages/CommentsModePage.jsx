@@ -1619,6 +1619,19 @@ const CommentsModePage = () => {
         return;
       }
 
+      const existingCodeCatalog = codes
+        .map((code) => ({
+          slug: String(code?.slug || '').trim(),
+          name: String(code?.name || '').trim(),
+          description: String(code?.description || '').trim(),
+        }))
+        .filter((code) => code.slug && code.name);
+
+      if (!existingCodeCatalog.length) {
+        setSemanticAgentError('Auto-fragmentar con IA requiere códigos existentes en el codebook.');
+        return;
+      }
+
       const existingSourceIds = new Set(
         fragments
           .map((fragment) => String(fragment.source_comment_id || fragment.comment_id || '').trim())
@@ -1654,6 +1667,7 @@ const CommentsModePage = () => {
             comment_id: sourceCommentId,
             source_id: String(comment.source || 'youtube'),
             texto_completo_del_comentario: sourceText,
+            existing_codes: existingCodeCatalog,
           });
 
           const generatedFragments = Array.isArray(response.fragments) ? response.fragments : [];
@@ -1672,11 +1686,14 @@ const CommentsModePage = () => {
               selection_start: Number.isFinite(Number(fragment?.start_char_index)) ? Number(fragment.start_char_index) : null,
               selection_end: Number.isFinite(Number(fragment?.end_char_index)) ? Number(fragment.end_char_index) : null,
               semantic_confidence: Number.isFinite(Number(fragment?.semantic_confidence)) ? Number(fragment.semantic_confidence) : null,
-              source_type: 'semantic_agent',
+              source_type: 'autofragmentar_ia',
               source_run_id: comment.source_run_id || null,
               author_name: comment.author_name || null,
               video_id: comment.video_id || null,
-              code_slugs: [],
+              code_slugs: String(fragment?.assigned_code_slug || '').trim() ? [String(fragment.assigned_code_slug).trim()] : [],
+              assignment_confidence: Number.isFinite(Number(fragment?.assignment_confidence)) ? Number(fragment.assignment_confidence) : null,
+              assignment_rationale: String(fragment?.assignment_rationale || '').trim() || null,
+              execution_origin: 'autofragmentar_ia',
               created_at: timestamp,
             });
           }
@@ -1688,7 +1705,7 @@ const CommentsModePage = () => {
       }
 
       if (!createdFragments.length) {
-        setSemanticAgentError('La IA no pudo extraer fragmentos semánticos de los comentarios pendientes.');
+        setSemanticAgentError('La IA no encontró fragmentos con riqueza semántica y ajuste claro a códigos existentes.');
         return;
       }
 

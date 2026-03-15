@@ -35,8 +35,8 @@ export const commentsIngestionApi = {
   runCodeGenerationAgent: (payload) => request('/api/comment-base/code-generation-agent', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || { proposals: [], metrics: {}, meta: {} }),
   saveCodeProposalReview: (payload) => request('/api/comment-base/code-proposal-reviews', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || {}),
   listCodeProposalReviews: ({ projectId, campaignId, limit = 500 }) => request(`/api/comment-base/code-proposal-reviews?${new URLSearchParams({ projectId, campaignId, limit: String(limit) }).toString()}`).then((r) => r.data || { items: [] }),
-  extractSemanticFragments: ({ comment_id, source_id, texto_completo_del_comentario }) => request('/api/comment-base/semantic-fragment-agent', {
+  extractSemanticFragments: ({ comment_id, source_id, texto_completo_del_comentario, existing_codes = [] }) => request('/api/comment-base/semantic-fragment-agent', {
     method: 'POST',
-    body: JSON.stringify({ comment_id, source_id, texto_completo_del_comentario }),
+    body: JSON.stringify({ comment_id, source_id, texto_completo_del_comentario, existing_codes }),
   }).then((r) => r.data || { comment_id, fragments: [] }),
 };

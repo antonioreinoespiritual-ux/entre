@@ -2652,23 +2652,41 @@ async function requestAiChatCompletionWithRateLimitRetry(integration, payload, o
   throw lastError || new Error('No se pudo completar el chat con IA por límite de tasa.');
 }
 
-function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText }) {
+function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText, existingCodes = [] }) {
+  const compact = (value, max = 220) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const codebook = (Array.isArray(existingCodes) ? existingCodes : [])
+    .slice(0, 200)
+    .map((code, index) => {
+      const slug = String(code?.slug || '').trim();
+      const name = String(code?.name || '').trim();
+      if (!slug || !name) return '';
+      const description = compact(code?.description || '', 180);
+      return `${index + 1}) slug=${slug} | nombre=${name}${description ? ` | descripcion=${description}` : ''}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+
   return [
-    'Eres un agente de fragmentación semántica robusta.',
-    'Tu única tarea es segmentar comentarios en unidades mínimas de significado psicológico o narrativo.',
-    'Reglas obligatorias:',
-    '1) Divide solo por unidades reales de significado.',
-    '2) No resumas, no reinterpretes, no inventes texto.',
-    '3) No fusiones ideas distintas ni cortes ideas incompletas.',
-    '4) Conserva exactamente las palabras originales y su orden.',
-    '5) Si hay una sola idea, devuelve un solo fragmento.',
-    '6) Ignora saludos, emojis sin significado psicológico y ruido de relleno.',
-    '7) Debes calcular semantic_confidence (0..1) según claridad, completitud y coherencia.',
-    'Respuesta requerida: JSON válido puro, sin markdown, con esta forma exacta:',
-    '{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0}]}',
+    'Eres una analista cualitativa experta en fragmentación y codificación semántica.',
+    'Objetivo: leer un comentario completo, extraer solo pasajes con alta riqueza semántica y codificarlos usando EXCLUSIVAMENTE códigos existentes.',
+    'Prohibiciones absolutas: no crear códigos nuevos, no crear subcódigos, no usar placeholders, no usar matching mecánico de keywords.',
+    'Reglas:',
+    '1) Analiza el comentario completo antes de fragmentar.',
+    '2) Extrae 0, 1 o máximo 2 fragmentos por comentario, solo si tienen valor analítico real.',
+    '3) No fragmentes saludos, relleno, cortesía, ambigüedad o texto sin encaje claro.',
+    '4) Cada fragmento debe mapearse al código existente más adecuado por significado.',
+    '5) Si ningún código encaja con claridad, devuelve fragments: [].',
+    '6) Conserva texto exacto original en fragment_text.',
+    '7) Incluye offsets reales start_char_index y end_char_index.',
+    '8) Devuelve semantic_confidence y assignment_confidence (0..1).',
+    '9) Incluye assignment_rationale breve.',
+    'Respuesta requerida: JSON válido puro, sin markdown.',
+    '{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":""}]}',
     `comment_id: ${commentId}`,
     `source_id: ${sourceId}`,
     `texto_completo_del_comentario: ${commentText}`,
+    'CODEBOOK_EXISTENTE (usar solo estos slugs):',
+    codebook || '- sin códigos disponibles -',
   ].join('\n');
 }
 
@@ -2746,15 +2764,24 @@ function fallbackSemanticSplit(commentId, commentText = '') {
   };
 }
 
-function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, commentText }) {
+function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, commentText, existingCodes = [] }) {
   const text = String(commentText || '');
   const incoming = Array.isArray(parsed?.fragments) ? parsed.fragments : [];
   const normalized = [];
   let cursor = 0;
 
+  const allowedCodeSlugs = new Set(
+    (Array.isArray(existingCodes) ? existingCodes : [])
+      .map((code) => String(code?.slug || '').trim())
+      .filter(Boolean),
+  );
+
   for (const item of incoming) {
     const fragmentText = String(item?.fragment_text || '').trim();
     if (!fragmentText) continue;
+
+    const assignedCodeSlug = String(item?.assigned_code_slug || '').trim();
+    if (!assignedCodeSlug || !allowedCodeSlugs.has(assignedCodeSlug)) continue;
 
     let start = Number(item?.start_char_index);
     let end = Number(item?.end_char_index);
@@ -2783,19 +2810,10 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
       start_char_index: Math.max(0, Math.floor(start)),
       end_char_index: Math.max(0, Math.floor(end)),
       semantic_confidence: clampConfidence(item?.semantic_confidence, 0.75),
+      assigned_code_slug: assignedCodeSlug,
+      assignment_confidence: clampConfidence(item?.assignment_confidence, 0.75),
+      assignment_rationale: String(item?.assignment_rationale || '').trim().slice(0, 280),
     });
-  }
-
-  if (!normalized.length) {
-    const fallback = fallbackSemanticSplit(commentId, text);
-    return {
-      comment_id: String(commentId || ''),
-      fragments: fallback.fragments.map((fragment) => ({
-        ...fragment,
-        comment_id: String(commentId || ''),
-        source_id: String(sourceId || ''),
-      })),
-    };
   }
 
   return {
@@ -2803,6 +2821,7 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
     fragments: normalized,
   };
 }
+
 
 const AI_PROVIDERS = new Set([
   'openai',
@@ -5803,10 +5822,24 @@ const server = http.createServer(async (req, res) => {
       const commentId = String(body?.comment_id || '').trim();
       const sourceId = String(body?.source_id || '').trim();
       const commentText = String(body?.texto_completo_del_comentario || '').trim();
+      const existingCodes = Array.isArray(body?.existing_codes)
+        ? body.existing_codes
+          .map((code) => ({
+            slug: String(code?.slug || '').trim(),
+            name: String(code?.name || '').trim(),
+            description: String(code?.description || '').trim(),
+          }))
+          .filter((code) => code.slug && code.name)
+        : [];
 
       if (!commentId || !sourceId || !commentText) {
         return sendJson(req, res, 400, {
           error: 'comment_id, source_id y texto_completo_del_comentario son obligatorios.',
+        });
+      }
+      if (!existingCodes.length) {
+        return sendJson(req, res, 400, {
+          error: 'Debes enviar existing_codes con los códigos existentes del codebook para autofragmentar y codificar.',
         });
       }
 
@@ -5821,6 +5854,7 @@ const server = http.createServer(async (req, res) => {
         commentId,
         sourceId,
         commentText,
+        existingCodes,
       });
 
       try {
@@ -5841,6 +5875,7 @@ const server = http.createServer(async (req, res) => {
           commentId,
           sourceId,
           commentText,
+          existingCodes,
         });
 
         return sendJson(req, res, 200, {
@@ -5852,17 +5887,15 @@ const server = http.createServer(async (req, res) => {
               start_char_index: fragment.start_char_index,
               end_char_index: fragment.end_char_index,
               semantic_confidence: fragment.semantic_confidence,
+              assigned_code_slug: fragment.assigned_code_slug,
+              assignment_confidence: fragment.assignment_confidence,
+              assignment_rationale: fragment.assignment_rationale,
             })),
           },
         });
       } catch (error) {
-        const fallback = fallbackSemanticSplit(commentId, commentText);
-        return sendJson(req, res, 200, {
-          data: {
-            comment_id: fallback.comment_id,
-            fragments: fallback.fragments,
-          },
-          warning: error?.message || 'Se aplicó fallback de fragmentación.',
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo ejecutar autofragmentación y codificación con IA.',
         });
       }
     }
