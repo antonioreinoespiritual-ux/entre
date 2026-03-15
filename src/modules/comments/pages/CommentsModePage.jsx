@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -126,6 +126,9 @@ const CommentsModePage = () => {
   const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
   const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
   const [codeMenuSlug, setCodeMenuSlug] = useState('');
+  const [codeCardSlug, setCodeCardSlug] = useState('');
+  const [codeCardDeleteMenuOpen, setCodeCardDeleteMenuOpen] = useState(false);
+  const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
   const [codeMapOpen, setCodeMapOpen] = useState(false);
   const [codeMapZoom, setCodeMapZoom] = useState(1);
   const [codeMapPan, setCodeMapPan] = useState({ x: 0, y: 0 });
@@ -1076,6 +1079,11 @@ const CommentsModePage = () => {
     persist({ ...store, codes: nextCodes, fragments: nextFragments });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
+    if (String(codeCardSlug || '') && descendants.has(String(codeCardSlug))) {
+      setCodeCardSlug('');
+      setCodeCardDeleteMode('none');
+      setCodeCardDeleteMenuOpen(false);
+    }
   };
 
   const setCodeParent = (slug, parentSlug) => {
@@ -1384,6 +1392,171 @@ const CommentsModePage = () => {
     setSelectedFragmentIds([]);
     setSelectedFragmentId('');
     setFragmentMenuId('');
+  };
+
+
+  const codeCard = useMemo(() => {
+    const slug = String(codeCardSlug || '').trim();
+    if (!slug) return null;
+    const code = codes.find((item) => String(item.slug) === slug);
+    if (!code) return null;
+
+    const relatedFragments = fragments
+      .filter((fragment) => Array.isArray(fragment.code_slugs) && fragment.code_slugs.includes(slug))
+      .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+
+    const uniqueComments = new Set();
+    const uniqueVideos = new Set();
+    const uniqueRuns = new Set();
+    const uniqueSources = new Set();
+    const sentimentCounts = { positivo: 0, neutral: 0, negativo: 0 };
+
+    const positiveWords = ['excelente', 'genial', 'bueno', 'encanta', 'feliz', 'mejor', 'increible', 'increíble', 'recomiendo', 'satisfecho'];
+    const negativeWords = ['malo', 'terrible', 'odio', 'horrible', 'peor', 'problema', 'queja', 'frustrante', 'caro', 'lento'];
+    const intensityWords = ['nunca', 'siempre', 'urgente', 'demasiado', 'super', 'totalmente', 'increible', 'increíble'];
+
+    const tokenizeLocal = (text = '') => String(text || '').toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 2);
+
+    const tokenizedRows = [];
+    let sentimentSum = 0;
+    let semanticRichnessAcc = 0;
+    let semanticRichnessCount = 0;
+    let intensityAcc = 0;
+
+    for (const fragment of relatedFragments) {
+      const text = String(fragment.excerpt || fragment.selected_text || '').trim();
+      const commentKey = String(fragment.source_comment_id || fragment.comment_id || '').trim();
+      const videoKey = String(fragment.video_id || '').trim();
+      const runKey = String(fragment.source_run_id || '').trim();
+      const sourceKey = String(fragment.source_type || fragment.execution_origin || '').trim();
+      if (commentKey) uniqueComments.add(commentKey);
+      if (videoKey) uniqueVideos.add(videoKey);
+      if (runKey) uniqueRuns.add(runKey);
+      if (sourceKey) uniqueSources.add(sourceKey);
+
+      const tokens = tokenizeLocal(text);
+      tokenizedRows.push(tokens);
+
+      let posHits = 0;
+      let negHits = 0;
+      for (const token of tokens) {
+        if (positiveWords.includes(token)) posHits += 1;
+        if (negativeWords.includes(token)) negHits += 1;
+      }
+      const sentimentScore = posHits - negHits;
+      sentimentSum += sentimentScore;
+      if (sentimentScore > 0) sentimentCounts.positivo += 1;
+      else if (sentimentScore < 0) sentimentCounts.negativo += 1;
+      else sentimentCounts.neutral += 1;
+
+      const semanticConfidence = Number(fragment.semantic_confidence);
+      if (Number.isFinite(semanticConfidence)) {
+        semanticRichnessAcc += Math.max(0, Math.min(1, semanticConfidence));
+        semanticRichnessCount += 1;
+      }
+
+      const exclamations = (text.match(/!/g) || []).length;
+      const uppercaseTokens = text.split(/\s+/).filter((token) => token.length > 2 && token === token.toUpperCase()).length;
+      const emphasisWords = tokens.filter((token) => intensityWords.includes(token)).length;
+      const textLengthFactor = Math.min(1, text.length / 280);
+      const rawIntensity = (exclamations * 0.15) + (uppercaseTokens * 0.1) + (emphasisWords * 0.2) + (textLengthFactor * 0.55);
+      intensityAcc += Math.max(0, Math.min(1, rawIntensity));
+    }
+
+    const tokenFreq = new Map();
+    tokenizedRows.flat().forEach((token) => tokenFreq.set(token, Number(tokenFreq.get(token) || 0) + 1));
+    const topTerms = Array.from(tokenFreq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12);
+    const centroid = new Set(topTerms.slice(0, 8).map(([token]) => token));
+
+    const coherenceScores = tokenizedRows.map((tokens) => {
+      if (!tokens.length || !centroid.size) return 0;
+      const uniqueTokens = new Set(tokens);
+      let overlap = 0;
+      uniqueTokens.forEach((token) => {
+        if (centroid.has(token)) overlap += 1;
+      });
+      return overlap / Math.max(1, uniqueTokens.size);
+    });
+
+    const coherence = coherenceScores.length
+      ? Math.round((coherenceScores.reduce((acc, value) => acc + value, 0) / coherenceScores.length) * 100)
+      : 0;
+
+    const intensity = relatedFragments.length
+      ? Math.round((intensityAcc / relatedFragments.length) * 100)
+      : 0;
+
+    const sentimentAverage = relatedFragments.length ? Number((sentimentSum / relatedFragments.length).toFixed(2)) : 0;
+    const semanticRichness = semanticRichnessCount
+      ? Number(((semanticRichnessAcc / semanticRichnessCount) * 100).toFixed(1))
+      : 0;
+
+    const distributionByMonthMap = new Map();
+    for (const fragment of relatedFragments) {
+      const rawDate = fragment.created_at ? new Date(fragment.created_at) : null;
+      if (!rawDate || Number.isNaN(rawDate.getTime())) continue;
+      const key = `${rawDate.getUTCFullYear()}-${String(rawDate.getUTCMonth() + 1).padStart(2, '0')}`;
+      distributionByMonthMap.set(key, Number(distributionByMonthMap.get(key) || 0) + 1);
+    }
+
+    const distributionByMonth = Array.from(distributionByMonthMap.entries())
+      .map(([period, count]) => ({ period, count }))
+      .sort((a, b) => String(a.period).localeCompare(String(b.period)));
+
+    const hierarchy = {
+      parent: code.parent_slug ? codes.find((item) => String(item.slug) === String(code.parent_slug)) || null : null,
+      children: codes.filter((item) => String(item.parent_slug || '') === String(code.slug || '')),
+    };
+
+    const score = codeScoreBySlug.get(slug) || {
+      score_total: 0,
+      score_frecuencia: 0,
+      score_dispersion: 0,
+      score_consistencia: 0,
+      score_intensidad: 0,
+    };
+
+    return {
+      code,
+      score,
+      fragments: relatedFragments,
+      metrics: {
+        frequency: relatedFragments.length,
+        uniqueComments: uniqueComments.size,
+        uniqueVideos: uniqueVideos.size,
+        uniqueRuns: uniqueRuns.size,
+        uniqueSources: uniqueSources.size,
+        sentimentAverage,
+        sentimentCounts,
+        semanticRichness,
+        coherence,
+        intensity,
+        distributionByMonth,
+      },
+      hierarchy,
+      topTerms,
+    };
+  }, [codeCardSlug, codes, fragments, codeScoreBySlug]);
+
+  const removeFragmentFromCodeCard = (fragmentId) => {
+    if (!codeCard) return;
+    const target = fragments.find((fragment) => String(fragment.id) === String(fragmentId));
+    if (!target) return;
+    if (!window.confirm('¿Eliminar este fragmento del código actual?')) return;
+    deleteFragments([fragmentId]);
+  };
+
+  const removeAllFragmentsFromCodeCard = () => {
+    if (!codeCard?.fragments?.length) return;
+    if (!window.confirm(`¿Eliminar todos los fragmentos de ${codeCard.code.name}? (${codeCard.fragments.length})`)) return;
+    deleteFragments(codeCard.fragments.map((fragment) => String(fragment.id)));
+    setCodeCardDeleteMenuOpen(false);
   };
 
   const goToFragmentOrigin = async (fragment) => {
@@ -2199,6 +2372,7 @@ const CommentsModePage = () => {
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Editar código</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('create', null, slug)}>Crear subcódigo</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Mover jerarquía</button>
+                  <button type="button" className="flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setCodeCardSlug(slug); setCodeMenuSlug(''); setCodeCardDeleteMode('none'); }}><Eye className="h-3.5 w-3.5" />Ver tarjeta</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setCodeMapOpen(true); setCodeMenuSlug(''); }}>Ir a mapa de códigos</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => {
                     if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
@@ -2704,37 +2878,95 @@ const CommentsModePage = () => {
                 </div>
               </div>
 
-              <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
-                <label className="relative block">
-                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                  <input className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar código o descripción" value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
-                </label>
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeHypothesisFilter} onChange={(e) => setCodeHypothesisFilter(e.target.value)}>
-                  <option value="">Filtrar por hipótesis</option>
-                  {codeHypothesisOptions.map((hypothesisId) => <option key={hypothesisId} value={hypothesisId}>{hypothesisId}</option>)}
-                </select>
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClusterFilter} onChange={(e) => setCodeClusterFilter(e.target.value)}>
-                  <option value="">Filtrar por cluster</option>
-                  {codeClusterOptions.map((clusterId) => <option key={clusterId} value={clusterId}>{clusterId}</option>)}
-                </select>
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClientFilter} onChange={(e) => setCodeClientFilter(e.target.value)}>
-                  <option value="">Filtrar por cliente</option>
-                  {codeClientOptions.map((clientId) => <option key={clientId} value={clientId}>{clientId}</option>)}
-                </select>
-              </div>
+              {codeCard ? (
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+                    <div>
+                      <button type="button" className="mb-2 inline-flex items-center gap-1 rounded border bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50" onClick={() => { setCodeCardSlug(''); setCodeCardDeleteMode('none'); setCodeCardDeleteMenuOpen(false); }}>
+                        <ArrowLeft className="h-3.5 w-3.5" /> Volver a lista de códigos
+                      </button>
+                      <h3 className="text-lg font-semibold text-slate-900">{codeCard.code.name}</h3>
+                      <p className="mt-1 max-w-3xl text-sm text-slate-600">{codeCard.code.description || 'Sin descripción detallada para este código.'}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                        <span className="rounded-full border bg-slate-50 px-2 py-0.5">slug: {codeCard.code.slug}</span>
+                        <span className="rounded-full border bg-slate-50 px-2 py-0.5">tipo: {codeCard.code.code_type || 'general'}</span>
+                        <span className={`rounded-full border px-2 py-0.5 ${getScoreColorClass(codeCard.score.score_total)}`}>score total: {codeCard.score.score_total}/100</span>
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <Button className="bg-white border text-rose-700" onClick={() => setCodeCardDeleteMenuOpen((prev) => !prev)} disabled={!codeCard.fragments.length}>
+                        <Trash2 className="mr-1 h-4 w-4" /> ELIMINAR
+                      </Button>
+                      {codeCardDeleteMenuOpen ? (
+                        <div className="absolute right-0 top-11 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg">
+                          <button type="button" className={`w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100 ${codeCardDeleteMode === 'single' ? 'bg-slate-100 font-medium' : ''}`} onClick={() => { setCodeCardDeleteMode('single'); setCodeCardDeleteMenuOpen(false); }}>Eliminar uno a uno</button>
+                          <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={removeAllFragmentsFromCodeCard}>Eliminar todo</button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
 
-              <div className="flex items-center justify-end">
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeSortBy} onChange={(e) => setCodeSortBy(e.target.value)}>
-                  <option value="score_total_desc">Ordenar por score total</option>
-                  <option value="frecuencia_desc">Ordenar por frecuencia</option>
-                  <option value="dispersion_desc">Ordenar por dispersión</option>
-                  <option value="name_asc">Ordenar por nombre</option>
-                </select>
-              </div>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><BarChart3 className="mr-1 inline h-3.5 w-3.5" />Frecuencia</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.frequency}</p><p className="text-xs text-slate-500">fragmentos totales del código</p></div>
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><Activity className="mr-1 inline h-3.5 w-3.5" />Sentimiento agregado</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.sentimentAverage}</p><p className="text-xs text-slate-500">+{codeCard.metrics.sentimentCounts.positivo} / ={codeCard.metrics.sentimentCounts.neutral} / -{codeCard.metrics.sentimentCounts.negativo}</p></div>
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><Sparkles className="mr-1 inline h-3.5 w-3.5" />Coherencia / Intensidad</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.coherence}% · {codeCard.metrics.intensity}%</p><p className="text-xs text-slate-500">coherencia interna e intensidad narrativa</p></div>
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><GitBranch className="mr-1 inline h-3.5 w-3.5" />Dispersión</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.uniqueComments}</p><p className="text-xs text-slate-500">comentarios · {codeCard.metrics.uniqueVideos} videos · {codeCard.metrics.uniqueRuns} runs · {codeCard.metrics.uniqueSources} fuentes</p></div>
+                  </div>
 
-              <div className="space-y-2">
-                {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
-              </div>
+                  <div className="grid gap-3 lg:grid-cols-[2fr_1fr]">
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold text-slate-700">Distribución temporal</p>
+                      {!codeCard.metrics.distributionByMonth.length ? <p className="mt-2 text-xs text-slate-500">Sin fechas suficientes para distribución temporal.</p> : <div className="mt-2 space-y-1.5">{codeCard.metrics.distributionByMonth.map((row) => { const maxCount = Math.max(1, ...codeCard.metrics.distributionByMonth.map((item) => item.count)); const width = Math.max(8, Math.round((Number(row.count || 0) / maxCount) * 100)); return <div key={`period-${row.period}`} className="space-y-1"><div className="flex items-center justify-between text-[11px] text-slate-600"><span><CalendarClock className="mr-1 inline h-3 w-3" />{row.period}</span><span>{row.count}</span></div><div className="h-2 rounded bg-slate-200"><div className="h-2 rounded bg-indigo-500" style={{ width: `${width}%` }} /></div></div>; })}</div>}
+                    </div>
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold text-slate-700">Jerarquía y señal semántica</p>
+                      <p className="mt-2 text-xs text-slate-600">Padre: <span className="font-medium text-slate-800">{codeCard.hierarchy.parent?.name || 'Sin padre'}</span></p>
+                      <p className="mt-1 text-xs text-slate-600">Hijos: <span className="font-medium text-slate-800">{codeCard.hierarchy.children.length}</span></p>
+                      <p className="mt-1 text-xs text-slate-600">Riqueza semántica agregada: <span className="font-medium text-slate-800">{codeCard.metrics.semanticRichness}%</span></p>
+                      <div className="mt-2 flex flex-wrap gap-1">{codeCard.topTerms.length ? codeCard.topTerms.slice(0, 8).map(([term, count]) => (<span key={`${codeCard.code.slug}-term-${term}`} className="rounded-full border bg-white px-2 py-0.5 text-[11px] text-slate-600">{term} ({count})</span>)) : <span className="text-xs text-slate-500">Sin términos frecuentes.</span>}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border bg-slate-50 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-900">Fragmentos del código ({codeCard.fragments.length})</p>{codeCardDeleteMode === 'single' ? <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">Modo eliminar uno a uno activo</span> : null}</div>
+                    {!codeCard.fragments.length ? <p className="text-sm text-slate-500">Este código aún no tiene fragmentos asociados.</p> : <div className="grid gap-2 md:grid-cols-2">{codeCard.fragments.map((fragment) => (<article key={`code-card-fragment-${fragment.id}`} className="rounded-lg border bg-white p-3 text-sm text-slate-700 shadow-sm"><p className="line-clamp-5 whitespace-pre-wrap text-slate-800">{fragment.excerpt || fragment.selected_text || 'Sin texto disponible'}</p><div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500"><span>{fragment.author_name || 'Autor desconocido'}</span><span>·</span><span>{fragment.video_id || 'sin video'}</span><span>·</span><span>{fragment.source_type || 'origen no definido'}</span></div>{codeCardDeleteMode === 'single' ? <div className="mt-2 flex justify-end"><button type="button" className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700 hover:bg-rose-100" onClick={() => removeFragmentFromCodeCard(fragment.id)}>Eliminar fragmento</button></div> : null}</article>))}</div>}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                    <label className="relative block">
+                      <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                      <input className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar código o descripción" value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
+                    </label>
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeHypothesisFilter} onChange={(e) => setCodeHypothesisFilter(e.target.value)}>
+                      <option value="">Filtrar por hipótesis</option>
+                      {codeHypothesisOptions.map((hypothesisId) => <option key={hypothesisId} value={hypothesisId}>{hypothesisId}</option>)}
+                    </select>
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClusterFilter} onChange={(e) => setCodeClusterFilter(e.target.value)}>
+                      <option value="">Filtrar por cluster</option>
+                      {codeClusterOptions.map((clusterId) => <option key={clusterId} value={clusterId}>{clusterId}</option>)}
+                    </select>
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClientFilter} onChange={(e) => setCodeClientFilter(e.target.value)}>
+                      <option value="">Filtrar por cliente</option>
+                      {codeClientOptions.map((clientId) => <option key={clientId} value={clientId}>{clientId}</option>)}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-end">
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeSortBy} onChange={(e) => setCodeSortBy(e.target.value)}>
+                      <option value="score_total_desc">Ordenar por score total</option>
+                      <option value="frecuencia_desc">Ordenar por frecuencia</option>
+                      <option value="dispersion_desc">Ordenar por dispersión</option>
+                      <option value="name_asc">Ordenar por nombre</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
+                  </div>
+                </>
+              )}
 
               <div className="rounded-xl border bg-white p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3">
