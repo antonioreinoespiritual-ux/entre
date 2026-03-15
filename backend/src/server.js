@@ -2690,6 +2690,53 @@ function buildSemanticFragmentAgentPrompt({ commentId, sourceId, commentText, ex
   ].join('\n');
 }
 
+function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] }) {
+  const compact = (value, max = 240) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const safeComments = (Array.isArray(comments) ? comments : [])
+    .map((item) => ({
+      comment_id: String(item?.comment_id || '').trim(),
+      source_id: String(item?.source_id || '').trim(),
+      text: String(item?.texto_completo_del_comentario || item?.text || '').trim(),
+    }))
+    .filter((item) => item.comment_id && item.source_id && item.text)
+    .slice(0, 50);
+
+  const codebook = (Array.isArray(existingCodes) ? existingCodes : [])
+    .slice(0, 220)
+    .map((code, index) => {
+      const slug = String(code?.slug || '').trim();
+      const name = String(code?.name || '').trim();
+      if (!slug || !name) return '';
+      const description = compact(code?.description || '', 150);
+      return `${index + 1}) slug=${slug} | nombre=${name}${description ? ` | descripcion=${description}` : ''}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+
+  const serializedComments = safeComments
+    .map((item, index) => `${index + 1}) comment_id=${item.comment_id} | source_id=${item.source_id} | text=${compact(item.text, 700)}`)
+    .join('\n');
+
+  return [
+    'Eres una analista cualitativa experta en fragmentación y codificación semántica.',
+    'Procesa un BATCH de comentarios y devuelve fragmentos de alto valor analítico codificados usando EXCLUSIVAMENTE códigos existentes.',
+    'Prohibido: crear códigos/subcódigos nuevos, placeholders, o clasificación mecánica por keywords.',
+    'Reglas:',
+    '1) Analiza cada comentario completo antes de fragmentar.',
+    '2) Extrae 0..2 fragmentos por comentario solo si hay riqueza semántica y encaje claro a un código existente.',
+    '3) Ignora relleno, cortesía, ruido y texto ambiguo sin valor analítico.',
+    '4) Conserva texto exacto del fragmento y offsets reales.',
+    '5) Si no hay encaje semántico claro para un comentario: fragments=[].',
+    '6) assignment_confidence y semantic_confidence en rango 0..1.',
+    'Devuelve JSON válido puro (sin markdown) con estructura EXACTA:',
+    '{"items":[{"comment_id":"","fragments":[{"fragment_id":"","fragment_text":"","start_char_index":0,"end_char_index":0,"semantic_confidence":0.0,"assigned_code_slug":"","assignment_confidence":0.0,"assignment_rationale":""}]}]}',
+    'CODEBOOK_EXISTENTE (usar solo estos slugs):',
+    codebook || '- sin códigos disponibles -',
+    'COMENTARIOS_DEL_BATCH:',
+    serializedComments || '- sin comentarios válidos -',
+  ].join('\n');
+}
+
 function extractJsonObjectFromText(rawText = '') {
   const text = String(rawText || '').trim();
   if (!text) return null;
@@ -2819,6 +2866,50 @@ function normalizeSemanticFragmentAgentOutput({ parsed, commentId, sourceId, com
   return {
     comment_id: String(commentId || ''),
     fragments: normalized,
+  };
+}
+
+function normalizeSemanticFragmentBatchOutput({ parsed, comments = [], existingCodes = [] }) {
+  const byComment = new Map(
+    (Array.isArray(comments) ? comments : [])
+      .map((item) => {
+        const commentId = String(item?.comment_id || '').trim();
+        const sourceId = String(item?.source_id || '').trim();
+        const commentText = String(item?.texto_completo_del_comentario || item?.text || '').trim();
+        if (!commentId || !sourceId || !commentText) return null;
+        return [commentId, { comment_id: commentId, source_id: sourceId, comment_text: commentText }];
+      })
+      .filter(Boolean),
+  );
+
+  const incomingItems = Array.isArray(parsed?.items)
+    ? parsed.items
+    : (Array.isArray(parsed) ? parsed : []);
+
+  const normalizedItems = [];
+  const consumed = new Set();
+
+  for (const item of incomingItems) {
+    const commentId = String(item?.comment_id || '').trim();
+    const source = byComment.get(commentId);
+    if (!source) continue;
+    consumed.add(commentId);
+    normalizedItems.push(normalizeSemanticFragmentAgentOutput({
+      parsed: item,
+      commentId: source.comment_id,
+      sourceId: source.source_id,
+      commentText: source.comment_text,
+      existingCodes,
+    }));
+  }
+
+  for (const [commentId, source] of byComment.entries()) {
+    if (consumed.has(commentId)) continue;
+    normalizedItems.push({ comment_id: source.comment_id, fragments: [] });
+  }
+
+  return {
+    items: normalizedItems,
   };
 }
 
@@ -5819,9 +5910,19 @@ const server = http.createServer(async (req, res) => {
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
 
       const body = await readBody(req);
+      const batchComments = Array.isArray(body?.comments)
+        ? body.comments
+          .map((item) => ({
+            comment_id: String(item?.comment_id || '').trim(),
+            source_id: String(item?.source_id || '').trim(),
+            texto_completo_del_comentario: String(item?.texto_completo_del_comentario || item?.text || '').trim(),
+          }))
+          .filter((item) => item.comment_id && item.source_id && item.texto_completo_del_comentario)
+        : [];
       const commentId = String(body?.comment_id || '').trim();
       const sourceId = String(body?.source_id || '').trim();
       const commentText = String(body?.texto_completo_del_comentario || '').trim();
+      const hasBatch = batchComments.length > 0;
       const existingCodes = Array.isArray(body?.existing_codes)
         ? body.existing_codes
           .map((code) => ({
@@ -5832,9 +5933,9 @@ const server = http.createServer(async (req, res) => {
           .filter((code) => code.slug && code.name)
         : [];
 
-      if (!commentId || !sourceId || !commentText) {
+      if (!hasBatch && (!commentId || !sourceId || !commentText)) {
         return sendJson(req, res, 400, {
-          error: 'comment_id, source_id y texto_completo_del_comentario son obligatorios.',
+          error: 'Debes enviar comments[] (batch) o comment_id + source_id + texto_completo_del_comentario.',
         });
       }
       if (!existingCodes.length) {
@@ -5850,12 +5951,14 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      const prompt = buildSemanticFragmentAgentPrompt({
-        commentId,
-        sourceId,
-        commentText,
-        existingCodes,
-      });
+      const prompt = hasBatch
+        ? buildSemanticFragmentBatchPrompt({ comments: batchComments, existingCodes })
+        : buildSemanticFragmentAgentPrompt({
+          commentId,
+          sourceId,
+          commentText,
+          existingCodes,
+        });
 
       try {
         const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
@@ -5870,6 +5973,31 @@ const server = http.createServer(async (req, res) => {
         ]);
 
         const parsed = extractJsonObjectFromText(completion.content);
+        if (hasBatch) {
+          const normalized = normalizeSemanticFragmentBatchOutput({
+            parsed,
+            comments: batchComments,
+            existingCodes,
+          });
+          return sendJson(req, res, 200, {
+            data: {
+              items: normalized.items.map((item) => ({
+                comment_id: item.comment_id,
+                fragments: (Array.isArray(item.fragments) ? item.fragments : []).map((fragment) => ({
+                  fragment_id: fragment.fragment_id,
+                  fragment_text: fragment.fragment_text,
+                  start_char_index: fragment.start_char_index,
+                  end_char_index: fragment.end_char_index,
+                  semantic_confidence: fragment.semantic_confidence,
+                  assigned_code_slug: fragment.assigned_code_slug,
+                  assignment_confidence: fragment.assignment_confidence,
+                  assignment_rationale: fragment.assignment_rationale,
+                })),
+              })),
+            },
+          });
+        }
+
         const normalized = normalizeSemanticFragmentAgentOutput({
           parsed,
           commentId,

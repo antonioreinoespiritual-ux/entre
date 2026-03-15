@@ -1648,29 +1648,29 @@ const CommentsModePage = () => {
         return;
       }
 
+      const BATCH_SIZE = 20;
+      const MAX_CONCURRENCY = 4;
+      const MAX_BATCH_RETRIES = 2;
       const createdFragments = [];
       let failed = 0;
       let processed = 0;
+      let persistedCount = 0;
+      let persistedFragments = [];
       setSemanticAgentProgress({ done: 0, total: pendingComments.length });
 
-      const processSingleComment = async (comment) => {
-        const sourceCommentId = String(comment.source_comment_id || comment.id || '').trim();
-        const sourceText = String(comment.text || '').trim();
-        if (!sourceCommentId || !sourceText) {
-          return { failed: 1, fragments: [] };
-        }
+      const commentsById = new Map(
+        pendingComments.map((comment) => [String(comment.source_comment_id || comment.id || '').trim(), comment]),
+      );
 
-        try {
-          const response = await commentsIngestionApi.extractSemanticFragments({
-            comment_id: sourceCommentId,
-            source_id: String(comment.source || 'youtube'),
-            texto_completo_del_comentario: sourceText,
-            existing_codes: existingCodeCatalog,
-          });
-
-          const generatedFragments = Array.isArray(response.fragments) ? response.fragments : [];
+      const mapFragmentsFromResponse = ({ responseItems = [] }) => {
+        const mapped = [];
+        for (const item of responseItems) {
+          const sourceCommentId = String(item?.comment_id || '').trim();
+          const comment = commentsById.get(sourceCommentId);
+          const sourceText = String(comment?.text || '').trim();
+          if (!comment || !sourceCommentId || !sourceText) continue;
+          const generatedFragments = Array.isArray(item?.fragments) ? item.fragments : [];
           const timestamp = new Date().toISOString();
-          const mapped = [];
           for (const fragment of generatedFragments) {
             const text = String(fragment?.fragment_text || '').trim();
             if (!text) continue;
@@ -1696,32 +1696,113 @@ const CommentsModePage = () => {
               created_at: timestamp,
             });
           }
-          return { failed: 0, fragments: mapped };
+        }
+        return mapped;
+      };
+
+      const persistIncremental = (nextFragments) => {
+        if (!nextFragments.length) return;
+        const batchSlice = nextFragments.slice(persistedCount);
+        if (!batchSlice.length) return;
+        persistedCount = nextFragments.length;
+        persistedFragments = [...batchSlice, ...persistedFragments];
+        persist({
+          ...store,
+          fragments: [...persistedFragments, ...fragments],
+        });
+      };
+
+      const buildBatches = (items, size) => {
+        const batches = [];
+        for (let i = 0; i < items.length; i += size) {
+          batches.push(items.slice(i, i + size));
+        }
+        return batches;
+      };
+
+      const initialBatches = buildBatches(pendingComments, BATCH_SIZE).map((batch, index) => ({
+        id: `batch_${index + 1}`,
+        attempts: 0,
+        comments: batch,
+      }));
+
+      const processBatch = async (batch) => {
+        const payloadComments = batch.comments
+          .map((comment) => ({
+            comment_id: String(comment.source_comment_id || comment.id || '').trim(),
+            source_id: String(comment.source || 'youtube'),
+            texto_completo_del_comentario: String(comment.text || '').trim(),
+          }))
+          .filter((item) => item.comment_id && item.source_id && item.texto_completo_del_comentario);
+
+        if (!payloadComments.length) {
+          return { done: batch.comments.length, failed: batch.comments.length, fragments: [] };
+        }
+
+        const response = await commentsIngestionApi.extractSemanticFragments({
+          comments: payloadComments,
+          existing_codes: existingCodeCatalog,
+        });
+        const responseItems = Array.isArray(response?.items) ? response.items : [];
+        return {
+          done: batch.comments.length,
+          failed: Math.max(0, batch.comments.length - responseItems.length),
+          fragments: mapFragmentsFromResponse({ responseItems }),
+        };
+      };
+
+      const processCommentFallback = async (comment) => {
+        const sourceCommentId = String(comment.source_comment_id || comment.id || '').trim();
+        const sourceText = String(comment.text || '').trim();
+        if (!sourceCommentId || !sourceText) return { done: 1, failed: 1, fragments: [] };
+        try {
+          const response = await commentsIngestionApi.extractSemanticFragments({
+            comment_id: sourceCommentId,
+            source_id: String(comment.source || 'youtube'),
+            texto_completo_del_comentario: sourceText,
+            existing_codes: existingCodeCatalog,
+          });
+          const items = [{ comment_id: sourceCommentId, fragments: Array.isArray(response?.fragments) ? response.fragments : [] }];
+          return { done: 1, failed: 0, fragments: mapFragmentsFromResponse({ responseItems: items }) };
         } catch {
-          return { failed: 1, fragments: [] };
+          return { done: 1, failed: 1, fragments: [] };
         }
       };
 
-      const runWithConcurrency = async (items, worker, concurrency = 4) => {
-        const size = Math.max(1, Math.min(concurrency, 8));
-        const queue = [...items];
-        const runners = Array.from({ length: Math.min(size, queue.length) }, async () => {
-          while (queue.length) {
-            const item = queue.shift();
-            if (!item) continue;
-            const result = await worker(item);
-            failed += Number(result?.failed || 0);
-            if (Array.isArray(result?.fragments) && result.fragments.length) {
+      const queue = [...initialBatches];
+      const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
+        while (queue.length) {
+          const nextBatch = queue.shift();
+          if (!nextBatch) continue;
+          try {
+            const result = await processBatch(nextBatch);
+            failed += Number(result.failed || 0);
+            if (Array.isArray(result.fragments) && result.fragments.length) {
               createdFragments.push(...result.fragments);
+              persistIncremental(createdFragments);
             }
-            processed += 1;
-            setSemanticAgentProgress({ done: processed, total: pendingComments.length });
+            processed += Number(result.done || nextBatch.comments.length);
+            setSemanticAgentProgress({ done: Math.min(processed, pendingComments.length), total: pendingComments.length });
+          } catch {
+            if (nextBatch.attempts + 1 < MAX_BATCH_RETRIES) {
+              queue.push({ ...nextBatch, attempts: nextBatch.attempts + 1 });
+              continue;
+            }
+            for (const comment of nextBatch.comments) {
+              const fallbackResult = await processCommentFallback(comment);
+              failed += Number(fallbackResult.failed || 0);
+              if (Array.isArray(fallbackResult.fragments) && fallbackResult.fragments.length) {
+                createdFragments.push(...fallbackResult.fragments);
+                persistIncremental(createdFragments);
+              }
+              processed += Number(fallbackResult.done || 1);
+              setSemanticAgentProgress({ done: Math.min(processed, pendingComments.length), total: pendingComments.length });
+            }
           }
-        });
-        await Promise.all(runners);
-      };
+        }
+      });
 
-      await runWithConcurrency(pendingComments, processSingleComment, 4);
+      await Promise.all(workers);
 
       if (!createdFragments.length) {
         setSemanticAgentError('La IA no encontró fragmentos con riqueza semántica y ajuste claro a códigos existentes.');
