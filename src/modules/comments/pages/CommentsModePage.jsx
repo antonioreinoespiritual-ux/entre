@@ -1438,34 +1438,12 @@ const CommentsModePage = () => {
     setCodeGenerationModalOpen(true);
 
     try {
-      const pageSize = 500;
-      let offset = 0;
-      let total = null;
-      const allComments = [];
-
-      while (total == null || offset < total) {
-        const page = await commentsIngestionApi.listTable({ projectId, campaignId, limit: pageSize, offset, q: '' });
-        const items = Array.isArray(page?.items) ? page.items : [];
-        total = Number(page?.total || 0);
-        allComments.push(...items);
-        if (!items.length) break;
-        offset += items.length;
-      }
-
-      const seen = new Set();
-      const commentsForGeneration = allComments.filter((item) => {
-        const id = String(item?.id || item?.comment_id || item?.source_comment_id || '');
-        const text = String(item?.text || item?.comment_text || item?.body || item?.content || '').trim();
-        const key = id || text.slice(0, 180).toLowerCase();
-        if (!key || seen.has(key)) return false;
-        seen.add(key);
-        return Boolean(text);
-      });
+      const tableTotalEstimate = Number(commentsTable.total || 0);
 
       const response = await commentsIngestionApi.runCodeGenerationAgent({
         project_id: projectId,
         campaign_id: campaignId,
-        comments: commentsForGeneration,
+        comments: [],
       });
 
       const proposals = Array.isArray(response?.proposals) ? response.proposals : [];
@@ -1481,8 +1459,8 @@ const CommentsModePage = () => {
       })));
       setCodeGenerationMetrics({
         ...(response?.metrics || {}),
-        comments_fetched_for_generation: commentsForGeneration.length,
-        comments_total_from_table: total == null ? commentsForGeneration.length : total,
+        comments_fetched_for_generation: Number(response?.metrics?.comments_analyzed || 0),
+        comments_total_from_table: Number(response?.metrics?.comments_analyzed || 0) || tableTotalEstimate,
       });
     } catch (error) {
       setCodeGenerationError(error?.message || 'No se pudo generar propuestas desde comentarios.');

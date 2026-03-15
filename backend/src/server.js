@@ -2622,6 +2622,11 @@ function isRateLimitError(error) {
   return message.includes('rate limit') || message.includes('tpm') || message.includes('tokens per minute');
 }
 
+function isDailyTokenLimitError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return message.includes('tokens per day') || message.includes('tpd');
+}
+
 async function requestAiChatCompletionWithRateLimitRetry(integration, payload, options = {}) {
   const maxRetries = Math.max(0, Number(options.maxRetries) || 4);
   const baseDelayMs = Math.max(300, Number(options.baseDelayMs) || 1200);
@@ -2633,6 +2638,7 @@ async function requestAiChatCompletionWithRateLimitRetry(integration, payload, o
       return await requestAiChatCompletion(integration, payload);
     } catch (error) {
       lastError = error;
+      if (isDailyTokenLimitError(error)) throw error;
       if (!isRateLimitError(error) || attempt >= maxRetries) throw error;
 
       const parsedDelay = parseRateLimitRetryMs(error?.message);
@@ -6241,6 +6247,7 @@ const server = http.createServer(async (req, res) => {
         let stagnantRounds = 0;
         let previousUniqueCount = 0;
         let stoppedBy = 'all_chunks';
+        let tokenBudgetError = '';
 
         for (const chunk of commentChunks) {
           if (chunkCalls >= MAX_CHUNKS) {
@@ -6255,10 +6262,20 @@ const server = http.createServer(async (req, res) => {
           }
 
           const prompt = buildCodeGenerationAgentPrompt({ comments: chunk, minCodes: 6, maxCodes: 12, stage: 'chunk' });
-          const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
-            { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
-            { role: 'user', content: prompt },
-          ], { maxRetries: 2, baseDelayMs: 1200 });
+          let completion;
+          try {
+            completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+              { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+              { role: 'user', content: prompt },
+            ], { maxRetries: 2, baseDelayMs: 1200 });
+          } catch (error) {
+            if (isDailyTokenLimitError(error)) {
+              tokenBudgetError = String(error?.message || 'daily_token_limit_reached');
+              stoppedBy = 'daily_token_limit';
+              break;
+            }
+            throw error;
+          }
           const parsed = extractJsonObjectFromText(completion.content);
           const chunkProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsed));
           mergedProposals = dedupeCodeProposalsByName([...mergedProposals, ...chunkProposals], 160);
@@ -6284,13 +6301,27 @@ const server = http.createServer(async (req, res) => {
             minCodes: MIN_CODES,
             maxCodes: MAX_CODES,
           });
-          const synthesized = await requestAiChatCompletionWithRateLimitRetry(integration, [
-            { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
-            { role: 'user', content: synthesisPrompt },
-          ], { maxRetries: 5, baseDelayMs: 1500 });
-          const parsedSynthesis = extractJsonObjectFromText(synthesized.content);
-          const synthesizedProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsedSynthesis));
-          finalProposals = dedupeCodeProposalsByName(synthesizedProposals, MAX_CODES);
+          let synthesized;
+          try {
+            synthesized = await requestAiChatCompletionWithRateLimitRetry(integration, [
+              { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+              { role: 'user', content: synthesisPrompt },
+            ], { maxRetries: 3, baseDelayMs: 1200 });
+          } catch (error) {
+            if (isDailyTokenLimitError(error)) {
+              tokenBudgetError = String(error?.message || 'daily_token_limit_reached');
+              stoppedBy = 'daily_token_limit';
+              finalProposals = dedupeCodeProposalsByName(flattenSubclustersAsCodeProposals(mergedProposals), MAX_CODES);
+              synthesized = null;
+            } else {
+              throw error;
+            }
+          }
+          if (synthesized) {
+            const parsedSynthesis = extractJsonObjectFromText(synthesized.content);
+            const synthesizedProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsedSynthesis));
+            finalProposals = dedupeCodeProposalsByName(synthesizedProposals, MAX_CODES);
+          }
         } else {
           finalProposals = dedupeCodeProposalsByName(flattenSubclustersAsCodeProposals(mergedProposals), MAX_CODES);
         }
@@ -6307,6 +6338,7 @@ const server = http.createServer(async (req, res) => {
               semantic_saturation_reached: finalProposals.length >= 30,
               generation_elapsed_ms: Date.now() - startedAtMs,
               stop_reason: stoppedBy,
+              token_budget_limited: stoppedBy === 'daily_token_limit',
             },
             meta: {
               generated_without_traceability: true,
@@ -6319,6 +6351,7 @@ const server = http.createServer(async (req, res) => {
               chunk_size: CHUNK_SIZE,
               max_chunks: MAX_CHUNKS,
               max_generation_ms: MAX_GENERATION_MS,
+              token_budget_error: tokenBudgetError || null,
             },
           },
         });
