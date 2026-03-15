@@ -155,7 +155,7 @@ const CommentsModePage = () => {
   const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
   const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
   const codeMapCanvasRef = useRef(null);
-  const codeMapScopeSyncRef = useRef('');
+  const codeMapLayoutRef = useRef({});
   const [codeEditor, setCodeEditor] = useState({
     open: false,
     ...defaultCodeEditor,
@@ -1210,25 +1210,25 @@ const CommentsModePage = () => {
   }, [codeMapLayoutsByHypothesis, codeMapScopeKey]);
 
   useEffect(() => {
-    if (codeMapScopeSyncRef.current !== codeMapScopeKey) {
-      codeMapScopeSyncRef.current = codeMapScopeKey;
-      return;
-    }
+    codeMapLayoutRef.current = codeMapLayoutBySlug || {};
+  }, [codeMapLayoutBySlug]);
 
-    const serializedLayout = JSON.stringify(codeMapLayoutBySlug || {});
-    const previousScopedLayout = codeMapLayoutsByHypothesis[codeMapScopeKey];
-    const serializedPrevious = JSON.stringify(previousScopedLayout && typeof previousScopedLayout === 'object' ? previousScopedLayout : {});
-    if (serializedLayout === serializedPrevious) return;
+  const persistCodeMapLayoutForScope = (scopeKey, nextLayoutBySlug) => {
+    const normalizedScope = String(scopeKey || CODE_MAP_ALL_SCOPE);
+    const normalizedLayout = nextLayoutBySlug && typeof nextLayoutBySlug === 'object' ? nextLayoutBySlug : {};
+    const previousScopedLayout = codeMapLayoutsByHypothesis[normalizedScope] && typeof codeMapLayoutsByHypothesis[normalizedScope] === 'object'
+      ? codeMapLayoutsByHypothesis[normalizedScope]
+      : {};
+    if (JSON.stringify(previousScopedLayout) === JSON.stringify(normalizedLayout)) return;
 
-    const nextLayouts = {
-      ...codeMapLayoutsByHypothesis,
-      [codeMapScopeKey]: codeMapLayoutBySlug,
-    };
     persist({
       ...store,
-      codeMapLayoutsByHypothesis: nextLayouts,
+      codeMapLayoutsByHypothesis: {
+        ...codeMapLayoutsByHypothesis,
+        [normalizedScope]: normalizedLayout,
+      },
     });
-  }, [codeMapLayoutBySlug, codeMapScopeKey, codeMapLayoutsByHypothesis, store]);
+  };
 
   const codeMapVisibleCodes = useMemo(() => {
     const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
@@ -1287,6 +1287,7 @@ const CommentsModePage = () => {
 
     const onUp = () => {
       setDraggingCodeMapNode('');
+      persistCodeMapLayoutForScope(codeMapScopeKey, codeMapLayoutRef.current);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
