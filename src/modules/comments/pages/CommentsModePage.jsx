@@ -1784,10 +1784,25 @@ const CommentsModePage = () => {
           comments: payloadComments,
           existing_codes: shortlistedCodes,
         });
-        const responseItems = Array.isArray(response?.items) ? response.items : [];
+        let responseItems = Array.isArray(response?.items) ? response.items : [];
+        let hasAnyFragments = responseItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
+
+        if (!hasAnyFragments && shortlistedCodes.length < existingCodeCatalog.length) {
+          const fullCatalogResponse = await commentsIngestionApi.extractSemanticFragments({
+            comments: payloadComments,
+            existing_codes: existingCodeCatalog,
+          });
+          const fullItems = Array.isArray(fullCatalogResponse?.items) ? fullCatalogResponse.items : [];
+          const fullHasAny = fullItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
+          if (fullHasAny) {
+            responseItems = fullItems;
+            hasAnyFragments = true;
+          }
+        }
+
         return {
           done: batch.comments.length,
-          failed: Math.max(0, batch.comments.length - responseItems.length),
+          failed: hasAnyFragments ? Math.max(0, batch.comments.length - responseItems.length) : 0,
           fragments: mapFragmentsFromResponse({ responseItems }),
         };
       };
