@@ -71,6 +71,21 @@ const buildClusters = (codes = [], fragments = []) => {
 
 const COMMENT_CODE_EVOLUTION_DISABLED = true;
 
+
+const CODE_MAP_ALL_SCOPE = '__all__';
+
+const parseHypothesisSelection = (value = '') => {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  return Array.from(new Set(raw.split(',').map((item) => String(item || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+};
+
+const buildCodeMapScopeKey = (value = '') => {
+  const selected = parseHypothesisSelection(value);
+  if (!selected.length) return CODE_MAP_ALL_SCOPE;
+  return selected.join('__');
+};
+
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
   const storageKey = `comments-mode:${projectId}:${campaignId}`;
@@ -140,6 +155,7 @@ const CommentsModePage = () => {
   const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
   const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
   const codeMapCanvasRef = useRef(null);
+  const codeMapScopeSyncRef = useRef('');
   const [codeEditor, setCodeEditor] = useState({
     open: false,
     ...defaultCodeEditor,
@@ -167,9 +183,12 @@ const CommentsModePage = () => {
         fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
         codes: Array.isArray(parsed.codes) ? parsed.codes : [],
         codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
+        codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
+          ? parsed.codeMapLayoutsByHypothesis
+          : {},
       };
     } catch {
-      return { fragments: [], codes: [], codeProposals: [] };
+      return { fragments: [], codes: [], codeProposals: [], codeMapLayoutsByHypothesis: {} };
     }
   });
 
@@ -201,6 +220,9 @@ const CommentsModePage = () => {
           fragments: Array.isArray(indexedState.fragments) ? indexedState.fragments : [],
           codes: Array.isArray(indexedState.codes) ? indexedState.codes : [],
           codeProposals: Array.isArray(indexedState.codeProposals) ? indexedState.codeProposals : [],
+          codeMapLayoutsByHypothesis: indexedState.codeMapLayoutsByHypothesis && typeof indexedState.codeMapLayoutsByHypothesis === 'object'
+            ? indexedState.codeMapLayoutsByHypothesis
+            : {},
         });
       } catch {
         // Si no se puede leer IndexedDB, se mantiene fallback de localStorage.
@@ -215,6 +237,9 @@ const CommentsModePage = () => {
   const fragments = store.fragments || [];
   const codes = store.codes || [];
   const codeProposals = store.codeProposals || [];
+  const codeMapLayoutsByHypothesis = store.codeMapLayoutsByHypothesis && typeof store.codeMapLayoutsByHypothesis === 'object'
+    ? store.codeMapLayoutsByHypothesis
+    : {};
   const readerComments = commentsTable.items || [];
 
   const selectedReaderComment = useMemo(() => {
@@ -1131,12 +1156,13 @@ const CommentsModePage = () => {
 
   const filteredCodes = useMemo(() => {
     const query = codeQuery.trim().toLowerCase();
+    const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
     return codes.filter((code) => {
       const name = String(code.name || '').toLowerCase();
       const description = String(code.description || '').toLowerCase();
       const tags = Array.isArray(code.tags) ? code.tags.join(' ').toLowerCase() : String(code.tags || '').toLowerCase();
       const matchesQuery = !query || name.includes(query) || description.includes(query) || tags.includes(query);
-      const matchesHypothesis = !codeHypothesisFilter || String(code.hypothesis_id || '') === codeHypothesisFilter;
+      const matchesHypothesis = !selectedHypothesisIds.length || selectedHypothesisIds.includes(String(code.hypothesis_id || ''));
       const matchesCluster = !codeClusterFilter || String(code.cluster_id || '') === codeClusterFilter;
       const matchesClient = !codeClientFilter || String(code.client_id || '') === codeClientFilter;
       return matchesQuery && matchesHypothesis && matchesCluster && matchesClient;
@@ -1173,9 +1199,41 @@ const CommentsModePage = () => {
     return { roots, childrenByParent };
   }, [filteredCodes, codeSortBy, codeScoreBySlug]);
 
+  const codeMapScopeKey = useMemo(
+    () => buildCodeMapScopeKey(codeHypothesisFilter),
+    [codeHypothesisFilter],
+  );
+
+  useEffect(() => {
+    const scopedLayout = codeMapLayoutsByHypothesis[codeMapScopeKey];
+    setCodeMapLayoutBySlug(scopedLayout && typeof scopedLayout === 'object' ? scopedLayout : {});
+  }, [codeMapLayoutsByHypothesis, codeMapScopeKey]);
+
+  useEffect(() => {
+    if (codeMapScopeSyncRef.current !== codeMapScopeKey) {
+      codeMapScopeSyncRef.current = codeMapScopeKey;
+      return;
+    }
+
+    const serializedLayout = JSON.stringify(codeMapLayoutBySlug || {});
+    const previousScopedLayout = codeMapLayoutsByHypothesis[codeMapScopeKey];
+    const serializedPrevious = JSON.stringify(previousScopedLayout && typeof previousScopedLayout === 'object' ? previousScopedLayout : {});
+    if (serializedLayout === serializedPrevious) return;
+
+    const nextLayouts = {
+      ...codeMapLayoutsByHypothesis,
+      [codeMapScopeKey]: codeMapLayoutBySlug,
+    };
+    persist({
+      ...store,
+      codeMapLayoutsByHypothesis: nextLayouts,
+    });
+  }, [codeMapLayoutBySlug, codeMapScopeKey, codeMapLayoutsByHypothesis, store]);
+
   const codeMapVisibleCodes = useMemo(() => {
-    if (!codeHypothesisFilter) return codes;
-    return codes.filter((code) => String(code.hypothesis_id || '') === String(codeHypothesisFilter));
+    const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
+    if (!selectedHypothesisIds.length) return codes;
+    return codes.filter((code) => selectedHypothesisIds.includes(String(code.hypothesis_id || '')));
   }, [codes, codeHypothesisFilter]);
 
   const codeMapNodes = useMemo(() => codeMapVisibleCodes.map((code, index) => {
