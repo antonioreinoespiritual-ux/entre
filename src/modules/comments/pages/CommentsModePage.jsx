@@ -1662,7 +1662,6 @@ const CommentsModePage = () => {
       let processed = 0;
       let persistedCount = 0;
       let persistedFragments = [];
-      const attemptedCommentIds = new Set();
       setSemanticAgentProgress({ done: 0, total: pendingComments.length });
 
       const commentsById = new Map(
@@ -1775,12 +1774,8 @@ const CommentsModePage = () => {
       }));
 
       const processBatch = async (batch) => {
-        for (const comment of batch.comments) {
-          const cid = String(comment?.source_comment_id || comment?.id || '').trim();
-          if (cid) attemptedCommentIds.add(cid);
-        }
         setSemanticAgentProgress({
-          done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+          done: Math.min(processed, pendingComments.length),
           total: pendingComments.length,
         });
 
@@ -1850,7 +1845,7 @@ const CommentsModePage = () => {
             }
             processed += Number(result.done || nextBatch.comments.length);
             setSemanticAgentProgress({
-              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              done: Math.min(processed, pendingComments.length),
               total: pendingComments.length,
             });
           } catch {
@@ -1889,7 +1884,7 @@ const CommentsModePage = () => {
             failed += nextBatch.comments.length;
             processed += nextBatch.comments.length;
             setSemanticAgentProgress({
-              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              done: Math.min(processed, pendingComments.length),
               total: pendingComments.length,
             });
           }

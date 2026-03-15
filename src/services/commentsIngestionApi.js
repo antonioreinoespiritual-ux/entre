@@ -10,14 +10,32 @@ function token() {
 }
 
 async function request(path, options = {}) {
-  const response = await fetch(`${apiBaseUrl}${path}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token()}`,
-      ...(options.headers || {}),
-    },
-  });
+  const { timeoutMs = 0, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timeoutId = timeoutMs > 0
+    ? setTimeout(() => controller.abort(new Error('Request timeout')), timeoutMs)
+    : null;
+
+  let response;
+  try {
+    response = await fetch(`${apiBaseUrl}${path}`, {
+      ...fetchOptions,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token()}`,
+        ...(fetchOptions.headers || {}),
+      },
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('La solicitud tardó demasiado y fue cancelada.');
+    }
+    throw error;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload?.error || `Request failed: ${response.status}`);
   return payload;
@@ -37,6 +55,7 @@ export const commentsIngestionApi = {
   listCodeProposalReviews: ({ projectId, campaignId, limit = 500 }) => request(`/api/comment-base/code-proposal-reviews?${new URLSearchParams({ projectId, campaignId, limit: String(limit) }).toString()}`).then((r) => r.data || { items: [] }),
   extractSemanticFragments: ({ comment_id, source_id, texto_completo_del_comentario, comments, existing_codes = [] }) => request('/api/comment-base/semantic-fragment-agent', {
     method: 'POST',
+    timeoutMs: 120000,
     body: JSON.stringify({ comment_id, source_id, texto_completo_del_comentario, comments, existing_codes }),
   }).then((r) => r.data || { comment_id, fragments: [] }),
 };
