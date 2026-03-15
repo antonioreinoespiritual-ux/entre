@@ -1648,8 +1648,8 @@ const CommentsModePage = () => {
         return;
       }
 
-      const BATCH_SIZE = 20;
-      const MAX_CONCURRENCY = 4;
+      const BATCH_SIZE = Math.max(10, Math.min(20, Number(import.meta.env.VITE_AUTOFRAGMENT_BATCH_SIZE) || 10));
+      const MAX_CONCURRENCY = Math.max(3, Math.min(5, Number(import.meta.env.VITE_AUTOFRAGMENT_CONCURRENCY) || 3));
       const MAX_BATCH_RETRIES = 2;
       const createdFragments = [];
       let failed = 0;
@@ -1720,6 +1720,46 @@ const CommentsModePage = () => {
         return batches;
       };
 
+      const tokenize = (value) => String(value || '')
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter((token) => token.length >= 3);
+
+      const scoreCodeForComment = (commentText, code) => {
+        const commentTokens = new Set(tokenize(commentText));
+        if (!commentTokens.size) return 0;
+        const codeTokens = tokenize(`${code?.name || ''} ${code?.description || ''}`);
+        if (!codeTokens.length) return 0;
+        let hits = 0;
+        for (const token of codeTokens) {
+          if (commentTokens.has(token)) hits += 1;
+        }
+        return hits / Math.max(1, codeTokens.length);
+      };
+
+      const buildShortlistedCodesForBatch = (batchComments) => {
+        const unionSlugs = new Set();
+        for (const comment of batchComments) {
+          const text = String(comment?.text || '').trim();
+          if (!text) continue;
+          const topForComment = [...existingCodeCatalog]
+            .map((code) => ({ code, score: scoreCodeForComment(text, code) }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 12)
+            .map((entry) => entry.code.slug)
+            .filter(Boolean);
+          for (const slug of topForComment) unionSlugs.add(slug);
+          if (unionSlugs.size >= 60) break;
+        }
+        const shortlisted = existingCodeCatalog.filter((code) => unionSlugs.has(code.slug)).slice(0, 60);
+        if (shortlisted.length >= 10) return shortlisted;
+        return existingCodeCatalog.slice(0, 40);
+      };
+
       const initialBatches = buildBatches(pendingComments, BATCH_SIZE).map((batch, index) => ({
         id: `batch_${index + 1}`,
         attempts: 0,
@@ -1727,6 +1767,7 @@ const CommentsModePage = () => {
       }));
 
       const processBatch = async (batch) => {
+        const shortlistedCodes = buildShortlistedCodesForBatch(batch.comments);
         const payloadComments = batch.comments
           .map((comment) => ({
             comment_id: String(comment.source_comment_id || comment.id || '').trim(),
@@ -1741,36 +1782,14 @@ const CommentsModePage = () => {
 
         const response = await commentsIngestionApi.extractSemanticFragments({
           comments: payloadComments,
-          existing_codes: existingCodeCatalog,
+          existing_codes: shortlistedCodes,
         });
         const responseItems = Array.isArray(response?.items) ? response.items : [];
-        const hasAnyFragments = responseItems.some((item) => Array.isArray(item?.fragments) && item.fragments.length > 0);
-        if (!hasAnyFragments) {
-          throw new Error('empty_batch_fragments');
-        }
         return {
           done: batch.comments.length,
           failed: Math.max(0, batch.comments.length - responseItems.length),
           fragments: mapFragmentsFromResponse({ responseItems }),
         };
-      };
-
-      const processCommentFallback = async (comment) => {
-        const sourceCommentId = String(comment.source_comment_id || comment.id || '').trim();
-        const sourceText = String(comment.text || '').trim();
-        if (!sourceCommentId || !sourceText) return { done: 1, failed: 1, fragments: [] };
-        try {
-          const response = await commentsIngestionApi.extractSemanticFragments({
-            comment_id: sourceCommentId,
-            source_id: String(comment.source || 'youtube'),
-            texto_completo_del_comentario: sourceText,
-            existing_codes: existingCodeCatalog,
-          });
-          const items = [{ comment_id: sourceCommentId, fragments: Array.isArray(response?.fragments) ? response.fragments : [] }];
-          return { done: 1, failed: 0, fragments: mapFragmentsFromResponse({ responseItems: items }) };
-        } catch {
-          return { done: 1, failed: 1, fragments: [] };
-        }
       };
 
       const queue = [...initialBatches];
@@ -1792,16 +1811,9 @@ const CommentsModePage = () => {
               queue.push({ ...nextBatch, attempts: nextBatch.attempts + 1 });
               continue;
             }
-            for (const comment of nextBatch.comments) {
-              const fallbackResult = await processCommentFallback(comment);
-              failed += Number(fallbackResult.failed || 0);
-              if (Array.isArray(fallbackResult.fragments) && fallbackResult.fragments.length) {
-                createdFragments.push(...fallbackResult.fragments);
-                persistIncremental(createdFragments);
-              }
-              processed += Number(fallbackResult.done || 1);
-              setSemanticAgentProgress({ done: Math.min(processed, pendingComments.length), total: pendingComments.length });
-            }
+            failed += nextBatch.comments.length;
+            processed += nextBatch.comments.length;
+            setSemanticAgentProgress({ done: Math.min(processed, pendingComments.length), total: pendingComments.length });
           }
         }
       });
