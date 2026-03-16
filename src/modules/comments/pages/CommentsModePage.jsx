@@ -141,6 +141,8 @@ const CommentsModePage = () => {
   const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
   const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
   const [codeMenuSlug, setCodeMenuSlug] = useState('');
+  const [codesActionsMenuOpen, setCodesActionsMenuOpen] = useState(false);
+  const [codeDeleteMode, setCodeDeleteMode] = useState('none');
   const [codeCardSlug, setCodeCardSlug] = useState('');
   const [codeCardDeleteMenuOpen, setCodeCardDeleteMenuOpen] = useState(false);
   const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
@@ -1109,6 +1111,23 @@ const CommentsModePage = () => {
       setCodeCardDeleteMode('none');
       setCodeCardDeleteMenuOpen(false);
     }
+  };
+
+
+
+  const deleteAllCodes = () => {
+    if (!codes.length) return;
+    if (!window.confirm(`¿Eliminar todos los códigos (${codes.length}) y desvincularlos de fragmentos?`)) return;
+    const nextFragments = fragments.map((fragment) => ({
+      ...fragment,
+      code_slugs: [],
+    }));
+    persist({ ...store, codes: [], fragments: nextFragments });
+    setSelectedCodeSlug('');
+    setCodeMenuSlug('');
+    setCodeCardSlug('');
+    setCodeDeleteMode('none');
+    setCodesActionsMenuOpen(false);
   };
 
   const setCodeParent = (slug, parentSlug) => {
@@ -2384,9 +2403,9 @@ const CommentsModePage = () => {
     };
 
     return (
-      <div key={slug} className="space-y-1">
+      <div key={slug} className="relative isolate space-y-1">
         <article
-          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''}`}
+          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''} ${codeMenuSlug === slug ? 'z-40' : 'z-0'}`}
           style={{ marginLeft: `${depth * 18}px` }}
           onClick={() => setSelectedCodeSlug(slug)}
         >
@@ -2413,6 +2432,21 @@ const CommentsModePage = () => {
                 <span>F {score.score_frecuencia} · D {score.score_dispersion}</span>
                 {Array.isArray(code.tags) && code.tags.length ? <><span>·</span><span className="line-clamp-1">{code.tags.slice(0, 3).join(', ')}</span></> : null}
               </div>
+              {codeDeleteMode === 'single' ? (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-700 hover:bg-rose-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
+                      deleteCodeTree(slug);
+                    }}
+                  >
+                    Eliminar uno a uno
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             <div className="relative">
@@ -2427,7 +2461,7 @@ const CommentsModePage = () => {
                 <MoreHorizontal className="h-4 w-4" />
               </button>
               {codeMenuSlug === slug ? (
-                <div className="absolute right-0 top-9 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+                <div className="absolute right-0 top-9 z-50 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Editar código</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('create', null, slug)}>Crear subcódigo</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Mover jerarquía</button>
@@ -2925,17 +2959,34 @@ const CommentsModePage = () => {
                   <Button className="bg-violet-600 text-white" onClick={runCodeProposalAgent}>
                     Agente 2 · Clusterizar pendientes
                   </Button>
-                  <Button className="bg-white border text-slate-700" title="Mapa de códigos" onClick={() => setCodeMapOpen(true)}>
-                    🕸️ Mapa de códigos
-                  </Button>
-                  <Button className="bg-emerald-600 text-white" onClick={runGenerateCodesWithoutTraceability}>
-                    Generar
-                  </Button>
                   <Button className="bg-indigo-600 text-white" onClick={() => openCodeEditor('create')}>
                     <Plus className="mr-1 h-4 w-4" /> Crear código
                   </Button>
+                  <div className="relative">
+                    <Button className="bg-white border text-slate-700" onClick={() => setCodesActionsMenuOpen((prev) => !prev)}>
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                    {codesActionsMenuOpen ? (
+                      <div className="absolute right-0 top-11 z-50 w-56 rounded-lg border bg-white p-1.5 shadow-lg">
+                        <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { runGenerateCodesWithoutTraceability(); setCodesActionsMenuOpen(false); }}>Generar</button>
+                        <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setCodeMapOpen(true); setCodesActionsMenuOpen(false); }}>Mapa de códigos</button>
+                        <button type="button" className={`w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100 ${codeDeleteMode === 'single' ? 'bg-slate-100 font-medium' : ''}`} onClick={() => { setCodeDeleteMode((prev) => (prev === 'single' ? 'none' : 'single')); setCodesActionsMenuOpen(false); }}>
+                          Eliminar uno a uno
+                        </button>
+                        <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={deleteAllCodes}>
+                          Eliminar todo
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
+
+              {codeDeleteMode === 'single' ? (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  Modo eliminación uno a uno activo. Haz clic en “Eliminar uno a uno” dentro de cada código para depurar sin ambigüedad.
+                </div>
+              ) : null}
 
               {codeCard ? (
                 <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
