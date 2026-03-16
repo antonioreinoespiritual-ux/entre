@@ -4259,6 +4259,26 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     return formatAsTitle(compact);
   };
 
+  const normalizeDescription = (rawDescription, normalizedName) => {
+    const raw = String(rawDescription || '').replace(/\s+/g, ' ').trim();
+    const name = String(normalizedName || '').replace(/\s+/g, ' ').trim();
+    const rawLower = raw.toLowerCase();
+    const nameLower = name.toLowerCase();
+
+    const looksPlaceholder = !raw
+      || /^(null|undefined|n\/a|na|sin descripcion|sin descripción|descripcion pendiente|descripción pendiente)$/i.test(rawLower)
+      || /patron\s+conceptual\s*\d+/i.test(rawLower)
+      || /codigo\s+conceptual\s*\d+/i.test(rawLower)
+      || /cluster\s*\d+/i.test(rawLower)
+      || rawLower === nameLower;
+
+    if (looksPlaceholder || raw.length < 30) {
+      return `Agrupa comentarios que expresan ${nameLower || 'una dinámica emocional recurrente'} como patrón semántico dominante y recurrente en el corpus analizado.`;
+    }
+
+    return raw;
+  };
+
   const inferNameRationale = (name, description) => {
     const n = String(name || '').toLowerCase();
     const d = String(description || '').toLowerCase();
@@ -4275,18 +4295,31 @@ function normalizeCodeGenerationAgentOutput(parsed) {
   };
 
   const proposals = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
-  return proposals.slice(0, 40).map((proposal, index) => ({
-    cluster_name: normalizeConceptualName(proposal.cluster_name || proposal.suggested_code_name, proposal.description, `dinámica conceptual ${index + 1}`),
-    suggested_code_name: normalizeConceptualName(proposal.suggested_code_name || proposal.cluster_name, proposal.description, `patrón narrativo ${index + 1}`),
-    description: String(proposal.description || 'Patrón conceptual propuesto sin trazabilidad inicial.').trim(),
-    naming_rationale: inferNameRationale(proposal.suggested_code_name || proposal.cluster_name, proposal.description),
+  return proposals.slice(0, 40).map((proposal, index) => {
+    const normalizedName = normalizeConceptualName(
+      proposal.suggested_code_name || proposal.cluster_name,
+      proposal.description,
+      `dinámica relacional emergente ${index + 1}`,
+    );
+    const normalizedClusterName = normalizeConceptualName(
+      proposal.cluster_name || proposal.suggested_code_name,
+      proposal.description,
+      `dinámica relacional emergente ${index + 1}`,
+    );
+    const normalizedDescription = normalizeDescription(proposal.description, normalizedName);
+
+    return {
+    cluster_name: normalizedClusterName,
+    suggested_code_name: normalizedName,
+    description: normalizedDescription,
+    naming_rationale: inferNameRationale(normalizedName, normalizedDescription),
     coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
     pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
     recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
     subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub, subIndex) => ({
       cluster_name: normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, `subpatrón ${subIndex + 1}`),
       suggested_subcode_name: normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, `subnarrativa ${subIndex + 1}`),
-      description: String(sub.description || 'Subpatrón conceptual propuesto sin trazabilidad inicial.').trim(),
+      description: normalizeDescription(sub.description, sub.suggested_subcode_name || sub.cluster_name),
       naming_rationale: inferNameRationale(sub.suggested_subcode_name || sub.cluster_name, sub.description),
       coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
       pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
@@ -4294,7 +4327,81 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     })),
     generated_without_traceability: true,
     conceptual_taxonomy_stage: 'discovery',
-  }));
+  };
+  });
+}
+
+function validateGeneratedCodeProposal(proposal = {}) {
+  const title = String(proposal?.suggested_code_name || '').trim();
+  const description = String(proposal?.description || '').trim();
+  const titleNormalized = title.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  const descNormalized = description.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+
+  const titleInvalid = !title
+    || /^(null|undefined)$/i.test(titleNormalized)
+    || /^(patron|patron conceptual|codigo|codigo conceptual|cluster|tema|grupo)\s*\d*$/i.test(titleNormalized)
+    || /(patron\s+conceptual\s*\d+|codigo\s+conceptual\s*\d+|cluster\s*\d+)/i.test(titleNormalized)
+    || title.split(/\s+/).filter(Boolean).length < 2;
+
+  const descriptionInvalid = !description
+    || /^(null|undefined)$/i.test(descNormalized)
+    || descNormalized === titleNormalized
+    || description.length < 30
+    || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized);
+
+  return {
+    valid: !titleInvalid && !descriptionInvalid,
+    titleInvalid,
+    descriptionInvalid,
+  };
+}
+
+function buildCodeGenerationRepairPrompt({ proposals = [] }) {
+  const compact = (value, max = 280) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const items = (Array.isArray(proposals) ? proposals : [])
+    .slice(0, 60)
+    .map((proposal, index) => ({
+      index: index + 1,
+      suggested_code_name: compact(proposal?.suggested_code_name || proposal?.cluster_name || '', 100),
+      description: compact(proposal?.description || '', 260),
+      coherence_level: String(proposal?.coherence_level || 'media').toLowerCase(),
+      pattern_size: String(proposal?.pattern_size || 'medio').toLowerCase(),
+      recommendation: String(proposal?.recommendation || 'crear').toLowerCase(),
+    }));
+
+  return [
+    'Corrige la lista de códigos para que cada item tenga título y descripción de calidad analítica.',
+    'Reglas obligatorias:',
+    '1) suggested_code_name: concepto compacto, 2-5 palabras, semántico, sin placeholders ni números secuenciales.',
+    '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
+    '3) description: explicación clara del patrón semántico del código, mínimo 30 caracteres.',
+    '4) description NO puede ser vacía, null, undefined, placeholder ni repetición literal del título.',
+    '5) Mantén coherence_level/pattern_size/recommendation.',
+    'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
+    'INPUT:',
+    JSON.stringify({ proposals: items }),
+  ].join('\n');
+}
+
+async function repairInvalidCodeGenerationProposals({ integration, proposals = [] }) {
+  const normalized = Array.isArray(proposals) ? proposals : [];
+  const invalid = normalized.filter((proposal) => !validateGeneratedCodeProposal(proposal).valid);
+  if (!invalid.length) return normalized;
+
+  let repaired = normalized;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const prompt = buildCodeGenerationRepairPrompt({ proposals: repaired });
+    const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+      { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+      { role: 'user', content: prompt },
+    ], { maxRetries: 2, baseDelayMs: 1000 });
+    const parsed = extractJsonObjectFromText(completion.content);
+    repaired = normalizeCodeGenerationAgentOutput(parsed);
+    const pendingInvalid = repaired.filter((proposal) => !validateGeneratedCodeProposal(proposal).valid);
+    if (!pendingInvalid.length) break;
+  }
+
+  return repaired;
 }
 
 
@@ -6645,7 +6752,12 @@ const server = http.createServer(async (req, res) => {
             throw error;
           }
           const parsed = extractJsonObjectFromText(completion.content);
-          const chunkProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsed));
+          const normalizedChunkProposals = normalizeCodeGenerationAgentOutput(parsed);
+          const repairedChunkProposals = await repairInvalidCodeGenerationProposals({
+            integration,
+            proposals: normalizedChunkProposals,
+          });
+          const chunkProposals = flattenSubclustersAsCodeProposals(repairedChunkProposals);
           mergedProposals = dedupeCodeProposalsByName([...mergedProposals, ...chunkProposals], 160);
           chunkCalls += 1;
 
@@ -6687,12 +6799,25 @@ const server = http.createServer(async (req, res) => {
           }
           if (synthesized) {
             const parsedSynthesis = extractJsonObjectFromText(synthesized.content);
-            const synthesizedProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsedSynthesis));
+            const normalizedSynthesized = normalizeCodeGenerationAgentOutput(parsedSynthesis);
+            const repairedSynthesized = await repairInvalidCodeGenerationProposals({
+              integration,
+              proposals: normalizedSynthesized,
+            });
+            const synthesizedProposals = flattenSubclustersAsCodeProposals(repairedSynthesized);
             finalProposals = dedupeCodeProposalsByName(synthesizedProposals, MAX_CODES);
           }
         } else {
           finalProposals = dedupeCodeProposalsByName(flattenSubclustersAsCodeProposals(mergedProposals), MAX_CODES);
         }
+
+        finalProposals = dedupeCodeProposalsByName(
+          await repairInvalidCodeGenerationProposals({
+            integration,
+            proposals: finalProposals,
+          }),
+          MAX_CODES,
+        );
 
         return sendJson(req, res, 200, {
           data: {
