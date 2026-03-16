@@ -2740,6 +2740,117 @@ function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] })
   ].join('\n');
 }
 
+
+function compactAnalysisText(value = '', max = 420) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function serializeCodeMapAnalysisEvidence({ code, fragments = [], relatedCodes = [] }) {
+  const safeCode = {
+    slug: String(code?.slug || '').trim(),
+    name: String(code?.name || '').trim(),
+    description: compactAnalysisText(code?.description || '', 260),
+  };
+
+  const serializedFragments = (Array.isArray(fragments) ? fragments : [])
+    .slice(0, 120)
+    .map((fragment, index) => ({
+      fragment_id: String(fragment?.fragment_id || fragment?.id || `fragment_${index + 1}`).trim(),
+      excerpt: compactAnalysisText(fragment?.excerpt || fragment?.fragment_text || '', 420),
+      source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+    }))
+    .filter((fragment) => fragment.fragment_id && fragment.excerpt);
+
+  const serializedRelated = (Array.isArray(relatedCodes) ? relatedCodes : [])
+    .slice(0, 24)
+    .map((item) => ({
+      slug: String(item?.slug || '').trim(),
+      name: String(item?.name || '').trim(),
+      description: compactAnalysisText(item?.description || '', 180),
+      relation: String(item?.relation || '').trim(),
+    }))
+    .filter((item) => item.slug && item.name);
+
+  return {
+    code: safeCode,
+    fragments: serializedFragments,
+    related_codes: serializedRelated,
+  };
+}
+
+function buildCodeMapAgentSectionPrompt({ agentName, sectionName, focusInstruction, evidence }) {
+  return [
+    `Rol: ${agentName}.`,
+    `Sección objetivo: ${sectionName}.`,
+    'Regla crítica: usa únicamente la evidencia entregada. Está prohibido inventar o completar huecos.',
+    'Debes citar explícitamente fragmentos reales en cada conclusión.',
+    'Puedes citar códigos relacionados solo si aparecen en la evidencia.',
+    `Instrucción de enfoque: ${focusInstruction}`,
+    'Devuelve únicamente JSON válido con este formato exacto:',
+    '{"analysis":"","citations":[{"fragment_id":"","excerpt":"","code_slug":""}]}',
+    'Si faltan pruebas para un punto, dilo explícitamente en analysis sin inventar.',
+    'EVIDENCIA_JSON:',
+    JSON.stringify(evidence),
+  ].join('\n');
+}
+
+function buildCodeMapAnalysisRefinerPrompt({ evidence, sections }) {
+  return [
+    'Eres el Agente Refinador de un análisis semántico.',
+    'Toma las secciones de agentes especializados y unifica lenguaje, elimina redundancia y alinea coherencia.',
+    'No inventes nueva evidencia; solo reorganiza y mejora claridad con base en las mismas citas.',
+    'Devuelve JSON válido exacto con estructura:',
+    '{"summary_absolute":"","dolores":{"analysis":"","citations":[]},"deseos":{"analysis":"","citations":[]},"placeres":{"analysis":"","citations":[]},"problemas":{"analysis":"","citations":[]},"soluciones":{"analysis":"","citations":[]},"sintesis_final":{"analysis":"","citations":[]}}',
+    'EVIDENCIA_JSON:',
+    JSON.stringify(evidence),
+    'SECCIONES_JSON:',
+    JSON.stringify(sections),
+  ].join('\n');
+}
+
+function buildCodeMapAnalysisOptimizerPrompt({ evidence, refinedDocument }) {
+  return [
+    'Eres el Agente Optimizador Final.',
+    'Optimiza claridad, legibilidad y densidad analítica sin alterar fidelidad a la evidencia.',
+    'Mantén las citas y evita cualquier afirmación no soportada por fragmentos/códigos entregados.',
+    'Devuelve JSON válido exacto con esta estructura:',
+    '{"summary_absolute":"","dolores":{"analysis":"","citations":[]},"deseos":{"analysis":"","citations":[]},"placeres":{"analysis":"","citations":[]},"problemas":{"analysis":"","citations":[]},"soluciones":{"analysis":"","citations":[]},"sintesis_final":{"analysis":"","citations":[]}}',
+    'EVIDENCIA_JSON:',
+    JSON.stringify(evidence),
+    'DOCUMENTO_REFINADO_JSON:',
+    JSON.stringify(refinedDocument),
+  ].join('\n');
+}
+
+function normalizeCodeMapAnalysisSection(value, fallbackAnalysis = '') {
+  const section = value && typeof value === 'object' ? value : {};
+  const citations = Array.isArray(section.citations) ? section.citations : [];
+  return {
+    analysis: compactAnalysisText(section.analysis || fallbackAnalysis || '', 3800),
+    citations: citations
+      .slice(0, 10)
+      .map((item) => ({
+        fragment_id: String(item?.fragment_id || '').trim(),
+        excerpt: compactAnalysisText(item?.excerpt || '', 260),
+        code_slug: String(item?.code_slug || '').trim(),
+      }))
+      .filter((item) => item.fragment_id && item.excerpt),
+  };
+}
+
+function normalizeCodeMapAnalysisDocument(parsed, fallbackSections = {}) {
+  const base = parsed && typeof parsed === 'object' ? parsed : {};
+  return {
+    summary_absolute: compactAnalysisText(base.summary_absolute || fallbackSections.summary_absolute || '', 2200),
+    dolores: normalizeCodeMapAnalysisSection(base.dolores || fallbackSections.dolores, fallbackSections.dolores?.analysis || ''),
+    deseos: normalizeCodeMapAnalysisSection(base.deseos || fallbackSections.deseos, fallbackSections.deseos?.analysis || ''),
+    placeres: normalizeCodeMapAnalysisSection(base.placeres || fallbackSections.placeres, fallbackSections.placeres?.analysis || ''),
+    problemas: normalizeCodeMapAnalysisSection(base.problemas || fallbackSections.problemas, fallbackSections.problemas?.analysis || ''),
+    soluciones: normalizeCodeMapAnalysisSection(base.soluciones || fallbackSections.soluciones, fallbackSections.soluciones?.analysis || ''),
+    sintesis_final: normalizeCodeMapAnalysisSection(base.sintesis_final || fallbackSections.sintesis_final, fallbackSections.sintesis_final?.analysis || ''),
+  };
+}
+
 function extractJsonObjectFromText(rawText = '') {
   const text = String(rawText || '').trim();
   if (!text) return null;
@@ -2792,6 +2903,86 @@ function extractJsonObjectFromText(rawText = '') {
   }
 }
 
+function selectRelevantFragmentsForCodeMapChat({ fragments = [], question = '', limit = 8 }) {
+  const tokens = String(question || '')
+    .toLowerCase()
+    .split(/[^a-záéíóúñ0-9]+/i)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 4);
+  const tokenSet = new Set(tokens);
+  const safeFragments = Array.isArray(fragments) ? fragments : [];
+
+  const scored = safeFragments
+    .map((fragment) => {
+      const excerpt = String(fragment?.excerpt || fragment?.fragment_text || '').trim();
+      const lc = excerpt.toLowerCase();
+      let score = 0;
+      for (const token of tokenSet) {
+        if (lc.includes(token)) score += 1;
+      }
+      return {
+        fragment_id: String(fragment?.fragment_id || fragment?.id || '').trim(),
+        excerpt: compactAnalysisText(excerpt, 280),
+        source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+        score,
+      };
+    })
+    .filter((item) => item.fragment_id && item.excerpt)
+    .sort((a, b) => b.score - a.score);
+
+  const withSignal = scored.filter((item) => item.score > 0).slice(0, limit);
+  if (withSignal.length) return withSignal;
+  return scored.slice(0, Math.max(4, Math.min(limit, 8)));
+}
+
+function buildCodeMapAnalysisChatPrompt({ session = {}, question = '', relevantEvidence = [] }) {
+  const codeContext = {
+    code_slug: String(session?.code_slug || '').trim(),
+    code_name: String(session?.code_name || '').trim(),
+    code_description: compactAnalysisText(session?.code_description || '', 240),
+  };
+
+  const initialReport = session?.initial_report && typeof session.initial_report === 'object'
+    ? session.initial_report
+    : {};
+  const fixedSummary = {
+    summary_absolute: compactAnalysisText(initialReport.summary_absolute || '', 1200),
+    dolores: compactAnalysisText(initialReport?.dolores?.analysis || '', 700),
+    deseos: compactAnalysisText(initialReport?.deseos?.analysis || '', 700),
+    placeres: compactAnalysisText(initialReport?.placeres?.analysis || '', 700),
+    problemas: compactAnalysisText(initialReport?.problemas?.analysis || '', 700),
+    soluciones: compactAnalysisText(initialReport?.soluciones?.analysis || '', 700),
+    sintesis_final: compactAnalysisText(initialReport?.sintesis_final?.analysis || '', 700),
+  };
+
+  const history = Array.isArray(session?.conversation_history) ? session.conversation_history : [];
+  const recentHistory = history.slice(-8).map((message) => ({
+    role: String(message?.role || '').trim(),
+    content: compactAnalysisText(message?.content || '', 420),
+  }));
+
+  return [
+    'Eres un copiloto analítico especializado en un único código del Mapa de Códigos.',
+    'Regla crítica: mantener foco 100% en este código y su evidencia. No mezclar otros contextos.',
+    'No inventes; responde solo con base en el informe inicial, memoria y evidencia relevante adjunta.',
+    'Economía de tokens: no repitas todo el informe salvo que sea necesario para responder.',
+    'Formato de salida: JSON válido exacto:',
+    '{"answer":"","memory_summary":"","citations":[{"fragment_id":"","excerpt":"","code_slug":""}]}',
+    'memory_summary debe actualizar y compactar aprendizajes relevantes de la conversación (máx 900 caracteres).',
+    'CONTEXTO_FIJO_CODIGO_JSON:',
+    JSON.stringify(codeContext),
+    'INFORME_BASE_JSON:',
+    JSON.stringify(fixedSummary),
+    'MEMORIA_PREVIA_RESUMIDA:',
+    compactAnalysisText(session?.memory_summary || '', 900),
+    'HISTORIAL_RECIENTE_JSON:',
+    JSON.stringify(recentHistory),
+    'EVIDENCIA_RELEVANTE_JSON:',
+    JSON.stringify(relevantEvidence),
+    `PREGUNTA_USUARIO: ${String(question || '').trim()}`,
+  ].join('\n');
+}
+
 function clampConfidence(value, fallback = 0.75) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -2799,6 +2990,17 @@ function clampConfidence(value, fallback = 0.75) {
   if (parsed > 1) return 1;
   return Number(parsed.toFixed(3));
 }
+
+
+const normalizeRejectReason = (value) => {
+  const reason = String(value || '').trim().toLowerCase();
+  if (!reason) return '';
+  if (reason.includes('redund')) return 'comentario_redundante';
+  if (reason.includes('vago')) return 'texto_demasiado_vago';
+  if (reason.includes('riqueza') || reason.includes('semantic') || reason.includes('semantica')) return 'baja_riqueza_semantica';
+  if (reason.includes('codigo') || reason.includes('match') || reason.includes('encaje')) return 'sin_codigo_razonable';
+  return '';
+};
 
 function normalizeLookupKey(value = '') {
   return String(value || '')
@@ -4259,6 +4461,26 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     return formatAsTitle(compact);
   };
 
+  const normalizeDescription = (rawDescription, normalizedName) => {
+    const raw = String(rawDescription || '').replace(/\s+/g, ' ').trim();
+    const name = String(normalizedName || '').replace(/\s+/g, ' ').trim();
+    const rawLower = raw.toLowerCase();
+    const nameLower = name.toLowerCase();
+
+    const looksPlaceholder = !raw
+      || /^(null|undefined|n\/a|na|sin descripcion|sin descripción|descripcion pendiente|descripción pendiente)$/i.test(rawLower)
+      || /patron\s+conceptual\s*\d+/i.test(rawLower)
+      || /codigo\s+conceptual\s*\d+/i.test(rawLower)
+      || /cluster\s*\d+/i.test(rawLower)
+      || rawLower === nameLower;
+
+    if (looksPlaceholder || raw.length < 30) {
+      return `Agrupa comentarios que expresan ${nameLower || 'una dinámica emocional recurrente'} como patrón semántico dominante y recurrente en el corpus analizado.`;
+    }
+
+    return raw;
+  };
+
   const inferNameRationale = (name, description) => {
     const n = String(name || '').toLowerCase();
     const d = String(description || '').toLowerCase();
@@ -4275,18 +4497,31 @@ function normalizeCodeGenerationAgentOutput(parsed) {
   };
 
   const proposals = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
-  return proposals.slice(0, 40).map((proposal, index) => ({
-    cluster_name: normalizeConceptualName(proposal.cluster_name || proposal.suggested_code_name, proposal.description, `dinámica conceptual ${index + 1}`),
-    suggested_code_name: normalizeConceptualName(proposal.suggested_code_name || proposal.cluster_name, proposal.description, `patrón narrativo ${index + 1}`),
-    description: String(proposal.description || 'Patrón conceptual propuesto sin trazabilidad inicial.').trim(),
-    naming_rationale: inferNameRationale(proposal.suggested_code_name || proposal.cluster_name, proposal.description),
+  return proposals.slice(0, 40).map((proposal, index) => {
+    const normalizedName = normalizeConceptualName(
+      proposal.suggested_code_name || proposal.cluster_name,
+      proposal.description,
+      `dinámica relacional emergente ${index + 1}`,
+    );
+    const normalizedClusterName = normalizeConceptualName(
+      proposal.cluster_name || proposal.suggested_code_name,
+      proposal.description,
+      `dinámica relacional emergente ${index + 1}`,
+    );
+    const normalizedDescription = normalizeDescription(proposal.description, normalizedName);
+
+    return {
+    cluster_name: normalizedClusterName,
+    suggested_code_name: normalizedName,
+    description: normalizedDescription,
+    naming_rationale: inferNameRationale(normalizedName, normalizedDescription),
     coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
     pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
     recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
     subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub, subIndex) => ({
       cluster_name: normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, `subpatrón ${subIndex + 1}`),
       suggested_subcode_name: normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, `subnarrativa ${subIndex + 1}`),
-      description: String(sub.description || 'Subpatrón conceptual propuesto sin trazabilidad inicial.').trim(),
+      description: normalizeDescription(sub.description, sub.suggested_subcode_name || sub.cluster_name),
       naming_rationale: inferNameRationale(sub.suggested_subcode_name || sub.cluster_name, sub.description),
       coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
       pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
@@ -4294,7 +4529,81 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     })),
     generated_without_traceability: true,
     conceptual_taxonomy_stage: 'discovery',
-  }));
+  };
+  });
+}
+
+function validateGeneratedCodeProposal(proposal = {}) {
+  const title = String(proposal?.suggested_code_name || '').trim();
+  const description = String(proposal?.description || '').trim();
+  const titleNormalized = title.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+  const descNormalized = description.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
+
+  const titleInvalid = !title
+    || /^(null|undefined)$/i.test(titleNormalized)
+    || /^(patron|patron conceptual|codigo|codigo conceptual|cluster|tema|grupo)\s*\d*$/i.test(titleNormalized)
+    || /(patron\s+conceptual\s*\d+|codigo\s+conceptual\s*\d+|cluster\s*\d+)/i.test(titleNormalized)
+    || title.split(/\s+/).filter(Boolean).length < 2;
+
+  const descriptionInvalid = !description
+    || /^(null|undefined)$/i.test(descNormalized)
+    || descNormalized === titleNormalized
+    || description.length < 30
+    || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized);
+
+  return {
+    valid: !titleInvalid && !descriptionInvalid,
+    titleInvalid,
+    descriptionInvalid,
+  };
+}
+
+function buildCodeGenerationRepairPrompt({ proposals = [] }) {
+  const compact = (value, max = 280) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const items = (Array.isArray(proposals) ? proposals : [])
+    .slice(0, 60)
+    .map((proposal, index) => ({
+      index: index + 1,
+      suggested_code_name: compact(proposal?.suggested_code_name || proposal?.cluster_name || '', 100),
+      description: compact(proposal?.description || '', 260),
+      coherence_level: String(proposal?.coherence_level || 'media').toLowerCase(),
+      pattern_size: String(proposal?.pattern_size || 'medio').toLowerCase(),
+      recommendation: String(proposal?.recommendation || 'crear').toLowerCase(),
+    }));
+
+  return [
+    'Corrige la lista de códigos para que cada item tenga título y descripción de calidad analítica.',
+    'Reglas obligatorias:',
+    '1) suggested_code_name: concepto compacto, 2-5 palabras, semántico, sin placeholders ni números secuenciales.',
+    '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
+    '3) description: explicación clara del patrón semántico del código, mínimo 30 caracteres.',
+    '4) description NO puede ser vacía, null, undefined, placeholder ni repetición literal del título.',
+    '5) Mantén coherence_level/pattern_size/recommendation.',
+    'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
+    'INPUT:',
+    JSON.stringify({ proposals: items }),
+  ].join('\n');
+}
+
+async function repairInvalidCodeGenerationProposals({ integration, proposals = [] }) {
+  const normalized = Array.isArray(proposals) ? proposals : [];
+  const invalid = normalized.filter((proposal) => !validateGeneratedCodeProposal(proposal).valid);
+  if (!invalid.length) return normalized;
+
+  let repaired = normalized;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const prompt = buildCodeGenerationRepairPrompt({ proposals: repaired });
+    const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+      { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+      { role: 'user', content: prompt },
+    ], { maxRetries: 2, baseDelayMs: 1000 });
+    const parsed = extractJsonObjectFromText(completion.content);
+    repaired = normalizeCodeGenerationAgentOutput(parsed);
+    const pendingInvalid = repaired.filter((proposal) => !validateGeneratedCodeProposal(proposal).valid);
+    if (!pendingInvalid.length) break;
+  }
+
+  return repaired;
 }
 
 
@@ -6357,6 +6666,151 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (url.pathname === '/api/comment-base/code-map-analysis-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body?.project_id || '').trim();
+      const campaignId = String(body?.campaign_id || '').trim();
+      const code = body?.code && typeof body.code === 'object' ? body.code : {};
+      const codeSlug = String(code?.slug || '').trim();
+      const codeName = String(code?.name || '').trim();
+
+      const fragments = Array.isArray(body?.fragments) ? body.fragments : [];
+      const relatedCodes = Array.isArray(body?.related_codes) ? body.related_codes : [];
+
+      if (!projectId || !campaignId || !codeSlug || !codeName) {
+        return sendJson(req, res, 400, { error: 'project_id, campaign_id y code (slug, name) son requeridos.' });
+      }
+
+      const safeFragments = fragments
+        .map((fragment, index) => ({
+          fragment_id: String(fragment?.fragment_id || fragment?.id || `fragment_${index + 1}`).trim(),
+          excerpt: String(fragment?.excerpt || fragment?.fragment_text || '').trim(),
+          source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+        }))
+        .filter((fragment) => fragment.fragment_id && fragment.excerpt)
+        .slice(0, 120);
+
+      if (!safeFragments.length) {
+        return sendJson(req, res, 400, { error: 'Se requieren fragmentos con evidencia para analizar el código.' });
+      }
+
+      const [campaignRows] = await pool.query(
+        'SELECT id, project_id FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+        [campaignId, projectId, user.id],
+      );
+      const campaign = campaignRows[0] || null;
+      if (!campaign) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial antes de usar Análisis IA del mapa de códigos.',
+        });
+      }
+
+      const evidence = serializeCodeMapAnalysisEvidence({
+        code: {
+          slug: codeSlug,
+          name: codeName,
+          description: String(code?.description || '').trim(),
+        },
+        fragments: safeFragments,
+        relatedCodes,
+      });
+
+      const runSectionAgent = async ({ agentName, sectionName, focusInstruction }) => {
+        const prompt = buildCodeMapAgentSectionPrompt({
+          agentName,
+          sectionName,
+          focusInstruction,
+          evidence,
+        });
+        const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: prompt },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const parsed = extractJsonObjectFromText(completion.content);
+        return normalizeCodeMapAnalysisSection(parsed, 'Sin evidencia suficiente para esta sección.');
+      };
+
+      try {
+        const dolores = await runSectionAgent({
+          agentName: 'Agente de Dolores',
+          sectionName: 'Dolores',
+          focusInstruction: 'Analiza frustraciones, tensiones, pérdidas, miedos y sufrimiento presentes en la evidencia.',
+        });
+        const deseos = await runSectionAgent({
+          agentName: 'Agente de Deseos',
+          sectionName: 'Deseos',
+          focusInstruction: 'Analiza aspiraciones, anhelos, metas emocionales o prácticas presentes en los fragmentos.',
+        });
+        const placeres = await runSectionAgent({
+          agentName: 'Agente de Placeres',
+          sectionName: 'Placeres',
+          focusInstruction: 'Analiza recompensas buscadas, alivios esperados y estados positivos aspirados.',
+        });
+        const problemas = await runSectionAgent({
+          agentName: 'Agente de Problemas',
+          sectionName: 'Problemas',
+          focusInstruction: 'Define el problema central y sus variaciones tal como aparece en la evidencia real.',
+        });
+        const soluciones = await runSectionAgent({
+          agentName: 'Agente de Soluciones',
+          sectionName: 'Soluciones',
+          focusInstruction: 'Analiza soluciones deseadas, intentadas o implícitas en los fragmentos del código.',
+        });
+
+        const baseSections = {
+          summary_absolute: '',
+          dolores,
+          deseos,
+          placeres,
+          problemas,
+          soluciones,
+          sintesis_final: { analysis: '', citations: [] },
+        };
+
+        const refinerPrompt = buildCodeMapAnalysisRefinerPrompt({ evidence, sections: baseSections });
+        const refinedCompletion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: refinerPrompt },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const refinedParsed = extractJsonObjectFromText(refinedCompletion.content);
+        const refinedDocument = normalizeCodeMapAnalysisDocument(refinedParsed, baseSections);
+
+        const optimizerPrompt = buildCodeMapAnalysisOptimizerPrompt({ evidence, refinedDocument });
+        const optimizedCompletion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: optimizerPrompt },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const optimizedParsed = extractJsonObjectFromText(optimizedCompletion.content);
+        const finalDocument = normalizeCodeMapAnalysisDocument(optimizedParsed, refinedDocument);
+
+        return sendJson(req, res, 200, {
+          data: {
+            ...finalDocument,
+            meta: {
+              provider: integration.provider,
+              model: integration.model,
+              fragments_used: evidence.fragments.length,
+              related_codes_used: evidence.related_codes.length,
+              flow: 'dolores->deseos->placeres->problemas->soluciones->refinador->optimizador_final',
+            },
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo ejecutar el análisis IA del código en el mapa.',
+        });
+      }
+    }
+
+
     if (url.pathname === '/api/comment-base/inputs' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
@@ -6645,7 +7099,12 @@ const server = http.createServer(async (req, res) => {
             throw error;
           }
           const parsed = extractJsonObjectFromText(completion.content);
-          const chunkProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsed));
+          const normalizedChunkProposals = normalizeCodeGenerationAgentOutput(parsed);
+          const repairedChunkProposals = await repairInvalidCodeGenerationProposals({
+            integration,
+            proposals: normalizedChunkProposals,
+          });
+          const chunkProposals = flattenSubclustersAsCodeProposals(repairedChunkProposals);
           mergedProposals = dedupeCodeProposalsByName([...mergedProposals, ...chunkProposals], 160);
           chunkCalls += 1;
 
@@ -6687,12 +7146,25 @@ const server = http.createServer(async (req, res) => {
           }
           if (synthesized) {
             const parsedSynthesis = extractJsonObjectFromText(synthesized.content);
-            const synthesizedProposals = flattenSubclustersAsCodeProposals(normalizeCodeGenerationAgentOutput(parsedSynthesis));
+            const normalizedSynthesized = normalizeCodeGenerationAgentOutput(parsedSynthesis);
+            const repairedSynthesized = await repairInvalidCodeGenerationProposals({
+              integration,
+              proposals: normalizedSynthesized,
+            });
+            const synthesizedProposals = flattenSubclustersAsCodeProposals(repairedSynthesized);
             finalProposals = dedupeCodeProposalsByName(synthesizedProposals, MAX_CODES);
           }
         } else {
           finalProposals = dedupeCodeProposalsByName(flattenSubclustersAsCodeProposals(mergedProposals), MAX_CODES);
         }
+
+        finalProposals = dedupeCodeProposalsByName(
+          await repairInvalidCodeGenerationProposals({
+            integration,
+            proposals: finalProposals,
+          }),
+          MAX_CODES,
+        );
 
         return sendJson(req, res, 200, {
           data: {
@@ -6732,6 +7204,75 @@ const server = http.createServer(async (req, res) => {
             flow: 'clusterize_comments_then_subclusterize_then_propose_codes',
             source: 'llm_only_no_fallback',
           },
+        });
+      }
+    }
+
+
+    if (url.pathname === '/api/comment-base/code-map-analysis-chat' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body?.project_id || '').trim();
+      const campaignId = String(body?.campaign_id || '').trim();
+      const question = String(body?.question || '').trim();
+      const session = body?.analysis_session && typeof body.analysis_session === 'object' ? body.analysis_session : null;
+
+      if (!projectId || !campaignId || !question || !session) {
+        return sendJson(req, res, 400, { error: 'project_id, campaign_id, question y analysis_session son requeridos.' });
+      }
+
+      const [campaignRows] = await pool.query(
+        'SELECT id, project_id FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+        [campaignId, projectId, user.id],
+      );
+      const campaign = campaignRows[0] || null;
+      if (!campaign) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, { error: 'Debes configurar la integración de IA para usar el chat analítico por código.' });
+      }
+
+      const relevantEvidence = selectRelevantFragmentsForCodeMapChat({
+        fragments: Array.isArray(session?.fragments_snapshot) ? session.fragments_snapshot : [],
+        question,
+        limit: 8,
+      });
+
+      try {
+        const prompt = buildCodeMapAnalysisChatPrompt({ session, question, relevantEvidence });
+        const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: prompt },
+        ], { maxRetries: 3, baseDelayMs: 900 });
+
+        const parsed = extractJsonObjectFromText(completion.content) || {};
+        const normalizedCitations = (Array.isArray(parsed?.citations) ? parsed.citations : [])
+          .slice(0, 8)
+          .map((item) => ({
+            fragment_id: String(item?.fragment_id || '').trim(),
+            excerpt: compactAnalysisText(item?.excerpt || '', 220),
+            code_slug: String(item?.code_slug || '').trim() || String(session?.code_slug || '').trim(),
+          }))
+          .filter((item) => item.fragment_id && item.excerpt);
+
+        return sendJson(req, res, 200, {
+          data: {
+            answer: compactAnalysisText(parsed?.answer || '', 5000),
+            memory_summary: compactAnalysisText(parsed?.memory_summary || session?.memory_summary || '', 900),
+            citations: normalizedCitations,
+            meta: {
+              provider: integration.provider,
+              model: integration.model,
+              evidence_used: relevantEvidence.length,
+            },
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo generar respuesta del chat analítico del código.',
         });
       }
     }
@@ -9283,12 +9824,3 @@ runMigrations()
     console.error('Failed to initialize backend:', error);
     process.exit(1);
   });
-  const normalizeRejectReason = (value) => {
-    const reason = String(value || '').trim().toLowerCase();
-    if (!reason) return '';
-    if (reason.includes('redund')) return 'comentario_redundante';
-    if (reason.includes('vago')) return 'texto_demasiado_vago';
-    if (reason.includes('riqueza') || reason.includes('semantic') || reason.includes('semantica')) return 'baja_riqueza_semantica';
-    if (reason.includes('codigo') || reason.includes('match') || reason.includes('encaje')) return 'sin_codigo_razonable';
-    return '';
-  };

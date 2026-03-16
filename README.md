@@ -41,6 +41,44 @@ Ahora el flujo es 100% UI: usa `/signup` para crear cuenta y `/login` para inici
 
 ## Troubleshooting rápido
 
+
+- Si `npm run dev` falla con:
+  - `ERR_INVALID_PACKAGE_CONFIG ... node_modules/rollup/package.json`
+
+  normalmente significa que `node_modules` quedó corrupto (ej. reinicio forzado).
+
+  **Recuperación recomendada:**
+
+  ```bash
+  nvm use
+  npm run repair:deps
+  npm run dev
+  ```
+
+  Si no usas `nvm`, instala/usa Node **20.x** (este proyecto no está validado para Node 25).
+
+- Si `git pull` se queda cargando:
+
+  1. Verifica si hay lock local colgado:
+
+  ```bash
+  rm -f .git/index.lock .git/shallow.lock .git/FETCH_HEAD.lock
+  ```
+
+  2. Prueba conectividad y estado remoto:
+
+  ```bash
+  git remote -v
+  git fetch --verbose --prune
+  ```
+
+  3. Si sigue colgado por credenciales/red en macOS, revalida helper:
+
+  ```bash
+  git config --global credential.helper osxkeychain
+  ssh -T git@github.com
+  ```
+
 - Si quieres limpiar sesión, ejecuta esto en la **consola del navegador** (no en Terminal):
 
 ```js

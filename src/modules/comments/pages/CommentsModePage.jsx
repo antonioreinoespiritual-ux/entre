@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -71,6 +71,21 @@ const buildClusters = (codes = [], fragments = []) => {
 
 const COMMENT_CODE_EVOLUTION_DISABLED = true;
 
+
+const CODE_MAP_ALL_SCOPE = '__all__';
+
+const parseHypothesisSelection = (value = '') => {
+  const raw = String(value || '').trim();
+  if (!raw) return [];
+  return Array.from(new Set(raw.split(',').map((item) => String(item || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+};
+
+const buildCodeMapScopeKey = (value = '') => {
+  const selected = parseHypothesisSelection(value);
+  if (!selected.length) return CODE_MAP_ALL_SCOPE;
+  return selected.join('__');
+};
+
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
   const storageKey = `comments-mode:${projectId}:${campaignId}`;
@@ -126,6 +141,22 @@ const CommentsModePage = () => {
   const [collapsedCodeSlugs, setCollapsedCodeSlugs] = useState({});
   const [selectedCodeSlug, setSelectedCodeSlug] = useState('');
   const [codeMenuSlug, setCodeMenuSlug] = useState('');
+  const [codesActionsMenuOpen, setCodesActionsMenuOpen] = useState(false);
+  const [codeDeleteMode, setCodeDeleteMode] = useState('none');
+  const [codeCardSlug, setCodeCardSlug] = useState('');
+  const [codeCardDeleteMenuOpen, setCodeCardDeleteMenuOpen] = useState(false);
+  const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
+  const [hypothesisQuery, setHypothesisQuery] = useState('');
+  const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [hypothesisEditor, setHypothesisEditor] = useState({
+    open: false,
+    mode: 'create',
+    id: '',
+    title: '',
+    description: '',
+    context_note: '',
+    linkedCodeSlugs: [],
+  });
   const [codeMapOpen, setCodeMapOpen] = useState(false);
   const [codeMapZoom, setCodeMapZoom] = useState(1);
   const [codeMapPan, setCodeMapPan] = useState({ x: 0, y: 0 });
@@ -136,7 +167,18 @@ const CommentsModePage = () => {
   const [selectedCodeMapEdge, setSelectedCodeMapEdge] = useState('');
   const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
   const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
+  const [codeMapAiModal, setCodeMapAiModal] = useState({
+    open: false,
+    loading: false,
+    sending: false,
+    error: '',
+    codeSlug: '',
+    result: null,
+    sessionId: '',
+  });
+  const [codeMapAiInput, setCodeMapAiInput] = useState('');
   const codeMapCanvasRef = useRef(null);
+  const codeMapLayoutRef = useRef({});
   const [codeEditor, setCodeEditor] = useState({
     open: false,
     ...defaultCodeEditor,
@@ -164,9 +206,16 @@ const CommentsModePage = () => {
         fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
         codes: Array.isArray(parsed.codes) ? parsed.codes : [],
         codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
+        hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
+        codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
+          ? parsed.codeMapLayoutsByHypothesis
+          : {},
+        codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
+          ? parsed.codeMapAnalysisSessions
+          : {},
       };
     } catch {
-      return { fragments: [], codes: [], codeProposals: [] };
+      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {}, codeMapAnalysisSessions: {} };
     }
   });
 
@@ -198,6 +247,13 @@ const CommentsModePage = () => {
           fragments: Array.isArray(indexedState.fragments) ? indexedState.fragments : [],
           codes: Array.isArray(indexedState.codes) ? indexedState.codes : [],
           codeProposals: Array.isArray(indexedState.codeProposals) ? indexedState.codeProposals : [],
+          hypotheses: Array.isArray(indexedState.hypotheses) ? indexedState.hypotheses : [],
+          codeMapLayoutsByHypothesis: indexedState.codeMapLayoutsByHypothesis && typeof indexedState.codeMapLayoutsByHypothesis === 'object'
+            ? indexedState.codeMapLayoutsByHypothesis
+            : {},
+          codeMapAnalysisSessions: indexedState.codeMapAnalysisSessions && typeof indexedState.codeMapAnalysisSessions === 'object'
+            ? indexedState.codeMapAnalysisSessions
+            : {},
         });
       } catch {
         // Si no se puede leer IndexedDB, se mantiene fallback de localStorage.
@@ -212,6 +268,13 @@ const CommentsModePage = () => {
   const fragments = store.fragments || [];
   const codes = store.codes || [];
   const codeProposals = store.codeProposals || [];
+  const hypotheses = store.hypotheses || [];
+  const codeMapLayoutsByHypothesis = store.codeMapLayoutsByHypothesis && typeof store.codeMapLayoutsByHypothesis === 'object'
+    ? store.codeMapLayoutsByHypothesis
+    : {};
+  const codeMapAnalysisSessions = store.codeMapAnalysisSessions && typeof store.codeMapAnalysisSessions === 'object'
+    ? store.codeMapAnalysisSessions
+    : {};
   const readerComments = commentsTable.items || [];
 
   const selectedReaderComment = useMemo(() => {
@@ -1076,6 +1139,28 @@ const CommentsModePage = () => {
     persist({ ...store, codes: nextCodes, fragments: nextFragments });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
+    if (String(codeCardSlug || '') && descendants.has(String(codeCardSlug))) {
+      setCodeCardSlug('');
+      setCodeCardDeleteMode('none');
+      setCodeCardDeleteMenuOpen(false);
+    }
+  };
+
+
+
+  const deleteAllCodes = () => {
+    if (!codes.length) return;
+    if (!window.confirm(`¿Eliminar todos los códigos (${codes.length}) y desvincularlos de fragmentos?`)) return;
+    const nextFragments = fragments.map((fragment) => ({
+      ...fragment,
+      code_slugs: [],
+    }));
+    persist({ ...store, codes: [], fragments: nextFragments });
+    setSelectedCodeSlug('');
+    setCodeMenuSlug('');
+    setCodeCardSlug('');
+    setCodeDeleteMode('none');
+    setCodesActionsMenuOpen(false);
   };
 
   const setCodeParent = (slug, parentSlug) => {
@@ -1123,12 +1208,13 @@ const CommentsModePage = () => {
 
   const filteredCodes = useMemo(() => {
     const query = codeQuery.trim().toLowerCase();
+    const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
     return codes.filter((code) => {
       const name = String(code.name || '').toLowerCase();
       const description = String(code.description || '').toLowerCase();
       const tags = Array.isArray(code.tags) ? code.tags.join(' ').toLowerCase() : String(code.tags || '').toLowerCase();
       const matchesQuery = !query || name.includes(query) || description.includes(query) || tags.includes(query);
-      const matchesHypothesis = !codeHypothesisFilter || String(code.hypothesis_id || '') === codeHypothesisFilter;
+      const matchesHypothesis = !selectedHypothesisIds.length || selectedHypothesisIds.includes(String(code.hypothesis_id || ''));
       const matchesCluster = !codeClusterFilter || String(code.cluster_id || '') === codeClusterFilter;
       const matchesClient = !codeClientFilter || String(code.client_id || '') === codeClientFilter;
       return matchesQuery && matchesHypothesis && matchesCluster && matchesClient;
@@ -1165,9 +1251,41 @@ const CommentsModePage = () => {
     return { roots, childrenByParent };
   }, [filteredCodes, codeSortBy, codeScoreBySlug]);
 
+  const codeMapScopeKey = useMemo(
+    () => buildCodeMapScopeKey(codeHypothesisFilter),
+    [codeHypothesisFilter],
+  );
+
+  useEffect(() => {
+    const scopedLayout = codeMapLayoutsByHypothesis[codeMapScopeKey];
+    setCodeMapLayoutBySlug(scopedLayout && typeof scopedLayout === 'object' ? scopedLayout : {});
+  }, [codeMapLayoutsByHypothesis, codeMapScopeKey]);
+
+  useEffect(() => {
+    codeMapLayoutRef.current = codeMapLayoutBySlug || {};
+  }, [codeMapLayoutBySlug]);
+
+  const persistCodeMapLayoutForScope = (scopeKey, nextLayoutBySlug) => {
+    const normalizedScope = String(scopeKey || CODE_MAP_ALL_SCOPE);
+    const normalizedLayout = nextLayoutBySlug && typeof nextLayoutBySlug === 'object' ? nextLayoutBySlug : {};
+    const previousScopedLayout = codeMapLayoutsByHypothesis[normalizedScope] && typeof codeMapLayoutsByHypothesis[normalizedScope] === 'object'
+      ? codeMapLayoutsByHypothesis[normalizedScope]
+      : {};
+    if (JSON.stringify(previousScopedLayout) === JSON.stringify(normalizedLayout)) return;
+
+    persist({
+      ...store,
+      codeMapLayoutsByHypothesis: {
+        ...codeMapLayoutsByHypothesis,
+        [normalizedScope]: normalizedLayout,
+      },
+    });
+  };
+
   const codeMapVisibleCodes = useMemo(() => {
-    if (!codeHypothesisFilter) return codes;
-    return codes.filter((code) => String(code.hypothesis_id || '') === String(codeHypothesisFilter));
+    const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
+    if (!selectedHypothesisIds.length) return codes;
+    return codes.filter((code) => selectedHypothesisIds.includes(String(code.hypothesis_id || '')));
   }, [codes, codeHypothesisFilter]);
 
   const codeMapNodes = useMemo(() => codeMapVisibleCodes.map((code, index) => {
@@ -1193,6 +1311,222 @@ const CommentsModePage = () => {
       source: String(code.parent_slug),
       target: String(code.slug),
     })), [codeMapVisibleCodes, codeMapVisibleSlugSet]);
+
+
+
+  const buildCodeMapAnalysisSession = ({ slug, code, linkedFragments, relatedCodes, analysis }) => {
+    const now = new Date().toISOString();
+    const sessionId = `code_map_analysis_${slug}`;
+    return {
+      analysis_session_id: sessionId,
+      code_slug: slug,
+      code_name: String(code?.name || '').trim(),
+      code_description: String(code?.description || '').trim(),
+      fragments_snapshot: linkedFragments,
+      related_codes_snapshot: relatedCodes,
+      initial_report: analysis,
+      agent_outputs: {
+        dolores: analysis?.dolores || { analysis: '', citations: [] },
+        deseos: analysis?.deseos || { analysis: '', citations: [] },
+        placeres: analysis?.placeres || { analysis: '', citations: [] },
+        problemas: analysis?.problemas || { analysis: '', citations: [] },
+        soluciones: analysis?.soluciones || { analysis: '', citations: [] },
+        refinador: {
+          summary_absolute: String(analysis?.summary_absolute || '').trim(),
+        },
+        optimizador_final: analysis?.sintesis_final || { analysis: '', citations: [] },
+      },
+      conversation_history: [
+        {
+          id: `assistant_initial_${Date.now()}`,
+          role: 'assistant',
+          content: String(analysis?.summary_absolute || '').trim() || 'Informe inicial generado.',
+          created_at: now,
+          type: 'initial_report',
+        },
+      ],
+      memory_summary: String(analysis?.summary_absolute || '').trim().slice(0, 900),
+      created_at: now,
+      updated_at: now,
+      version: 1,
+    };
+  };
+
+  const saveCodeMapAnalysisSession = (session) => {
+    const slug = String(session?.code_slug || '').trim();
+    if (!slug) return;
+    persist({
+      ...store,
+      codeMapAnalysisSessions: {
+        ...codeMapAnalysisSessions,
+        [slug]: {
+          ...session,
+          updated_at: new Date().toISOString(),
+        },
+      },
+    });
+  };
+
+  const openCodeMapAiAnalysis = async (codeSlug) => {
+    const slug = String(codeSlug || '').trim();
+    if (!slug) return;
+    const code = codes.find((item) => String(item.slug) === slug);
+    if (!code) return;
+
+    const linkedFragments = fragments
+      .filter((fragment) => Array.isArray(fragment.code_slugs) && fragment.code_slugs.includes(slug))
+      .slice(0, 120)
+      .map((fragment, index) => ({
+        fragment_id: String(fragment.id || `fragment_${index + 1}`),
+        excerpt: String(fragment.excerpt || fragment.selected_text || '').trim(),
+        source_comment_id: String(fragment.source_comment_id || fragment.comment_id || '').trim(),
+      }))
+      .filter((fragment) => fragment.excerpt);
+
+    if (!linkedFragments.length) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: 'Este código no tiene fragmentos vinculados con evidencia suficiente para analizar.',
+        codeSlug: slug,
+        result: null,
+        sessionId: '',
+      });
+      return;
+    }
+
+    const relatedCodes = codes
+      .filter((item) => String(item.slug) !== slug)
+      .map((item) => ({
+        ...item,
+        overlap: fragments.reduce((acc, fragment) => {
+          const slugs = Array.isArray(fragment.code_slugs) ? fragment.code_slugs : [];
+          return slugs.includes(slug) && slugs.includes(String(item.slug)) ? acc + 1 : acc;
+        }, 0),
+      }))
+      .filter((item) => item.overlap > 0 || String(item.parent_slug || '') === slug || String(code.parent_slug || '') === String(item.slug || ''))
+      .sort((a, b) => b.overlap - a.overlap)
+      .slice(0, 10)
+      .map((item) => ({
+        slug: String(item.slug || '').trim(),
+        name: String(item.name || '').trim(),
+        description: String(item.description || '').trim(),
+        relation: String(item.parent_slug || '') === slug ? 'child' : String(code.parent_slug || '') === String(item.slug || '') ? 'parent' : 'cooccurrence',
+      }))
+      .filter((item) => item.slug && item.name);
+
+    const existingSession = codeMapAnalysisSessions[slug];
+    if (existingSession?.initial_report) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        codeSlug: slug,
+        result: existingSession.initial_report,
+        sessionId: String(existingSession.analysis_session_id || ''),
+      });
+      return;
+    }
+
+    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', codeSlug: slug, result: null, sessionId: '' });
+
+    try {
+      const analysis = await commentsIngestionApi.runCodeMapAnalysisAgent({
+        project_id: projectId,
+        campaign_id: campaignId,
+        code: {
+          slug,
+          name: String(code.name || '').trim(),
+          description: String(code.description || '').trim(),
+        },
+        fragments: linkedFragments,
+        related_codes: relatedCodes,
+      });
+
+      const nextSession = buildCodeMapAnalysisSession({ slug, code, linkedFragments, relatedCodes, analysis });
+      saveCodeMapAnalysisSession(nextSession);
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        codeSlug: slug,
+        result: analysis,
+        sessionId: String(nextSession.analysis_session_id || ''),
+      });
+    } catch (error) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: error?.message || 'No se pudo generar el análisis IA del código.',
+        codeSlug: slug,
+        result: null,
+        sessionId: '',
+      });
+    }
+  };
+
+  const sendCodeMapAiMessage = async () => {
+    const slug = String(codeMapAiModal.codeSlug || '').trim();
+    const question = String(codeMapAiInput || '').trim();
+    if (!slug || !question || codeMapAiModal.sending) return;
+    const session = codeMapAnalysisSessions[slug];
+    if (!session?.initial_report) return;
+
+    const userMessage = {
+      id: `user_${Date.now()}`,
+      role: 'user',
+      content: question,
+      created_at: new Date().toISOString(),
+      type: 'question',
+    };
+
+    const nextHistory = [...(Array.isArray(session.conversation_history) ? session.conversation_history : []), userMessage];
+    const draftSession = {
+      ...session,
+      conversation_history: nextHistory,
+      updated_at: new Date().toISOString(),
+    };
+    saveCodeMapAnalysisSession(draftSession);
+    setCodeMapAiInput('');
+    setCodeMapAiModal((prev) => ({ ...prev, sending: true, error: '' }));
+
+    try {
+      const response = await commentsIngestionApi.runCodeMapAnalysisChatTurn({
+        project_id: projectId,
+        campaign_id: campaignId,
+        question,
+        analysis_session: draftSession,
+      });
+      const assistantMessage = {
+        id: `assistant_${Date.now()}`,
+        role: 'assistant',
+        content: String(response?.answer || '').trim() || 'No tengo suficiente evidencia para responder con precisión.',
+        created_at: new Date().toISOString(),
+        type: 'answer',
+        citations: Array.isArray(response?.citations) ? response.citations : [],
+      };
+
+      const persisted = {
+        ...draftSession,
+        memory_summary: String(response?.memory_summary || draftSession.memory_summary || '').trim(),
+        conversation_history: [...nextHistory, assistantMessage],
+        updated_at: new Date().toISOString(),
+      };
+      saveCodeMapAnalysisSession(persisted);
+      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: '' }));
+    } catch (error) {
+      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: error?.message || 'No se pudo responder en el chat de este código.' }));
+    }
+  };
+
+  const closeCodeMapAiModal = () => {
+    setCodeMapAiInput('');
+    setCodeMapAiModal({ open: false, loading: false, sending: false, error: '', codeSlug: '', result: null, sessionId: '' });
+  };
 
   const handleCodeMapNodeMouseDown = (event, slug) => {
     if (event.button !== 0) return;
@@ -1221,6 +1555,7 @@ const CommentsModePage = () => {
 
     const onUp = () => {
       setDraggingCodeMapNode('');
+      persistCodeMapLayoutForScope(codeMapScopeKey, codeMapLayoutRef.current);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -1384,6 +1719,171 @@ const CommentsModePage = () => {
     setSelectedFragmentIds([]);
     setSelectedFragmentId('');
     setFragmentMenuId('');
+  };
+
+
+  const codeCard = useMemo(() => {
+    const slug = String(codeCardSlug || '').trim();
+    if (!slug) return null;
+    const code = codes.find((item) => String(item.slug) === slug);
+    if (!code) return null;
+
+    const relatedFragments = fragments
+      .filter((fragment) => Array.isArray(fragment.code_slugs) && fragment.code_slugs.includes(slug))
+      .sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+
+    const uniqueComments = new Set();
+    const uniqueVideos = new Set();
+    const uniqueRuns = new Set();
+    const uniqueSources = new Set();
+    const sentimentCounts = { positivo: 0, neutral: 0, negativo: 0 };
+
+    const positiveWords = ['excelente', 'genial', 'bueno', 'encanta', 'feliz', 'mejor', 'increible', 'increíble', 'recomiendo', 'satisfecho'];
+    const negativeWords = ['malo', 'terrible', 'odio', 'horrible', 'peor', 'problema', 'queja', 'frustrante', 'caro', 'lento'];
+    const intensityWords = ['nunca', 'siempre', 'urgente', 'demasiado', 'super', 'totalmente', 'increible', 'increíble'];
+
+    const tokenizeLocal = (text = '') => String(text || '').toLowerCase()
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 2);
+
+    const tokenizedRows = [];
+    let sentimentSum = 0;
+    let semanticRichnessAcc = 0;
+    let semanticRichnessCount = 0;
+    let intensityAcc = 0;
+
+    for (const fragment of relatedFragments) {
+      const text = String(fragment.excerpt || fragment.selected_text || '').trim();
+      const commentKey = String(fragment.source_comment_id || fragment.comment_id || '').trim();
+      const videoKey = String(fragment.video_id || '').trim();
+      const runKey = String(fragment.source_run_id || '').trim();
+      const sourceKey = String(fragment.source_type || fragment.execution_origin || '').trim();
+      if (commentKey) uniqueComments.add(commentKey);
+      if (videoKey) uniqueVideos.add(videoKey);
+      if (runKey) uniqueRuns.add(runKey);
+      if (sourceKey) uniqueSources.add(sourceKey);
+
+      const tokens = tokenizeLocal(text);
+      tokenizedRows.push(tokens);
+
+      let posHits = 0;
+      let negHits = 0;
+      for (const token of tokens) {
+        if (positiveWords.includes(token)) posHits += 1;
+        if (negativeWords.includes(token)) negHits += 1;
+      }
+      const sentimentScore = posHits - negHits;
+      sentimentSum += sentimentScore;
+      if (sentimentScore > 0) sentimentCounts.positivo += 1;
+      else if (sentimentScore < 0) sentimentCounts.negativo += 1;
+      else sentimentCounts.neutral += 1;
+
+      const semanticConfidence = Number(fragment.semantic_confidence);
+      if (Number.isFinite(semanticConfidence)) {
+        semanticRichnessAcc += Math.max(0, Math.min(1, semanticConfidence));
+        semanticRichnessCount += 1;
+      }
+
+      const exclamations = (text.match(/!/g) || []).length;
+      const uppercaseTokens = text.split(/\s+/).filter((token) => token.length > 2 && token === token.toUpperCase()).length;
+      const emphasisWords = tokens.filter((token) => intensityWords.includes(token)).length;
+      const textLengthFactor = Math.min(1, text.length / 280);
+      const rawIntensity = (exclamations * 0.15) + (uppercaseTokens * 0.1) + (emphasisWords * 0.2) + (textLengthFactor * 0.55);
+      intensityAcc += Math.max(0, Math.min(1, rawIntensity));
+    }
+
+    const tokenFreq = new Map();
+    tokenizedRows.flat().forEach((token) => tokenFreq.set(token, Number(tokenFreq.get(token) || 0) + 1));
+    const topTerms = Array.from(tokenFreq.entries()).sort((a, b) => b[1] - a[1]).slice(0, 12);
+    const centroid = new Set(topTerms.slice(0, 8).map(([token]) => token));
+
+    const coherenceScores = tokenizedRows.map((tokens) => {
+      if (!tokens.length || !centroid.size) return 0;
+      const uniqueTokens = new Set(tokens);
+      let overlap = 0;
+      uniqueTokens.forEach((token) => {
+        if (centroid.has(token)) overlap += 1;
+      });
+      return overlap / Math.max(1, uniqueTokens.size);
+    });
+
+    const coherence = coherenceScores.length
+      ? Math.round((coherenceScores.reduce((acc, value) => acc + value, 0) / coherenceScores.length) * 100)
+      : 0;
+
+    const intensity = relatedFragments.length
+      ? Math.round((intensityAcc / relatedFragments.length) * 100)
+      : 0;
+
+    const sentimentAverage = relatedFragments.length ? Number((sentimentSum / relatedFragments.length).toFixed(2)) : 0;
+    const semanticRichness = semanticRichnessCount
+      ? Number(((semanticRichnessAcc / semanticRichnessCount) * 100).toFixed(1))
+      : 0;
+
+    const distributionByMonthMap = new Map();
+    for (const fragment of relatedFragments) {
+      const rawDate = fragment.created_at ? new Date(fragment.created_at) : null;
+      if (!rawDate || Number.isNaN(rawDate.getTime())) continue;
+      const key = `${rawDate.getUTCFullYear()}-${String(rawDate.getUTCMonth() + 1).padStart(2, '0')}`;
+      distributionByMonthMap.set(key, Number(distributionByMonthMap.get(key) || 0) + 1);
+    }
+
+    const distributionByMonth = Array.from(distributionByMonthMap.entries())
+      .map(([period, count]) => ({ period, count }))
+      .sort((a, b) => String(a.period).localeCompare(String(b.period)));
+
+    const hierarchy = {
+      parent: code.parent_slug ? codes.find((item) => String(item.slug) === String(code.parent_slug)) || null : null,
+      children: codes.filter((item) => String(item.parent_slug || '') === String(code.slug || '')),
+    };
+
+    const score = codeScoreBySlug.get(slug) || {
+      score_total: 0,
+      score_frecuencia: 0,
+      score_dispersion: 0,
+      score_consistencia: 0,
+      score_intensidad: 0,
+    };
+
+    return {
+      code,
+      score,
+      fragments: relatedFragments,
+      metrics: {
+        frequency: relatedFragments.length,
+        uniqueComments: uniqueComments.size,
+        uniqueVideos: uniqueVideos.size,
+        uniqueRuns: uniqueRuns.size,
+        uniqueSources: uniqueSources.size,
+        sentimentAverage,
+        sentimentCounts,
+        semanticRichness,
+        coherence,
+        intensity,
+        distributionByMonth,
+      },
+      hierarchy,
+      topTerms,
+    };
+  }, [codeCardSlug, codes, fragments, codeScoreBySlug]);
+
+  const removeFragmentFromCodeCard = (fragmentId) => {
+    if (!codeCard) return;
+    const target = fragments.find((fragment) => String(fragment.id) === String(fragmentId));
+    if (!target) return;
+    if (!window.confirm('¿Eliminar este fragmento del código actual?')) return;
+    deleteFragments([fragmentId]);
+  };
+
+  const removeAllFragmentsFromCodeCard = () => {
+    if (!codeCard?.fragments?.length) return;
+    if (!window.confirm(`¿Eliminar todos los fragmentos de ${codeCard.code.name}? (${codeCard.fragments.length})`)) return;
+    deleteFragments(codeCard.fragments.map((fragment) => String(fragment.id)));
+    setCodeCardDeleteMenuOpen(false);
   };
 
   const goToFragmentOrigin = async (fragment) => {
@@ -1662,7 +2162,6 @@ const CommentsModePage = () => {
       let processed = 0;
       let persistedCount = 0;
       let persistedFragments = [];
-      const attemptedCommentIds = new Set();
       setSemanticAgentProgress({ done: 0, total: pendingComments.length });
 
       const commentsById = new Map(
@@ -1775,12 +2274,8 @@ const CommentsModePage = () => {
       }));
 
       const processBatch = async (batch) => {
-        for (const comment of batch.comments) {
-          const cid = String(comment?.source_comment_id || comment?.id || '').trim();
-          if (cid) attemptedCommentIds.add(cid);
-        }
         setSemanticAgentProgress({
-          done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+          done: Math.min(processed, pendingComments.length),
           total: pendingComments.length,
         });
 
@@ -1850,7 +2345,7 @@ const CommentsModePage = () => {
             }
             processed += Number(result.done || nextBatch.comments.length);
             setSemanticAgentProgress({
-              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              done: Math.min(processed, pendingComments.length),
               total: pendingComments.length,
             });
           } catch {
@@ -1889,7 +2384,7 @@ const CommentsModePage = () => {
             failed += nextBatch.comments.length;
             processed += nextBatch.comments.length;
             setSemanticAgentProgress({
-              done: Math.min(Math.max(processed, attemptedCommentIds.size), pendingComments.length),
+              done: Math.min(processed, pendingComments.length),
               total: pendingComments.length,
             });
           }
@@ -2139,8 +2634,101 @@ const CommentsModePage = () => {
     { id: 'reader', label: 'Lector', icon: BookOpenText },
     { id: 'fragments', label: 'Fragmentos', icon: Scissors },
     { id: 'codes', label: 'Códigos', icon: Tags },
+    { id: 'hypotheses', label: 'Hipótesis', icon: Lightbulb },
     { id: 'clusters', label: 'Clusters', icon: Network },
   ];
+
+
+  const filteredHypotheses = useMemo(() => {
+    const q = String(hypothesisQuery || '').trim().toLowerCase();
+    if (!q) return hypotheses;
+    return hypotheses.filter((item) => {
+      const title = String(item.title || '').toLowerCase();
+      const description = String(item.description || '').toLowerCase();
+      const contextNote = String(item.context_note || '').toLowerCase();
+      return title.includes(q) || description.includes(q) || contextNote.includes(q);
+    });
+  }, [hypotheses, hypothesisQuery]);
+
+  const openHypothesisEditor = (hypothesis = null) => {
+    if (!hypothesis) {
+      setHypothesisEditor({
+        open: true,
+        mode: 'create',
+        id: '',
+        title: '',
+        description: '',
+        context_note: '',
+        linkedCodeSlugs: [],
+      });
+      return;
+    }
+    setHypothesisEditor({
+      open: true,
+      mode: 'edit',
+      id: String(hypothesis.id || ''),
+      title: String(hypothesis.title || ''),
+      description: String(hypothesis.description || ''),
+      context_note: String(hypothesis.context_note || ''),
+      linkedCodeSlugs: Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs.map((slug) => String(slug)) : [],
+    });
+  };
+
+  const closeHypothesisEditor = () => {
+    setHypothesisEditor((prev) => ({ ...prev, open: false }));
+  };
+
+  const saveHypothesisEditor = () => {
+    const title = String(hypothesisEditor.title || '').trim();
+    const description = String(hypothesisEditor.description || '').trim();
+    const contextNote = String(hypothesisEditor.context_note || '').trim();
+    const linkedCodeSlugs = Array.from(new Set((Array.isArray(hypothesisEditor.linkedCodeSlugs) ? hypothesisEditor.linkedCodeSlugs : [])
+      .map((slug) => String(slug).trim())
+      .filter((slug) => codes.some((code) => String(code.slug) === slug))));
+
+    if (!title || !description) {
+      window.alert('Título y descripción son obligatorios para crear/editar hipótesis.');
+      return;
+    }
+
+    if (hypothesisEditor.mode === 'create') {
+      const nextHypothesis = {
+        id: `comment_hypothesis_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        title,
+        description,
+        context_note: contextNote,
+        linked_code_slugs: linkedCodeSlugs,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      persist({ ...store, hypotheses: [nextHypothesis, ...hypotheses] });
+      closeHypothesisEditor();
+      return;
+    }
+
+    const nextHypotheses = hypotheses.map((item) => {
+      if (String(item.id) !== String(hypothesisEditor.id)) return item;
+      return {
+        ...item,
+        title,
+        description,
+        context_note: contextNote,
+        linked_code_slugs: linkedCodeSlugs,
+        updated_at: new Date().toISOString(),
+      };
+    });
+    persist({ ...store, hypotheses: nextHypotheses });
+    closeHypothesisEditor();
+  };
+
+  const deleteHypothesis = (hypothesisId) => {
+    const id = String(hypothesisId || '');
+    if (!id) return;
+    if (!window.confirm('¿Eliminar esta hipótesis?')) return;
+    const nextHypotheses = hypotheses.filter((item) => String(item.id) !== id);
+    persist({ ...store, hypotheses: nextHypotheses });
+    setHypothesisMenuId('');
+  };
 
   const renderCodeNode = (code, depth = 0) => {
     const slug = String(code.slug || '');
@@ -2157,9 +2745,9 @@ const CommentsModePage = () => {
     };
 
     return (
-      <div key={slug} className="space-y-1">
+      <div key={slug} className="relative isolate space-y-1">
         <article
-          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''}`}
+          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''} ${codeMenuSlug === slug ? 'z-40' : 'z-0'}`}
           style={{ marginLeft: `${depth * 18}px` }}
           onClick={() => setSelectedCodeSlug(slug)}
         >
@@ -2186,6 +2774,21 @@ const CommentsModePage = () => {
                 <span>F {score.score_frecuencia} · D {score.score_dispersion}</span>
                 {Array.isArray(code.tags) && code.tags.length ? <><span>·</span><span className="line-clamp-1">{code.tags.slice(0, 3).join(', ')}</span></> : null}
               </div>
+              {codeDeleteMode === 'single' ? (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] text-rose-700 hover:bg-rose-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
+                      deleteCodeTree(slug);
+                    }}
+                  >
+                    Eliminar uno a uno
+                  </button>
+                </div>
+              ) : null}
             </div>
 
             <div className="relative">
@@ -2200,10 +2803,11 @@ const CommentsModePage = () => {
                 <MoreHorizontal className="h-4 w-4" />
               </button>
               {codeMenuSlug === slug ? (
-                <div className="absolute right-0 top-9 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+                <div className="absolute right-0 top-9 z-50 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Editar código</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('create', null, slug)}>Crear subcódigo</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Mover jerarquía</button>
+                  <button type="button" className="flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setCodeCardSlug(slug); setCodeMenuSlug(''); setCodeCardDeleteMode('none'); }}><Eye className="h-3.5 w-3.5" />Ver tarjeta</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setCodeMapOpen(true); setCodeMenuSlug(''); }}>Ir a mapa de códigos</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => {
                     if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
@@ -2697,49 +3301,124 @@ const CommentsModePage = () => {
                   <Button className="bg-violet-600 text-white" onClick={runCodeProposalAgent}>
                     Agente 2 · Clusterizar pendientes
                   </Button>
-                  <Button className="bg-white border text-slate-700" title="Mapa de códigos" onClick={() => setCodeMapOpen(true)}>
-                    🕸️ Mapa de códigos
-                  </Button>
-                  <Button className="bg-emerald-600 text-white" onClick={runGenerateCodesWithoutTraceability}>
-                    Generar
-                  </Button>
                   <Button className="bg-indigo-600 text-white" onClick={() => openCodeEditor('create')}>
                     <Plus className="mr-1 h-4 w-4" /> Crear código
                   </Button>
+                  <div className="relative">
+                    <Button className="bg-white border text-slate-700" onClick={() => setCodesActionsMenuOpen((prev) => !prev)}>
+                      <MoreHorizontal className="h-4 w-4" />
+                    </Button>
+                    {codesActionsMenuOpen ? (
+                      <div className="absolute right-0 top-11 z-50 w-56 rounded-lg border bg-white p-1.5 shadow-lg">
+                        <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { runGenerateCodesWithoutTraceability(); setCodesActionsMenuOpen(false); }}>Generar</button>
+                        <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => { setCodeMapOpen(true); setCodesActionsMenuOpen(false); }}>Mapa de códigos</button>
+                        <button type="button" className={`w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100 ${codeDeleteMode === 'single' ? 'bg-slate-100 font-medium' : ''}`} onClick={() => { setCodeDeleteMode((prev) => (prev === 'single' ? 'none' : 'single')); setCodesActionsMenuOpen(false); }}>
+                          Eliminar uno a uno
+                        </button>
+                        <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={deleteAllCodes}>
+                          Eliminar todo
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 
-              <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
-                <label className="relative block">
-                  <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-                  <input className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar código o descripción" value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
-                </label>
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeHypothesisFilter} onChange={(e) => setCodeHypothesisFilter(e.target.value)}>
-                  <option value="">Filtrar por hipótesis</option>
-                  {codeHypothesisOptions.map((hypothesisId) => <option key={hypothesisId} value={hypothesisId}>{hypothesisId}</option>)}
-                </select>
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClusterFilter} onChange={(e) => setCodeClusterFilter(e.target.value)}>
-                  <option value="">Filtrar por cluster</option>
-                  {codeClusterOptions.map((clusterId) => <option key={clusterId} value={clusterId}>{clusterId}</option>)}
-                </select>
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClientFilter} onChange={(e) => setCodeClientFilter(e.target.value)}>
-                  <option value="">Filtrar por cliente</option>
-                  {codeClientOptions.map((clientId) => <option key={clientId} value={clientId}>{clientId}</option>)}
-                </select>
-              </div>
+              {codeDeleteMode === 'single' ? (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                  Modo eliminación uno a uno activo. Haz clic en “Eliminar uno a uno” dentro de cada código para depurar sin ambigüedad.
+                </div>
+              ) : null}
 
-              <div className="flex items-center justify-end">
-                <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeSortBy} onChange={(e) => setCodeSortBy(e.target.value)}>
-                  <option value="score_total_desc">Ordenar por score total</option>
-                  <option value="frecuencia_desc">Ordenar por frecuencia</option>
-                  <option value="dispersion_desc">Ordenar por dispersión</option>
-                  <option value="name_asc">Ordenar por nombre</option>
-                </select>
-              </div>
+              {codeCard ? (
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-3">
+                    <div>
+                      <button type="button" className="mb-2 inline-flex items-center gap-1 rounded border bg-white px-2 py-1 text-xs text-slate-600 hover:bg-slate-50" onClick={() => { setCodeCardSlug(''); setCodeCardDeleteMode('none'); setCodeCardDeleteMenuOpen(false); }}>
+                        <ArrowLeft className="h-3.5 w-3.5" /> Volver a lista de códigos
+                      </button>
+                      <h3 className="text-lg font-semibold text-slate-900">{codeCard.code.name}</h3>
+                      <p className="mt-1 max-w-3xl text-sm text-slate-600">{codeCard.code.description || 'Sin descripción detallada para este código.'}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                        <span className="rounded-full border bg-slate-50 px-2 py-0.5">slug: {codeCard.code.slug}</span>
+                        <span className="rounded-full border bg-slate-50 px-2 py-0.5">tipo: {codeCard.code.code_type || 'general'}</span>
+                        <span className={`rounded-full border px-2 py-0.5 ${getScoreColorClass(codeCard.score.score_total)}`}>score total: {codeCard.score.score_total}/100</span>
+                      </div>
+                    </div>
+                    <div className="relative">
+                      <Button className="bg-white border text-rose-700" onClick={() => setCodeCardDeleteMenuOpen((prev) => !prev)} disabled={!codeCard.fragments.length}>
+                        <Trash2 className="mr-1 h-4 w-4" /> ELIMINAR
+                      </Button>
+                      {codeCardDeleteMenuOpen ? (
+                        <div className="absolute right-0 top-11 z-20 w-52 rounded-lg border bg-white p-1.5 shadow-lg">
+                          <button type="button" className={`w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100 ${codeCardDeleteMode === 'single' ? 'bg-slate-100 font-medium' : ''}`} onClick={() => { setCodeCardDeleteMode('single'); setCodeCardDeleteMenuOpen(false); }}>Eliminar uno a uno</button>
+                          <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={removeAllFragmentsFromCodeCard}>Eliminar todo</button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
 
-              <div className="space-y-2">
-                {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
-              </div>
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><BarChart3 className="mr-1 inline h-3.5 w-3.5" />Frecuencia</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.frequency}</p><p className="text-xs text-slate-500">fragmentos totales del código</p></div>
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><Activity className="mr-1 inline h-3.5 w-3.5" />Sentimiento agregado</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.sentimentAverage}</p><p className="text-xs text-slate-500">+{codeCard.metrics.sentimentCounts.positivo} / ={codeCard.metrics.sentimentCounts.neutral} / -{codeCard.metrics.sentimentCounts.negativo}</p></div>
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><Sparkles className="mr-1 inline h-3.5 w-3.5" />Coherencia / Intensidad</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.coherence}% · {codeCard.metrics.intensity}%</p><p className="text-xs text-slate-500">coherencia interna e intensidad narrativa</p></div>
+                    <div className="rounded-xl border bg-slate-50 p-3"><p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500"><GitBranch className="mr-1 inline h-3.5 w-3.5" />Dispersión</p><p className="mt-1 text-2xl font-semibold text-slate-900">{codeCard.metrics.uniqueComments}</p><p className="text-xs text-slate-500">comentarios · {codeCard.metrics.uniqueVideos} videos · {codeCard.metrics.uniqueRuns} runs · {codeCard.metrics.uniqueSources} fuentes</p></div>
+                  </div>
+
+                  <div className="grid gap-3 lg:grid-cols-[2fr_1fr]">
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold text-slate-700">Distribución temporal</p>
+                      {!codeCard.metrics.distributionByMonth.length ? <p className="mt-2 text-xs text-slate-500">Sin fechas suficientes para distribución temporal.</p> : <div className="mt-2 space-y-1.5">{codeCard.metrics.distributionByMonth.map((row) => { const maxCount = Math.max(1, ...codeCard.metrics.distributionByMonth.map((item) => item.count)); const width = Math.max(8, Math.round((Number(row.count || 0) / maxCount) * 100)); return <div key={`period-${row.period}`} className="space-y-1"><div className="flex items-center justify-between text-[11px] text-slate-600"><span><CalendarClock className="mr-1 inline h-3 w-3" />{row.period}</span><span>{row.count}</span></div><div className="h-2 rounded bg-slate-200"><div className="h-2 rounded bg-indigo-500" style={{ width: `${width}%` }} /></div></div>; })}</div>}
+                    </div>
+                    <div className="rounded-xl border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold text-slate-700">Jerarquía y señal semántica</p>
+                      <p className="mt-2 text-xs text-slate-600">Padre: <span className="font-medium text-slate-800">{codeCard.hierarchy.parent?.name || 'Sin padre'}</span></p>
+                      <p className="mt-1 text-xs text-slate-600">Hijos: <span className="font-medium text-slate-800">{codeCard.hierarchy.children.length}</span></p>
+                      <p className="mt-1 text-xs text-slate-600">Riqueza semántica agregada: <span className="font-medium text-slate-800">{codeCard.metrics.semanticRichness}%</span></p>
+                      <div className="mt-2 flex flex-wrap gap-1">{codeCard.topTerms.length ? codeCard.topTerms.slice(0, 8).map(([term, count]) => (<span key={`${codeCard.code.slug}-term-${term}`} className="rounded-full border bg-white px-2 py-0.5 text-[11px] text-slate-600">{term} ({count})</span>)) : <span className="text-xs text-slate-500">Sin términos frecuentes.</span>}</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border bg-slate-50 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2"><p className="text-sm font-semibold text-slate-900">Fragmentos del código ({codeCard.fragments.length})</p>{codeCardDeleteMode === 'single' ? <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">Modo eliminar uno a uno activo</span> : null}</div>
+                    {!codeCard.fragments.length ? <p className="text-sm text-slate-500">Este código aún no tiene fragmentos asociados.</p> : <div className="grid gap-2 md:grid-cols-2">{codeCard.fragments.map((fragment) => (<article key={`code-card-fragment-${fragment.id}`} className="rounded-lg border bg-white p-3 text-sm text-slate-700 shadow-sm"><p className="line-clamp-5 whitespace-pre-wrap text-slate-800">{fragment.excerpt || fragment.selected_text || 'Sin texto disponible'}</p><div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500"><span>{fragment.author_name || 'Autor desconocido'}</span><span>·</span><span>{fragment.video_id || 'sin video'}</span><span>·</span><span>{fragment.source_type || 'origen no definido'}</span></div>{codeCardDeleteMode === 'single' ? <div className="mt-2 flex justify-end"><button type="button" className="rounded border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700 hover:bg-rose-100" onClick={() => removeFragmentFromCodeCard(fragment.id)}>Eliminar fragmento</button></div> : null}</article>))}</div>}
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="grid gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                    <label className="relative block">
+                      <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                      <input className="w-full rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar código o descripción" value={codeQuery} onChange={(e) => setCodeQuery(e.target.value)} />
+                    </label>
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeHypothesisFilter} onChange={(e) => setCodeHypothesisFilter(e.target.value)}>
+                      <option value="">Filtrar por hipótesis</option>
+                      {codeHypothesisOptions.map((hypothesisId) => <option key={hypothesisId} value={hypothesisId}>{hypothesisId}</option>)}
+                    </select>
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClusterFilter} onChange={(e) => setCodeClusterFilter(e.target.value)}>
+                      <option value="">Filtrar por cluster</option>
+                      {codeClusterOptions.map((clusterId) => <option key={clusterId} value={clusterId}>{clusterId}</option>)}
+                    </select>
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeClientFilter} onChange={(e) => setCodeClientFilter(e.target.value)}>
+                      <option value="">Filtrar por cliente</option>
+                      {codeClientOptions.map((clientId) => <option key={clientId} value={clientId}>{clientId}</option>)}
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-end">
+                    <select className="rounded-lg border bg-white px-3 py-2 text-sm" value={codeSortBy} onChange={(e) => setCodeSortBy(e.target.value)}>
+                      <option value="score_total_desc">Ordenar por score total</option>
+                      <option value="frecuencia_desc">Ordenar por frecuencia</option>
+                      <option value="dispersion_desc">Ordenar por dispersión</option>
+                      <option value="name_asc">Ordenar por nombre</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-2">
+                    {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
+                  </div>
+                </>
+              )}
 
               <div className="rounded-xl border bg-white p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3">
@@ -2984,6 +3663,11 @@ const CommentsModePage = () => {
                 )}
               </div>
 
+
+
+
+
+
               {codeEditor.open ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
                   <div className="w-full max-w-2xl rounded-xl border bg-white shadow-xl">
@@ -3122,7 +3806,7 @@ const CommentsModePage = () => {
                                 setCodeMapContextMenu({ open: true, x: clampedX, y: clampedY, slug: code.slug });
                               }}
                             >
-                              <p className="truncate">{code.name}</p>
+                              <p className="whitespace-normal break-words leading-tight">{code.name}</p>
                               <p className="text-[10px] font-normal text-slate-500">({code.fragmentCount}) · {code.scoreTotal}/100</p>
                             </div>
                           );
@@ -3156,6 +3840,14 @@ const CommentsModePage = () => {
                             setCodeParent(codeMapContextMenu.slug, '');
                             setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
                           }}>Quitar padre</button>
+                          <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            const targetSlug = codeMapContextMenu.slug;
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                            openCodeMapAiAnalysis(targetSlug);
+                          }}>
+                            <BrainCircuit size={14} />
+                            Análisis IA
+                          </button>
                           <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => {
                             if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
                             deleteCodeTree(codeMapContextMenu.slug);
@@ -3163,6 +3855,83 @@ const CommentsModePage = () => {
                           }}>Eliminar código</button>
                         </div>
                       ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {codeMapAiModal.open ? (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 p-4">
+                  <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                    <div className="flex items-start justify-between gap-3 border-b bg-gradient-to-r from-slate-900 to-indigo-900 px-5 py-4 text-white">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.2em] text-indigo-200">Chat analítico por código</p>
+                        <h3 className="text-lg font-semibold">{codes.find((item) => String(item.slug) === String(codeMapAiModal.codeSlug || ''))?.name || codeMapAiModal.codeSlug}</h3>
+                        <p className="text-xs text-indigo-100">Memoria persistente: informe base + agentes + conversación especializada del código.</p>
+                      </div>
+                      <Button className="border border-white/40 bg-white/10 text-white hover:bg-white/20" onClick={closeCodeMapAiModal}>Cerrar</Button>
+                    </div>
+                    <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[340px_minmax(0,1fr)]">
+                      <aside className="overflow-y-auto border-r bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Informe base (bandera principal)</p>
+                        <p className="mt-2 text-sm text-slate-700">{codeMapAiModal.result?.summary_absolute || 'Sin informe inicial todavía.'}</p>
+                        <div className="mt-3 space-y-2">
+                          {[
+                            ['Dolores', codeMapAiModal.result?.dolores],
+                            ['Deseos', codeMapAiModal.result?.deseos],
+                            ['Placeres', codeMapAiModal.result?.placeres],
+                            ['Problemas', codeMapAiModal.result?.problemas],
+                            ['Soluciones', codeMapAiModal.result?.soluciones],
+                          ].map(([title, section]) => (
+                            <div key={title} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{title}</p>
+                              <p className="mt-1 line-clamp-3 text-xs text-slate-700">{section?.analysis || 'Sin sección.'}</p>
+                            </div>
+                          ))}
+                        </div>
+                        {codeMapAiModal.loading ? (
+                          <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+                            <p className="text-sm font-medium text-indigo-900">Generando memoria base multiagente…</p>
+                            <p className="mt-1 text-xs text-indigo-700">Dolores → Deseos → Placeres → Problemas → Soluciones → Refinador → Optimizador final.</p>
+                          </div>
+                        ) : null}
+                      </aside>
+
+                      <div className="flex min-h-0 flex-col">
+                        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-white px-5 py-4">
+                          {codeMapAiModal.error ? (
+                            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{codeMapAiModal.error}</div>
+                          ) : null}
+                          {(codeMapAnalysisSessions[codeMapAiModal.codeSlug]?.conversation_history || []).map((message) => (
+                            <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${message.role === 'user' ? 'bg-indigo-600 text-white' : 'border border-slate-200 bg-slate-50 text-slate-800'}`}>
+                                <p className="whitespace-pre-wrap">{message.content}</p>
+                                {Array.isArray(message.citations) && message.citations.length ? (
+                                  <div className="mt-2 space-y-1 border-t border-slate-200 pt-2 text-xs text-slate-600">
+                                    {message.citations.map((citation, idx) => (
+                                      <p key={`${message.id}_cite_${idx}`}>[{citation.fragment_id || 'fragmento'}] {citation.excerpt || 'Sin extracto'}</p>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ))}
+                          {codeMapAiModal.sending ? <p className="text-xs text-slate-500">Analizando con memoria del código…</p> : null}
+                        </div>
+                        <div className="border-t bg-white px-5 py-3">
+                          <div className="flex items-end gap-2">
+                            <textarea
+                              className="h-20 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+                              placeholder="Pregunta sobre este código. El chat mantiene memoria del informe base y evidencia del código."
+                              value={codeMapAiInput}
+                              onChange={(event) => setCodeMapAiInput(event.target.value)}
+                            />
+                            <Button className="bg-indigo-600 text-white" onClick={sendCodeMapAiMessage} disabled={codeMapAiModal.loading || codeMapAiModal.sending || !String(codeMapAiInput || '').trim()}>
+                              {codeMapAiModal.sending ? 'Enviando…' : 'Enviar'}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -3355,6 +4124,115 @@ const CommentsModePage = () => {
                       </div>
                     );
                   })}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+
+          {tab === 'hypotheses' && (
+            <div className="rounded-xl border bg-slate-50 p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold text-slate-900">Hipótesis</h2>
+                  <p className="text-xs text-slate-500">Entidad conceptual puente nacida desde códigos del Modo Comentarios.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="relative block">
+                    <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                    <input className="w-64 rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar hipótesis" value={hypothesisQuery} onChange={(e) => setHypothesisQuery(e.target.value)} />
+                  </label>
+                  <Button className="bg-indigo-600 text-white" onClick={() => openHypothesisEditor(null)}>
+                    <Plus className="mr-1 h-4 w-4" /> Crear hipótesis
+                  </Button>
+                </div>
+              </div>
+
+              {!filteredHypotheses.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay hipótesis creadas.</p> : (
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {filteredHypotheses.map((hypothesis) => {
+                    const linkedCodeSlugs = Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs : [];
+                    const linkedCodes = linkedCodeSlugs
+                      .map((slug) => codes.find((code) => String(code.slug) === String(slug)))
+                      .filter(Boolean);
+                    return (
+                      <article key={hypothesis.id} className="relative rounded-xl border bg-white p-4 shadow-sm">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-semibold text-slate-900">{hypothesis.title}</h3>
+                            <p className="mt-1 line-clamp-3 text-sm text-slate-600">{hypothesis.description}</p>
+                          </div>
+                          <div className="relative">
+                            <button type="button" className="rounded-md border bg-white p-1.5 text-slate-500 hover:text-slate-800" onClick={() => setHypothesisMenuId((prev) => (prev === String(hypothesis.id) ? '' : String(hypothesis.id)))}>
+                              <MoreHorizontal className="h-4 w-4" />
+                            </button>
+                            {hypothesisMenuId === String(hypothesis.id) ? (
+                              <div className="absolute right-0 top-9 z-40 w-44 rounded-lg border bg-white p-1.5 shadow-lg">
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEditor(hypothesis)}>Editar</button>
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => deleteHypothesis(hypothesis.id)}>Eliminar</button>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        {hypothesis.context_note ? <p className="mt-2 rounded border bg-slate-50 px-2 py-1 text-xs text-slate-600">{hypothesis.context_note}</p> : null}
+                        <p className="mt-3 text-xs text-slate-500">Códigos vinculados: {linkedCodes.length}</p>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {!linkedCodes.length ? <span className="text-xs text-slate-400">Sin códigos vinculados</span> : linkedCodes.slice(0, 6).map((code) => (
+                            <button key={`${hypothesis.id}_${code.slug}`} type="button" className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100" onClick={() => { setTab('codes'); setSelectedCodeSlug(String(code.slug)); }}>
+                              {code.name}
+                            </button>
+                          ))}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+
+
+          {hypothesisEditor.open ? (
+            <div className="fixed inset-0 z-[70] overflow-y-auto bg-slate-900/40 p-4">
+              <div className="mx-auto my-6 w-full max-w-2xl rounded-xl border bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b px-5 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">{hypothesisEditor.mode === 'create' ? 'Crear hipótesis' : 'Editar hipótesis'}</h3>
+                  <button type="button" className="text-slate-500" onClick={closeHypothesisEditor}>✕</button>
+                </div>
+                <div className="grid max-h-[calc(100vh-13rem)] gap-3 overflow-y-auto p-5">
+                  <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
+                  <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
+                  <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
+
+                  <div className="rounded-lg border bg-slate-50 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
+                    <div className="mt-2 max-h-56 space-y-1 overflow-auto">
+                      {!codes.length ? <p className="text-xs text-slate-500">No hay códigos disponibles aún.</p> : codes.map((code) => {
+                        const checked = hypothesisEditor.linkedCodeSlugs.includes(String(code.slug));
+                        return (
+                          <label key={`hyp-code-${code.slug}`} className="flex items-start gap-2 rounded border bg-white px-2 py-1.5 text-xs text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => setHypothesisEditor((prev) => ({
+                                ...prev,
+                                linkedCodeSlugs: e.target.checked
+                                  ? [...prev.linkedCodeSlugs, String(code.slug)]
+                                  : prev.linkedCodeSlugs.filter((slug) => String(slug) !== String(code.slug)),
+                              }))}
+                            />
+                            <span>{code.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t bg-white px-5 py-3">
+                  <Button className="bg-white border text-slate-700" onClick={closeHypothesisEditor}>Cancelar</Button>
+                  <Button className="bg-indigo-600 text-white" onClick={saveHypothesisEditor}>Guardar</Button>
                 </div>
               </div>
             </div>
