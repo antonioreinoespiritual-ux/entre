@@ -3459,7 +3459,7 @@ const CommentsModePage = () => {
                                 setCodeMapContextMenu({ open: true, x: clampedX, y: clampedY, slug: code.slug });
                               }}
                             >
-                              <p className="truncate">{code.name}</p>
+                              <p className="whitespace-normal break-words leading-tight">{code.name}</p>
                               <p className="text-[10px] font-normal text-slate-500">({code.fragmentCount}) · {code.scoreTotal}/100</p>
                             </div>
                           );
