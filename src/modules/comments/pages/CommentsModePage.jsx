@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -146,6 +146,17 @@ const CommentsModePage = () => {
   const [codeCardSlug, setCodeCardSlug] = useState('');
   const [codeCardDeleteMenuOpen, setCodeCardDeleteMenuOpen] = useState(false);
   const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
+  const [hypothesisQuery, setHypothesisQuery] = useState('');
+  const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [hypothesisEditor, setHypothesisEditor] = useState({
+    open: false,
+    mode: 'create',
+    id: '',
+    title: '',
+    description: '',
+    context_note: '',
+    linkedCodeSlugs: [],
+  });
   const [codeMapOpen, setCodeMapOpen] = useState(false);
   const [codeMapZoom, setCodeMapZoom] = useState(1);
   const [codeMapPan, setCodeMapPan] = useState({ x: 0, y: 0 });
@@ -185,12 +196,13 @@ const CommentsModePage = () => {
         fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
         codes: Array.isArray(parsed.codes) ? parsed.codes : [],
         codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
+        hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
         codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
           ? parsed.codeMapLayoutsByHypothesis
           : {},
       };
     } catch {
-      return { fragments: [], codes: [], codeProposals: [], codeMapLayoutsByHypothesis: {} };
+      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {} };
     }
   });
 
@@ -222,6 +234,7 @@ const CommentsModePage = () => {
           fragments: Array.isArray(indexedState.fragments) ? indexedState.fragments : [],
           codes: Array.isArray(indexedState.codes) ? indexedState.codes : [],
           codeProposals: Array.isArray(indexedState.codeProposals) ? indexedState.codeProposals : [],
+          hypotheses: Array.isArray(indexedState.hypotheses) ? indexedState.hypotheses : [],
           codeMapLayoutsByHypothesis: indexedState.codeMapLayoutsByHypothesis && typeof indexedState.codeMapLayoutsByHypothesis === 'object'
             ? indexedState.codeMapLayoutsByHypothesis
             : {},
@@ -239,6 +252,7 @@ const CommentsModePage = () => {
   const fragments = store.fragments || [];
   const codes = store.codes || [];
   const codeProposals = store.codeProposals || [];
+  const hypotheses = store.hypotheses || [];
   const codeMapLayoutsByHypothesis = store.codeMapLayoutsByHypothesis && typeof store.codeMapLayoutsByHypothesis === 'object'
     ? store.codeMapLayoutsByHypothesis
     : {};
@@ -2385,8 +2399,101 @@ const CommentsModePage = () => {
     { id: 'reader', label: 'Lector', icon: BookOpenText },
     { id: 'fragments', label: 'Fragmentos', icon: Scissors },
     { id: 'codes', label: 'Códigos', icon: Tags },
+    { id: 'hypotheses', label: 'Hipótesis', icon: Lightbulb },
     { id: 'clusters', label: 'Clusters', icon: Network },
   ];
+
+
+  const filteredHypotheses = useMemo(() => {
+    const q = String(hypothesisQuery || '').trim().toLowerCase();
+    if (!q) return hypotheses;
+    return hypotheses.filter((item) => {
+      const title = String(item.title || '').toLowerCase();
+      const description = String(item.description || '').toLowerCase();
+      const contextNote = String(item.context_note || '').toLowerCase();
+      return title.includes(q) || description.includes(q) || contextNote.includes(q);
+    });
+  }, [hypotheses, hypothesisQuery]);
+
+  const openHypothesisEditor = (hypothesis = null) => {
+    if (!hypothesis) {
+      setHypothesisEditor({
+        open: true,
+        mode: 'create',
+        id: '',
+        title: '',
+        description: '',
+        context_note: '',
+        linkedCodeSlugs: [],
+      });
+      return;
+    }
+    setHypothesisEditor({
+      open: true,
+      mode: 'edit',
+      id: String(hypothesis.id || ''),
+      title: String(hypothesis.title || ''),
+      description: String(hypothesis.description || ''),
+      context_note: String(hypothesis.context_note || ''),
+      linkedCodeSlugs: Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs.map((slug) => String(slug)) : [],
+    });
+  };
+
+  const closeHypothesisEditor = () => {
+    setHypothesisEditor((prev) => ({ ...prev, open: false }));
+  };
+
+  const saveHypothesisEditor = () => {
+    const title = String(hypothesisEditor.title || '').trim();
+    const description = String(hypothesisEditor.description || '').trim();
+    const contextNote = String(hypothesisEditor.context_note || '').trim();
+    const linkedCodeSlugs = Array.from(new Set((Array.isArray(hypothesisEditor.linkedCodeSlugs) ? hypothesisEditor.linkedCodeSlugs : [])
+      .map((slug) => String(slug).trim())
+      .filter((slug) => codes.some((code) => String(code.slug) === slug))));
+
+    if (!title || !description) {
+      window.alert('Título y descripción son obligatorios para crear/editar hipótesis.');
+      return;
+    }
+
+    if (hypothesisEditor.mode === 'create') {
+      const nextHypothesis = {
+        id: `comment_hypothesis_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        title,
+        description,
+        context_note: contextNote,
+        linked_code_slugs: linkedCodeSlugs,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      persist({ ...store, hypotheses: [nextHypothesis, ...hypotheses] });
+      closeHypothesisEditor();
+      return;
+    }
+
+    const nextHypotheses = hypotheses.map((item) => {
+      if (String(item.id) !== String(hypothesisEditor.id)) return item;
+      return {
+        ...item,
+        title,
+        description,
+        context_note: contextNote,
+        linked_code_slugs: linkedCodeSlugs,
+        updated_at: new Date().toISOString(),
+      };
+    });
+    persist({ ...store, hypotheses: nextHypotheses });
+    closeHypothesisEditor();
+  };
+
+  const deleteHypothesis = (hypothesisId) => {
+    const id = String(hypothesisId || '');
+    if (!id) return;
+    if (!window.confirm('¿Eliminar esta hipótesis?')) return;
+    const nextHypotheses = hypotheses.filter((item) => String(item.id) !== id);
+    persist({ ...store, hypotheses: nextHypotheses });
+    setHypothesisMenuId('');
+  };
 
   const renderCodeNode = (code, depth = 0) => {
     const slug = String(code.slug || '');
@@ -3321,6 +3428,51 @@ const CommentsModePage = () => {
                 )}
               </div>
 
+
+              {hypothesisEditor.open ? (
+                <div className="fixed inset-0 z-50 bg-slate-900/40 p-4">
+                  <div className="mx-auto mt-10 w-full max-w-2xl rounded-xl border bg-white shadow-xl">
+                    <div className="flex items-center justify-between border-b px-5 py-3">
+                      <h3 className="text-sm font-semibold text-slate-900">{hypothesisEditor.mode === 'create' ? 'Crear hipótesis' : 'Editar hipótesis'}</h3>
+                      <button type="button" className="text-slate-500" onClick={closeHypothesisEditor}>✕</button>
+                    </div>
+                    <div className="grid gap-3 p-5">
+                      <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
+                      <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
+                      <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
+
+                      <div className="rounded-lg border bg-slate-50 p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
+                        <div className="mt-2 max-h-56 space-y-1 overflow-auto">
+                          {!codes.length ? <p className="text-xs text-slate-500">No hay códigos disponibles aún.</p> : codes.map((code) => {
+                            const checked = hypothesisEditor.linkedCodeSlugs.includes(String(code.slug));
+                            return (
+                              <label key={`hyp-code-${code.slug}`} className="flex items-start gap-2 rounded border bg-white px-2 py-1.5 text-xs text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => setHypothesisEditor((prev) => ({
+                                    ...prev,
+                                    linkedCodeSlugs: e.target.checked
+                                      ? [...prev.linkedCodeSlugs, String(code.slug)]
+                                      : prev.linkedCodeSlugs.filter((slug) => String(slug) !== String(code.slug)),
+                                  }))}
+                                />
+                                <span>{code.name}</span>
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+                      <Button className="bg-white border text-slate-700" onClick={closeHypothesisEditor}>Cancelar</Button>
+                      <Button className="bg-indigo-600 text-white" onClick={saveHypothesisEditor}>Guardar</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               {codeEditor.open ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
                   <div className="w-full max-w-2xl rounded-xl border bg-white shadow-xl">
@@ -3696,6 +3848,69 @@ const CommentsModePage = () => {
               </div>
             </div>
           ) : null}
+
+
+          {tab === 'hypotheses' && (
+            <div className="rounded-xl border bg-slate-50 p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-semibold text-slate-900">Hipótesis</h2>
+                  <p className="text-xs text-slate-500">Entidad conceptual puente nacida desde códigos del Modo Comentarios.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="relative block">
+                    <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+                    <input className="w-64 rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar hipótesis" value={hypothesisQuery} onChange={(e) => setHypothesisQuery(e.target.value)} />
+                  </label>
+                  <Button className="bg-indigo-600 text-white" onClick={() => openHypothesisEditor(null)}>
+                    <Plus className="mr-1 h-4 w-4" /> Crear hipótesis
+                  </Button>
+                </div>
+              </div>
+
+              {!filteredHypotheses.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay hipótesis creadas.</p> : (
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  {filteredHypotheses.map((hypothesis) => {
+                    const linkedCodeSlugs = Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs : [];
+                    const linkedCodes = linkedCodeSlugs
+                      .map((slug) => codes.find((code) => String(code.slug) === String(slug)))
+                      .filter(Boolean);
+                    return (
+                      <article key={hypothesis.id} className="relative rounded-xl border bg-white p-4 shadow-sm">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <h3 className="text-sm font-semibold text-slate-900">{hypothesis.title}</h3>
+                            <p className="mt-1 line-clamp-3 text-sm text-slate-600">{hypothesis.description}</p>
+                          </div>
+                          <div className="relative">
+                            <button type="button" className="rounded-md border bg-white p-1.5 text-slate-500 hover:text-slate-800" onClick={() => setHypothesisMenuId((prev) => (prev === String(hypothesis.id) ? '' : String(hypothesis.id)))}>
+                              <MoreHorizontal className="h-4 w-4" />
+                            </button>
+                            {hypothesisMenuId === String(hypothesis.id) ? (
+                              <div className="absolute right-0 top-9 z-40 w-44 rounded-lg border bg-white p-1.5 shadow-lg">
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEditor(hypothesis)}>Editar</button>
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => deleteHypothesis(hypothesis.id)}>Eliminar</button>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        {hypothesis.context_note ? <p className="mt-2 rounded border bg-slate-50 px-2 py-1 text-xs text-slate-600">{hypothesis.context_note}</p> : null}
+                        <p className="mt-3 text-xs text-slate-500">Códigos vinculados: {linkedCodes.length}</p>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {!linkedCodes.length ? <span className="text-xs text-slate-400">Sin códigos vinculados</span> : linkedCodes.slice(0, 6).map((code) => (
+                            <button key={`${hypothesis.id}_${code.slug}`} type="button" className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100" onClick={() => { setTab('codes'); setSelectedCodeSlug(String(code.slug)); }}>
+                              {code.name}
+                            </button>
+                          ))}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {tab === 'clusters' && (
             <div className="rounded-xl border bg-white p-4 space-y-3">
