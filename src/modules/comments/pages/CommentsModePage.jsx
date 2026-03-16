@@ -3429,14 +3429,14 @@ const CommentsModePage = () => {
               </div>
 
 
-              {hypothesisEditor.open ? (
-                <div className="fixed inset-0 z-50 bg-slate-900/40 p-4">
-                  <div className="mx-auto mt-10 w-full max-w-2xl rounded-xl border bg-white shadow-xl">
+              {tab === 'hypotheses' && hypothesisEditor.open ? (
+                <div className="fixed inset-0 z-[70] overflow-y-auto bg-slate-900/40 p-4">
+                  <div className="mx-auto my-6 w-full max-w-2xl rounded-xl border bg-white shadow-xl">
                     <div className="flex items-center justify-between border-b px-5 py-3">
                       <h3 className="text-sm font-semibold text-slate-900">{hypothesisEditor.mode === 'create' ? 'Crear hipótesis' : 'Editar hipótesis'}</h3>
                       <button type="button" className="text-slate-500" onClick={closeHypothesisEditor}>✕</button>
                     </div>
-                    <div className="grid gap-3 p-5">
+                    <div className="grid max-h-[calc(100vh-13rem)] gap-3 overflow-y-auto p-5">
                       <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
                       <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
                       <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
@@ -3465,7 +3465,7 @@ const CommentsModePage = () => {
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center justify-end gap-2 border-t px-5 py-3">
+                    <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t bg-white px-5 py-3">
                       <Button className="bg-white border text-slate-700" onClick={closeHypothesisEditor}>Cancelar</Button>
                       <Button className="bg-indigo-600 text-white" onClick={saveHypothesisEditor}>Guardar</Button>
                     </div>
