@@ -2782,10 +2782,12 @@ function buildCodeMapAgentSectionPrompt({ agentName, sectionName, focusInstructi
   return [
     `Rol: ${agentName}.`,
     `Sección objetivo: ${sectionName}.`,
+    'Objetivo de calidad: redacción profesional, profunda, explícita y accionable; evita respuestas superficiales.',
     'Regla crítica: usa únicamente la evidencia entregada. Está prohibido inventar o completar huecos.',
     'Debes citar explícitamente fragmentos reales en cada conclusión.',
     'Puedes citar códigos relacionados solo si aparecen en la evidencia.',
     `Instrucción de enfoque: ${focusInstruction}`,
+    'La sección debe incluir: patrón dominante, implicaciones psicológicas, tensión estratégica y oportunidades concretas.',
     'Devuelve únicamente JSON válido con este formato exacto:',
     '{"analysis":"","citations":[{"fragment_id":"","excerpt":"","code_slug":""}]}',
     'Si faltan pruebas para un punto, dilo explícitamente en analysis sin inventar.',
@@ -2798,6 +2800,8 @@ function buildCodeMapAnalysisRefinerPrompt({ evidence, sections }) {
   return [
     'Eres el Agente Refinador de un análisis semántico.',
     'Toma las secciones de agentes especializados y unifica lenguaje, elimina redundancia y alinea coherencia.',
+    'Construye un informe absoluto de investigación: extenso, riguroso y de nivel profesional.',
+    'summary_absolute debe ser el bloque más completo y fundacional, incluyendo: patrón central, dolores, deseos, placeres, problemas, soluciones, narrativa dominante, interpretación psicológica y lectura estratégica.',
     'No inventes nueva evidencia; solo reorganiza y mejora claridad con base en las mismas citas.',
     'Devuelve JSON válido exacto con estructura:',
     '{"summary_absolute":"","dolores":{"analysis":"","citations":[]},"deseos":{"analysis":"","citations":[]},"placeres":{"analysis":"","citations":[]},"problemas":{"analysis":"","citations":[]},"soluciones":{"analysis":"","citations":[]},"sintesis_final":{"analysis":"","citations":[]}}',
@@ -2812,6 +2816,8 @@ function buildCodeMapAnalysisOptimizerPrompt({ evidence, refinedDocument }) {
   return [
     'Eres el Agente Optimizador Final.',
     'Optimiza claridad, legibilidad y densidad analítica sin alterar fidelidad a la evidencia.',
+    'Eleva el resultado final a estándar premium tipo informe ejecutivo-técnico para consola de investigación.',
+    'No reduzcas de más: preserva amplitud analítica y detalle argumental en summary_absolute y sintesis_final.',
     'Mantén las citas y evita cualquier afirmación no soportada por fragmentos/códigos entregados.',
     'Devuelve JSON válido exacto con esta estructura:',
     '{"summary_absolute":"","dolores":{"analysis":"","citations":[]},"deseos":{"analysis":"","citations":[]},"placeres":{"analysis":"","citations":[]},"problemas":{"analysis":"","citations":[]},"soluciones":{"analysis":"","citations":[]},"sintesis_final":{"analysis":"","citations":[]}}',
@@ -2826,12 +2832,12 @@ function normalizeCodeMapAnalysisSection(value, fallbackAnalysis = '') {
   const section = value && typeof value === 'object' ? value : {};
   const citations = Array.isArray(section.citations) ? section.citations : [];
   return {
-    analysis: compactAnalysisText(section.analysis || fallbackAnalysis || '', 3800),
+    analysis: compactAnalysisText(section.analysis || fallbackAnalysis || '', 5200),
     citations: citations
       .slice(0, 10)
       .map((item) => ({
         fragment_id: String(item?.fragment_id || '').trim(),
-        excerpt: compactAnalysisText(item?.excerpt || '', 260),
+        excerpt: compactAnalysisText(item?.excerpt || '', 320),
         code_slug: String(item?.code_slug || '').trim(),
       }))
       .filter((item) => item.fragment_id && item.excerpt),
@@ -2841,7 +2847,7 @@ function normalizeCodeMapAnalysisSection(value, fallbackAnalysis = '') {
 function normalizeCodeMapAnalysisDocument(parsed, fallbackSections = {}) {
   const base = parsed && typeof parsed === 'object' ? parsed : {};
   return {
-    summary_absolute: compactAnalysisText(base.summary_absolute || fallbackSections.summary_absolute || '', 2200),
+    summary_absolute: compactAnalysisText(base.summary_absolute || fallbackSections.summary_absolute || '', 6200),
     dolores: normalizeCodeMapAnalysisSection(base.dolores || fallbackSections.dolores, fallbackSections.dolores?.analysis || ''),
     deseos: normalizeCodeMapAnalysisSection(base.deseos || fallbackSections.deseos, fallbackSections.deseos?.analysis || ''),
     placeres: normalizeCodeMapAnalysisSection(base.placeres || fallbackSections.placeres, fallbackSections.placeres?.analysis || ''),

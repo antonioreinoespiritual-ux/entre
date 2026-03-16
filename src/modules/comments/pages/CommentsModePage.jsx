@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit, RotateCcw } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -84,6 +84,38 @@ const buildCodeMapScopeKey = (value = '') => {
   const selected = parseHypothesisSelection(value);
   if (!selected.length) return CODE_MAP_ALL_SCOPE;
   return selected.join('__');
+};
+
+const buildCodeMapInitialAssistantReport = (analysis = {}, code = {}) => {
+  const codeName = String(code?.name || '').trim() || 'Código analítico';
+  const summary = String(analysis?.summary_absolute || '').trim();
+  const sintesisFinal = String(analysis?.sintesis_final?.analysis || '').trim();
+  const sections = [
+    ['Dolores', analysis?.dolores?.analysis],
+    ['Deseos', analysis?.deseos?.analysis],
+    ['Placeres', analysis?.placeres?.analysis],
+    ['Problemas', analysis?.problemas?.analysis],
+    ['Soluciones', analysis?.soluciones?.analysis],
+  ];
+  const sectionBlocks = sections
+    .map(([title, body]) => {
+      const text = String(body || '').trim();
+      if (!text) return '';
+      return `\n${title}\n${text}`;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
+  return [
+    `INFORME ABSOLUTO DE INVESTIGACIÓN DEL CÓDIGO: ${codeName}`,
+    '',
+    'Este es el informe fundacional del chat analítico por código. Se construye a partir de evidencia real y funciona como punto de partida para toda la conversación especializada.',
+    '',
+    summary || 'No hay evidencia suficiente para construir el informe base completo.',
+    sectionBlocks ? `\n\nDESARROLLO ANALÍTICO POR CAPAS\n${sectionBlocks}` : '',
+    sintesisFinal ? `\n\nSÍNTESIS ESTRATÉGICA FINAL\n${sintesisFinal}` : '',
+    '\n\nNota metodológica: este primer mensaje es el informe más completo del chat. Las respuestas posteriores pueden ser más específicas, pero siempre deben anclarse a esta base analítica.',
+  ].join('\n');
 };
 
 const CommentsModePage = () => {
@@ -1340,7 +1372,7 @@ const CommentsModePage = () => {
         {
           id: `assistant_initial_${Date.now()}`,
           role: 'assistant',
-          content: String(analysis?.summary_absolute || '').trim() || 'Informe inicial generado.',
+          content: buildCodeMapInitialAssistantReport(analysis, code),
           created_at: now,
           type: 'initial_report',
         },
@@ -1367,7 +1399,8 @@ const CommentsModePage = () => {
     });
   };
 
-  const openCodeMapAiAnalysis = async (codeSlug) => {
+  const openCodeMapAiAnalysis = async (codeSlug, options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
     const slug = String(codeSlug || '').trim();
     if (!slug) return;
     const code = codes.find((item) => String(item.slug) === slug);
@@ -1417,7 +1450,7 @@ const CommentsModePage = () => {
       .filter((item) => item.slug && item.name);
 
     const existingSession = codeMapAnalysisSessions[slug];
-    if (existingSession?.initial_report) {
+    if (!forceRefresh && existingSession?.initial_report) {
       setCodeMapAiModal({
         open: true,
         loading: false,
@@ -1467,6 +1500,22 @@ const CommentsModePage = () => {
         sessionId: '',
       });
     }
+  };
+
+
+  const refreshCodeMapAiChat = async () => {
+    const slug = String(codeMapAiModal.codeSlug || '').trim();
+    if (!slug || codeMapAiModal.loading || codeMapAiModal.sending) return;
+
+    const nextSessions = { ...codeMapAnalysisSessions };
+    delete nextSessions[slug];
+    persist({
+      ...store,
+      codeMapAnalysisSessions: nextSessions,
+    });
+
+    setCodeMapAiInput('');
+    await openCodeMapAiAnalysis(slug, { forceRefresh: true });
   };
 
   const sendCodeMapAiMessage = async () => {
@@ -3869,7 +3918,16 @@ const CommentsModePage = () => {
                         <h3 className="text-lg font-semibold">{codes.find((item) => String(item.slug) === String(codeMapAiModal.codeSlug || ''))?.name || codeMapAiModal.codeSlug}</h3>
                         <p className="text-xs text-indigo-100">Memoria persistente: informe base + agentes + conversación especializada del código.</p>
                       </div>
-                      <Button className="border border-white/40 bg-white/10 text-white hover:bg-white/20" onClick={closeCodeMapAiModal}>Cerrar</Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          className="border border-indigo-200/70 bg-indigo-500/20 text-white hover:bg-indigo-500/30"
+                          onClick={refreshCodeMapAiChat}
+                          disabled={codeMapAiModal.loading || codeMapAiModal.sending}
+                        >
+                          <RotateCcw className="mr-1 h-4 w-4" /> Refresh
+                        </Button>
+                        <Button className="border border-white/40 bg-white/10 text-white hover:bg-white/20" onClick={closeCodeMapAiModal}>Cerrar</Button>
+                      </div>
                     </div>
                     <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[340px_minmax(0,1fr)]">
                       <aside className="overflow-y-auto border-r bg-slate-50 p-4">
