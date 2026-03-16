@@ -3429,49 +3429,9 @@ const CommentsModePage = () => {
               </div>
 
 
-              {tab === 'hypotheses' && hypothesisEditor.open ? (
-                <div className="fixed inset-0 z-[70] overflow-y-auto bg-slate-900/40 p-4">
-                  <div className="mx-auto my-6 w-full max-w-2xl rounded-xl border bg-white shadow-xl">
-                    <div className="flex items-center justify-between border-b px-5 py-3">
-                      <h3 className="text-sm font-semibold text-slate-900">{hypothesisEditor.mode === 'create' ? 'Crear hipótesis' : 'Editar hipótesis'}</h3>
-                      <button type="button" className="text-slate-500" onClick={closeHypothesisEditor}>✕</button>
-                    </div>
-                    <div className="grid max-h-[calc(100vh-13rem)] gap-3 overflow-y-auto p-5">
-                      <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
-                      <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
-                      <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
 
-                      <div className="rounded-lg border bg-slate-50 p-3">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
-                        <div className="mt-2 max-h-56 space-y-1 overflow-auto">
-                          {!codes.length ? <p className="text-xs text-slate-500">No hay códigos disponibles aún.</p> : codes.map((code) => {
-                            const checked = hypothesisEditor.linkedCodeSlugs.includes(String(code.slug));
-                            return (
-                              <label key={`hyp-code-${code.slug}`} className="flex items-start gap-2 rounded border bg-white px-2 py-1.5 text-xs text-slate-700">
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  onChange={(e) => setHypothesisEditor((prev) => ({
-                                    ...prev,
-                                    linkedCodeSlugs: e.target.checked
-                                      ? [...prev.linkedCodeSlugs, String(code.slug)]
-                                      : prev.linkedCodeSlugs.filter((slug) => String(slug) !== String(code.slug)),
-                                  }))}
-                                />
-                                <span>{code.name}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t bg-white px-5 py-3">
-                      <Button className="bg-white border text-slate-700" onClick={closeHypothesisEditor}>Cancelar</Button>
-                      <Button className="bg-indigo-600 text-white" onClick={saveHypothesisEditor}>Guardar</Button>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
+
+
 
               {codeEditor.open ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
@@ -3911,6 +3871,52 @@ const CommentsModePage = () => {
               )}
             </div>
           )}
+
+
+
+          {hypothesisEditor.open ? (
+            <div className="fixed inset-0 z-[70] overflow-y-auto bg-slate-900/40 p-4">
+              <div className="mx-auto my-6 w-full max-w-2xl rounded-xl border bg-white shadow-xl">
+                <div className="flex items-center justify-between border-b px-5 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">{hypothesisEditor.mode === 'create' ? 'Crear hipótesis' : 'Editar hipótesis'}</h3>
+                  <button type="button" className="text-slate-500" onClick={closeHypothesisEditor}>✕</button>
+                </div>
+                <div className="grid max-h-[calc(100vh-13rem)] gap-3 overflow-y-auto p-5">
+                  <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
+                  <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
+                  <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
+
+                  <div className="rounded-lg border bg-slate-50 p-3">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
+                    <div className="mt-2 max-h-56 space-y-1 overflow-auto">
+                      {!codes.length ? <p className="text-xs text-slate-500">No hay códigos disponibles aún.</p> : codes.map((code) => {
+                        const checked = hypothesisEditor.linkedCodeSlugs.includes(String(code.slug));
+                        return (
+                          <label key={`hyp-code-${code.slug}`} className="flex items-start gap-2 rounded border bg-white px-2 py-1.5 text-xs text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => setHypothesisEditor((prev) => ({
+                                ...prev,
+                                linkedCodeSlugs: e.target.checked
+                                  ? [...prev.linkedCodeSlugs, String(code.slug)]
+                                  : prev.linkedCodeSlugs.filter((slug) => String(slug) !== String(code.slug)),
+                              }))}
+                            />
+                            <span>{code.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+                <div className="sticky bottom-0 flex items-center justify-end gap-2 border-t bg-white px-5 py-3">
+                  <Button className="bg-white border text-slate-700" onClick={closeHypothesisEditor}>Cancelar</Button>
+                  <Button className="bg-indigo-600 text-white" onClick={saveHypothesisEditor}>Guardar</Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {tab === 'clusters' && (
             <div className="rounded-xl border bg-white p-4 space-y-3">
