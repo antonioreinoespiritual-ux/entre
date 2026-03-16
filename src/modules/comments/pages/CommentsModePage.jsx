@@ -118,6 +118,29 @@ const buildCodeMapInitialAssistantReport = (analysis = {}, code = {}) => {
   ].join('\n');
 };
 
+const normalizeGeneratedProposalName = (value = '', fallback = 'Dinámica emocional recurrente') => {
+  const raw = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return fallback;
+  const normalized = raw
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+  const invalid = !normalized
+    || /(^|\s)(generic|generico|placeholder)(\s|$)/i.test(normalized)
+    || /(^(codigo|cluster|tema|grupo)\s*\d*$)/i.test(normalized)
+    || /(patron\s+conceptual\s*\d+|codigo\s+conceptual\s*\d+|cluster\s*\d+)/i.test(normalized)
+    || raw.split(/\s+/).filter(Boolean).length < 2;
+  if (invalid) return fallback;
+  return raw;
+};
+
+const normalizeGeneratedProposalDescription = (description = '', name = '') => {
+  const value = String(description || '').replace(/\s+/g, ' ').trim();
+  if (value.length >= 30) return value;
+  const safeName = String(name || 'un patrón semántico dominante').trim().toLowerCase();
+  return `Agrupa comentarios que expresan ${safeName} de forma repetida y con suficiente densidad semántica para tratarlo como código reutilizable.`;
+};
+
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
   const storageKey = `comments-mode:${projectId}:${campaignId}`;
@@ -1996,16 +2019,37 @@ const CommentsModePage = () => {
       });
 
       const proposals = Array.isArray(response?.proposals) ? response.proposals : [];
-      setGeneratedCodeProposals(proposals.map((proposal, index) => ({
-        id: `generated_code_proposal_${Date.now()}_${index + 1}`,
-        cluster_name: String(proposal.cluster_name || `Cluster ${index + 1}`),
-        suggested_code_name: String(proposal.suggested_code_name || `Código ${index + 1}`),
-        description: String(proposal.description || 'Propuesta conceptual generada sin trazabilidad inicial.'),
-        confidence: Number(proposal.confidence || 0),
-        size_estimate: Number(proposal.size_estimate || 0),
-        subclusters: Array.isArray(proposal.subclusters) ? proposal.subclusters : [],
-        generated_without_traceability: true,
-      })));
+      const normalizedProposals = proposals.map((proposal, index) => {
+        const suggestedName = normalizeGeneratedProposalName(
+          proposal.suggested_code_name || proposal.cluster_name,
+          'Dinámica emocional recurrente',
+        );
+        const clusterName = normalizeGeneratedProposalName(
+          proposal.cluster_name || proposal.suggested_code_name,
+          'Patrón semántico dominante',
+        );
+
+        return {
+          id: `generated_code_proposal_${Date.now()}_${index + 1}`,
+          cluster_name: clusterName,
+          suggested_code_name: suggestedName,
+          description: normalizeGeneratedProposalDescription(proposal.description, suggestedName),
+          confidence: Number(proposal.confidence || 0),
+          size_estimate: Number(proposal.size_estimate || 0),
+          subclusters: Array.isArray(proposal.subclusters) ? proposal.subclusters : [],
+          generated_without_traceability: true,
+        };
+      });
+
+      setGeneratedCodeProposals(normalizedProposals);
+      if (!normalizedProposals.length) {
+        const stopReason = String(response?.metrics?.stop_reason || '').trim();
+        setCodeGenerationError(
+          stopReason
+            ? `La IA no devolvió propuestas utilizables (stop_reason: ${stopReason}). Intenta nuevamente con más comentarios o ajusta la integración IA.`
+            : 'La IA no devolvió propuestas utilizables. Intenta nuevamente con más comentarios o ajusta la integración IA.',
+        );
+      }
       setCodeGenerationMetrics({
         ...(response?.metrics || {}),
         comments_fetched_for_generation: Number(response?.metrics?.comments_analyzed || 0),

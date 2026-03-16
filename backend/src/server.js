@@ -4260,12 +4260,13 @@ function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes
 No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
 Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
 Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin números secuenciales.
-Prohibido en títulos: código, cluster, conceptual, tema, grupo, placeholders o prefijos vacíos.
+Prohibido en títulos: código, cluster, conceptual, tema, grupo, placeholders o prefijos vacíos. También prohibido: genérico, generic, patrón 1/2/3, código 1/2/3.
 El título debe comprimir la narrativa dominante (problema/emoción/conducta), no reciclar keywords sueltas.
 Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
 Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
 Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
 Regla: los subclusters deben ser conceptuales y no redundantes.
+Cada description debe ser específica y útil (mínimo 40 caracteres) explicando señal semántica, emoción o conducta dominante.
 Formato de salida: JSON válido, sin texto adicional.
 {
   "proposals": [
@@ -4308,7 +4309,7 @@ function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, ma
   return `Consolida esta lista de candidatos en taxonomía final sin trazabilidad.
 Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, maximizando cobertura semántica y deteniéndose por saturación.
 Fusiona redundancias, descarta ruido y conserva solo nombres conceptuales reutilizables.
-Regla de naming: títulos de 2-5 palabras, sin números secuenciales ni términos genéricos (código/cluster/conceptual/tema/grupo).
+Regla de naming: títulos de 2-5 palabras, sin números secuenciales ni términos genéricos (código/cluster/conceptual/tema/grupo/generic/generico).
 Incluye subcódigos útiles y marca recommendation.
 Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
 
@@ -4383,7 +4384,7 @@ function chunkCommentsForGeneration(comments = [], chunkSize = 120) {
 function normalizeCodeGenerationAgentOutput(parsed) {
   const bannedTitleTokens = new Set([
     'codigo', 'cluster', 'conceptual', 'tema', 'grupo', 'placeholder',
-    'patron', 'relacional', 'subcluster', 'subcodigo', 'generic',
+    'patron', 'relacional', 'subcluster', 'subcodigo', 'generic', 'generico',
   ]);
 
   const conceptualRules = [
@@ -4409,6 +4410,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     const normalized = String(value || '').toLowerCase().trim();
     if (!normalized) return true;
     if (/\b\d+\b/.test(normalized)) return true;
+    if (/(^|\s)(generic|generico|placeholder)(\s|$)/.test(normalized)) return true;
     const tokens = normalized.split(/\s+/).filter(Boolean);
     if (tokens.length < 2 || tokens.length > 5) return true;
     const useful = tokens.filter((token) => !bannedTitleTokens.has(token));
@@ -4435,6 +4437,24 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     return formatAsTitle(compressed);
   };
 
+
+
+  const nonGenericFallbacks = [
+    'tensión afectiva persistente',
+    'frustración relacional recurrente',
+    'necesidad de validación emocional',
+    'ambivalencia vincular sostenida',
+    'desgaste comunicacional crónico',
+  ];
+
+  const ensureNonGenericName = (candidate, description, fallbackSeed = '') => {
+    const trimmed = String(candidate || '').trim();
+    if (!looksGeneric(trimmed)) return trimmed;
+    const inferred = inferConceptualFallbackName(description, fallbackSeed || 'tensión afectiva persistente');
+    if (!looksGeneric(inferred)) return inferred;
+    const byHash = Math.abs(String(description || fallbackSeed || '').split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0));
+    return formatAsTitle(nonGenericFallbacks[byHash % nonGenericFallbacks.length]);
+  };
   const normalizeConceptualName = (raw, description, fallback = 'dinámica emocional emergente') => {
     let value = String(raw || '').toLowerCase().trim();
     value = value
@@ -4507,32 +4527,47 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     const normalizedName = normalizeConceptualName(
       proposal.suggested_code_name || proposal.cluster_name,
       proposal.description,
-      `dinámica relacional emergente ${index + 1}`,
+      'tensión afectiva persistente',
     );
     const normalizedClusterName = normalizeConceptualName(
       proposal.cluster_name || proposal.suggested_code_name,
       proposal.description,
-      `dinámica relacional emergente ${index + 1}`,
+      'tensión afectiva persistente',
     );
-    const normalizedDescription = normalizeDescription(proposal.description, normalizedName);
+    const finalName = ensureNonGenericName(normalizedName, proposal.description, 'tensión afectiva persistente');
+    const finalClusterName = ensureNonGenericName(normalizedClusterName, proposal.description, 'frustración relacional recurrente');
+    const normalizedDescription = normalizeDescription(proposal.description, finalName);
 
     return {
-    cluster_name: normalizedClusterName,
-    suggested_code_name: normalizedName,
+    cluster_name: finalClusterName,
+    suggested_code_name: finalName,
     description: normalizedDescription,
-    naming_rationale: inferNameRationale(normalizedName, normalizedDescription),
+    naming_rationale: inferNameRationale(finalName, normalizedDescription),
     coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
     pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
     recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
-    subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub, subIndex) => ({
-      cluster_name: normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, `subpatrón ${subIndex + 1}`),
-      suggested_subcode_name: normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, `subnarrativa ${subIndex + 1}`),
-      description: normalizeDescription(sub.description, sub.suggested_subcode_name || sub.cluster_name),
-      naming_rationale: inferNameRationale(sub.suggested_subcode_name || sub.cluster_name, sub.description),
-      coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
-      pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
-      recommendation: ['crear', 'fusionar', 'descartar'].includes(String(sub.recommendation || '').toLowerCase()) ? String(sub.recommendation).toLowerCase() : 'crear',
-    })),
+    subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub) => {
+      const normalizedSubClusterName = ensureNonGenericName(
+        normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, 'matiz emocional específico'),
+        sub.description,
+        'matiz emocional específico',
+      );
+      const normalizedSubName = ensureNonGenericName(
+        normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, 'variación semántica relevante'),
+        sub.description,
+        'variación semántica relevante',
+      );
+      const normalizedSubDescription = normalizeDescription(sub.description, normalizedSubName);
+      return {
+        cluster_name: normalizedSubClusterName,
+        suggested_subcode_name: normalizedSubName,
+        description: normalizedSubDescription,
+        naming_rationale: inferNameRationale(normalizedSubName, normalizedSubDescription),
+        coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
+        pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
+        recommendation: ['crear', 'fusionar', 'descartar'].includes(String(sub.recommendation || '').toLowerCase()) ? String(sub.recommendation).toLowerCase() : 'crear',
+      };
+    }),
     generated_without_traceability: true,
     conceptual_taxonomy_stage: 'discovery',
   };
