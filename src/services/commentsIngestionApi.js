@@ -51,6 +51,7 @@ export const commentsIngestionApi = {
   enrichFragments: (payload) => request('/api/comment-base/fragments/enrich', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || { items: [], meta: {} }),
   runCodeSelectionAgent: (payload) => request('/api/comment-base/code-selection-agent', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || { selected_fragments: [], clusters_internal: [], final_code_proposals: [], metrics: {} }),
   runCodeGenerationAgent: (payload) => request('/api/comment-base/code-generation-agent', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || { proposals: [], metrics: {}, meta: {} }),
+  runCodeMapAnalysisAgent: (payload) => request('/api/comment-base/code-map-analysis-agent', { method: 'POST', timeoutMs: 180000, body: JSON.stringify(payload) }).then((r) => r.data || {}),
   saveCodeProposalReview: (payload) => request('/api/comment-base/code-proposal-reviews', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || {}),
   listCodeProposalReviews: ({ projectId, campaignId, limit = 500 }) => request(`/api/comment-base/code-proposal-reviews?${new URLSearchParams({ projectId, campaignId, limit: String(limit) }).toString()}`).then((r) => r.data || { items: [] }),
   extractSemanticFragments: ({ comment_id, source_id, texto_completo_del_comentario, comments, existing_codes = [] }) => request('/api/comment-base/semantic-fragment-agent', {

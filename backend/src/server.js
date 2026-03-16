@@ -2740,6 +2740,117 @@ function buildSemanticFragmentBatchPrompt({ comments = [], existingCodes = [] })
   ].join('\n');
 }
 
+
+function compactAnalysisText(value = '', max = 420) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+function serializeCodeMapAnalysisEvidence({ code, fragments = [], relatedCodes = [] }) {
+  const safeCode = {
+    slug: String(code?.slug || '').trim(),
+    name: String(code?.name || '').trim(),
+    description: compactAnalysisText(code?.description || '', 260),
+  };
+
+  const serializedFragments = (Array.isArray(fragments) ? fragments : [])
+    .slice(0, 120)
+    .map((fragment, index) => ({
+      fragment_id: String(fragment?.fragment_id || fragment?.id || `fragment_${index + 1}`).trim(),
+      excerpt: compactAnalysisText(fragment?.excerpt || fragment?.fragment_text || '', 420),
+      source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+    }))
+    .filter((fragment) => fragment.fragment_id && fragment.excerpt);
+
+  const serializedRelated = (Array.isArray(relatedCodes) ? relatedCodes : [])
+    .slice(0, 24)
+    .map((item) => ({
+      slug: String(item?.slug || '').trim(),
+      name: String(item?.name || '').trim(),
+      description: compactAnalysisText(item?.description || '', 180),
+      relation: String(item?.relation || '').trim(),
+    }))
+    .filter((item) => item.slug && item.name);
+
+  return {
+    code: safeCode,
+    fragments: serializedFragments,
+    related_codes: serializedRelated,
+  };
+}
+
+function buildCodeMapAgentSectionPrompt({ agentName, sectionName, focusInstruction, evidence }) {
+  return [
+    `Rol: ${agentName}.`,
+    `Sección objetivo: ${sectionName}.`,
+    'Regla crítica: usa únicamente la evidencia entregada. Está prohibido inventar o completar huecos.',
+    'Debes citar explícitamente fragmentos reales en cada conclusión.',
+    'Puedes citar códigos relacionados solo si aparecen en la evidencia.',
+    `Instrucción de enfoque: ${focusInstruction}`,
+    'Devuelve únicamente JSON válido con este formato exacto:',
+    '{"analysis":"","citations":[{"fragment_id":"","excerpt":"","code_slug":""}]}',
+    'Si faltan pruebas para un punto, dilo explícitamente en analysis sin inventar.',
+    'EVIDENCIA_JSON:',
+    JSON.stringify(evidence),
+  ].join('\n');
+}
+
+function buildCodeMapAnalysisRefinerPrompt({ evidence, sections }) {
+  return [
+    'Eres el Agente Refinador de un análisis semántico.',
+    'Toma las secciones de agentes especializados y unifica lenguaje, elimina redundancia y alinea coherencia.',
+    'No inventes nueva evidencia; solo reorganiza y mejora claridad con base en las mismas citas.',
+    'Devuelve JSON válido exacto con estructura:',
+    '{"summary_absolute":"","dolores":{"analysis":"","citations":[]},"deseos":{"analysis":"","citations":[]},"placeres":{"analysis":"","citations":[]},"problemas":{"analysis":"","citations":[]},"soluciones":{"analysis":"","citations":[]},"sintesis_final":{"analysis":"","citations":[]}}',
+    'EVIDENCIA_JSON:',
+    JSON.stringify(evidence),
+    'SECCIONES_JSON:',
+    JSON.stringify(sections),
+  ].join('\n');
+}
+
+function buildCodeMapAnalysisOptimizerPrompt({ evidence, refinedDocument }) {
+  return [
+    'Eres el Agente Optimizador Final.',
+    'Optimiza claridad, legibilidad y densidad analítica sin alterar fidelidad a la evidencia.',
+    'Mantén las citas y evita cualquier afirmación no soportada por fragmentos/códigos entregados.',
+    'Devuelve JSON válido exacto con esta estructura:',
+    '{"summary_absolute":"","dolores":{"analysis":"","citations":[]},"deseos":{"analysis":"","citations":[]},"placeres":{"analysis":"","citations":[]},"problemas":{"analysis":"","citations":[]},"soluciones":{"analysis":"","citations":[]},"sintesis_final":{"analysis":"","citations":[]}}',
+    'EVIDENCIA_JSON:',
+    JSON.stringify(evidence),
+    'DOCUMENTO_REFINADO_JSON:',
+    JSON.stringify(refinedDocument),
+  ].join('\n');
+}
+
+function normalizeCodeMapAnalysisSection(value, fallbackAnalysis = '') {
+  const section = value && typeof value === 'object' ? value : {};
+  const citations = Array.isArray(section.citations) ? section.citations : [];
+  return {
+    analysis: compactAnalysisText(section.analysis || fallbackAnalysis || '', 3800),
+    citations: citations
+      .slice(0, 10)
+      .map((item) => ({
+        fragment_id: String(item?.fragment_id || '').trim(),
+        excerpt: compactAnalysisText(item?.excerpt || '', 260),
+        code_slug: String(item?.code_slug || '').trim(),
+      }))
+      .filter((item) => item.fragment_id && item.excerpt),
+  };
+}
+
+function normalizeCodeMapAnalysisDocument(parsed, fallbackSections = {}) {
+  const base = parsed && typeof parsed === 'object' ? parsed : {};
+  return {
+    summary_absolute: compactAnalysisText(base.summary_absolute || fallbackSections.summary_absolute || '', 2200),
+    dolores: normalizeCodeMapAnalysisSection(base.dolores || fallbackSections.dolores, fallbackSections.dolores?.analysis || ''),
+    deseos: normalizeCodeMapAnalysisSection(base.deseos || fallbackSections.deseos, fallbackSections.deseos?.analysis || ''),
+    placeres: normalizeCodeMapAnalysisSection(base.placeres || fallbackSections.placeres, fallbackSections.placeres?.analysis || ''),
+    problemas: normalizeCodeMapAnalysisSection(base.problemas || fallbackSections.problemas, fallbackSections.problemas?.analysis || ''),
+    soluciones: normalizeCodeMapAnalysisSection(base.soluciones || fallbackSections.soluciones, fallbackSections.soluciones?.analysis || ''),
+    sintesis_final: normalizeCodeMapAnalysisSection(base.sintesis_final || fallbackSections.sintesis_final, fallbackSections.sintesis_final?.analysis || ''),
+  };
+}
+
 function extractJsonObjectFromText(rawText = '') {
   const text = String(rawText || '').trim();
   if (!text) return null;
@@ -6463,6 +6574,151 @@ const server = http.createServer(async (req, res) => {
         },
       });
     }
+
+    if (url.pathname === '/api/comment-base/code-map-analysis-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body?.project_id || '').trim();
+      const campaignId = String(body?.campaign_id || '').trim();
+      const code = body?.code && typeof body.code === 'object' ? body.code : {};
+      const codeSlug = String(code?.slug || '').trim();
+      const codeName = String(code?.name || '').trim();
+
+      const fragments = Array.isArray(body?.fragments) ? body.fragments : [];
+      const relatedCodes = Array.isArray(body?.related_codes) ? body.related_codes : [];
+
+      if (!projectId || !campaignId || !codeSlug || !codeName) {
+        return sendJson(req, res, 400, { error: 'project_id, campaign_id y code (slug, name) son requeridos.' });
+      }
+
+      const safeFragments = fragments
+        .map((fragment, index) => ({
+          fragment_id: String(fragment?.fragment_id || fragment?.id || `fragment_${index + 1}`).trim(),
+          excerpt: String(fragment?.excerpt || fragment?.fragment_text || '').trim(),
+          source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+        }))
+        .filter((fragment) => fragment.fragment_id && fragment.excerpt)
+        .slice(0, 120);
+
+      if (!safeFragments.length) {
+        return sendJson(req, res, 400, { error: 'Se requieren fragmentos con evidencia para analizar el código.' });
+      }
+
+      const [campaignRows] = await pool.query(
+        'SELECT id, project_id FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+        [campaignId, projectId, user.id],
+      );
+      const campaign = campaignRows[0] || null;
+      if (!campaign) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial antes de usar Análisis IA del mapa de códigos.',
+        });
+      }
+
+      const evidence = serializeCodeMapAnalysisEvidence({
+        code: {
+          slug: codeSlug,
+          name: codeName,
+          description: String(code?.description || '').trim(),
+        },
+        fragments: safeFragments,
+        relatedCodes,
+      });
+
+      const runSectionAgent = async ({ agentName, sectionName, focusInstruction }) => {
+        const prompt = buildCodeMapAgentSectionPrompt({
+          agentName,
+          sectionName,
+          focusInstruction,
+          evidence,
+        });
+        const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: prompt },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const parsed = extractJsonObjectFromText(completion.content);
+        return normalizeCodeMapAnalysisSection(parsed, 'Sin evidencia suficiente para esta sección.');
+      };
+
+      try {
+        const dolores = await runSectionAgent({
+          agentName: 'Agente de Dolores',
+          sectionName: 'Dolores',
+          focusInstruction: 'Analiza frustraciones, tensiones, pérdidas, miedos y sufrimiento presentes en la evidencia.',
+        });
+        const deseos = await runSectionAgent({
+          agentName: 'Agente de Deseos',
+          sectionName: 'Deseos',
+          focusInstruction: 'Analiza aspiraciones, anhelos, metas emocionales o prácticas presentes en los fragmentos.',
+        });
+        const placeres = await runSectionAgent({
+          agentName: 'Agente de Placeres',
+          sectionName: 'Placeres',
+          focusInstruction: 'Analiza recompensas buscadas, alivios esperados y estados positivos aspirados.',
+        });
+        const problemas = await runSectionAgent({
+          agentName: 'Agente de Problemas',
+          sectionName: 'Problemas',
+          focusInstruction: 'Define el problema central y sus variaciones tal como aparece en la evidencia real.',
+        });
+        const soluciones = await runSectionAgent({
+          agentName: 'Agente de Soluciones',
+          sectionName: 'Soluciones',
+          focusInstruction: 'Analiza soluciones deseadas, intentadas o implícitas en los fragmentos del código.',
+        });
+
+        const baseSections = {
+          summary_absolute: '',
+          dolores,
+          deseos,
+          placeres,
+          problemas,
+          soluciones,
+          sintesis_final: { analysis: '', citations: [] },
+        };
+
+        const refinerPrompt = buildCodeMapAnalysisRefinerPrompt({ evidence, sections: baseSections });
+        const refinedCompletion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: refinerPrompt },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const refinedParsed = extractJsonObjectFromText(refinedCompletion.content);
+        const refinedDocument = normalizeCodeMapAnalysisDocument(refinedParsed, baseSections);
+
+        const optimizerPrompt = buildCodeMapAnalysisOptimizerPrompt({ evidence, refinedDocument });
+        const optimizedCompletion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: optimizerPrompt },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const optimizedParsed = extractJsonObjectFromText(optimizedCompletion.content);
+        const finalDocument = normalizeCodeMapAnalysisDocument(optimizedParsed, refinedDocument);
+
+        return sendJson(req, res, 200, {
+          data: {
+            ...finalDocument,
+            meta: {
+              provider: integration.provider,
+              model: integration.model,
+              fragments_used: evidence.fragments.length,
+              related_codes_used: evidence.related_codes.length,
+              flow: 'dolores->deseos->placeres->problemas->soluciones->refinador->optimizador_final',
+            },
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo ejecutar el análisis IA del código en el mapa.',
+        });
+      }
+    }
+
 
     if (url.pathname === '/api/comment-base/inputs' && req.method === 'POST') {
       const user = authFromRequest(req);

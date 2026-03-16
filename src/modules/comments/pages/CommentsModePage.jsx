@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -167,6 +167,13 @@ const CommentsModePage = () => {
   const [selectedCodeMapEdge, setSelectedCodeMapEdge] = useState('');
   const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
   const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
+  const [codeMapAiModal, setCodeMapAiModal] = useState({
+    open: false,
+    loading: false,
+    error: '',
+    codeSlug: '',
+    result: null,
+  });
   const codeMapCanvasRef = useRef(null);
   const codeMapLayoutRef = useRef({});
   const [codeEditor, setCodeEditor] = useState({
@@ -1292,6 +1299,84 @@ const CommentsModePage = () => {
       source: String(code.parent_slug),
       target: String(code.slug),
     })), [codeMapVisibleCodes, codeMapVisibleSlugSet]);
+
+
+  const openCodeMapAiAnalysis = async (codeSlug) => {
+    const slug = String(codeSlug || '').trim();
+    if (!slug) return;
+    const code = codes.find((item) => String(item.slug) === slug);
+    if (!code) return;
+
+    const linkedFragments = fragments
+      .filter((fragment) => Array.isArray(fragment.code_slugs) && fragment.code_slugs.includes(slug))
+      .slice(0, 120)
+      .map((fragment, index) => ({
+        fragment_id: String(fragment.id || `fragment_${index + 1}`),
+        excerpt: String(fragment.excerpt || fragment.selected_text || '').trim(),
+        source_comment_id: String(fragment.source_comment_id || fragment.comment_id || '').trim(),
+      }))
+      .filter((fragment) => fragment.excerpt);
+
+    if (!linkedFragments.length) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        error: 'Este código no tiene fragmentos vinculados con evidencia suficiente para analizar.',
+        codeSlug: slug,
+        result: null,
+      });
+      return;
+    }
+
+    const relatedCodes = codes
+      .filter((item) => String(item.slug) !== slug)
+      .map((item) => ({
+        ...item,
+        overlap: fragments.reduce((acc, fragment) => {
+          const slugs = Array.isArray(fragment.code_slugs) ? fragment.code_slugs : [];
+          return slugs.includes(slug) && slugs.includes(String(item.slug)) ? acc + 1 : acc;
+        }, 0),
+      }))
+      .filter((item) => item.overlap > 0 || String(item.parent_slug || '') === slug || String(code.parent_slug || '') === String(item.slug || ''))
+      .sort((a, b) => b.overlap - a.overlap)
+      .slice(0, 10)
+      .map((item) => ({
+        slug: String(item.slug || '').trim(),
+        name: String(item.name || '').trim(),
+        description: String(item.description || '').trim(),
+        relation: String(item.parent_slug || '') === slug ? 'child' : String(code.parent_slug || '') === String(item.slug || '') ? 'parent' : 'cooccurrence',
+      }))
+      .filter((item) => item.slug && item.name);
+
+    setCodeMapAiModal({ open: true, loading: true, error: '', codeSlug: slug, result: null });
+
+    try {
+      const analysis = await commentsIngestionApi.runCodeMapAnalysisAgent({
+        project_id: projectId,
+        campaign_id: campaignId,
+        code: {
+          slug,
+          name: String(code.name || '').trim(),
+          description: String(code.description || '').trim(),
+        },
+        fragments: linkedFragments,
+        related_codes: relatedCodes,
+      });
+      setCodeMapAiModal({ open: true, loading: false, error: '', codeSlug: slug, result: analysis });
+    } catch (error) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        error: error?.message || 'No se pudo generar el análisis IA del código.',
+        codeSlug: slug,
+        result: null,
+      });
+    }
+  };
+
+  const closeCodeMapAiModal = () => {
+    setCodeMapAiModal({ open: false, loading: false, error: '', codeSlug: '', result: null });
+  };
 
   const handleCodeMapNodeMouseDown = (event, slug) => {
     if (event.button !== 0) return;
@@ -3605,11 +3690,78 @@ const CommentsModePage = () => {
                             setCodeParent(codeMapContextMenu.slug, '');
                             setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
                           }}>Quitar padre</button>
+                          <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            const targetSlug = codeMapContextMenu.slug;
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                            openCodeMapAiAnalysis(targetSlug);
+                          }}>
+                            <BrainCircuit size={14} />
+                            Análisis IA
+                          </button>
                           <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => {
                             if (!window.confirm('¿Eliminar este código y su jerarquía?')) return;
                             deleteCodeTree(codeMapContextMenu.slug);
                             setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
                           }}>Eliminar código</button>
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {codeMapAiModal.open ? (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 p-4">
+                  <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                    <div className="flex items-start justify-between gap-3 border-b bg-gradient-to-r from-slate-900 to-indigo-900 px-5 py-4 text-white">
+                      <div>
+                        <p className="text-[11px] uppercase tracking-[0.2em] text-indigo-200">Análisis IA por código</p>
+                        <h3 className="text-lg font-semibold">{codes.find((item) => String(item.slug) === String(codeMapAiModal.codeSlug || ''))?.name || codeMapAiModal.codeSlug}</h3>
+                        <p className="text-xs text-indigo-100">Ficha analítica multiagente basada en evidencia de fragmentos reales.</p>
+                      </div>
+                      <Button className="border border-white/40 bg-white/10 text-white hover:bg-white/20" onClick={closeCodeMapAiModal}>Cerrar</Button>
+                    </div>
+                    <div className="overflow-y-auto px-5 py-4">
+                      {codeMapAiModal.loading ? (
+                        <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
+                          <p className="text-sm font-medium text-indigo-900">Generando análisis multiagente…</p>
+                          <p className="mt-1 text-xs text-indigo-700">Dolores → Deseos → Placeres → Problemas → Soluciones → Refinador → Optimizador final.</p>
+                        </div>
+                      ) : null}
+                      {codeMapAiModal.error ? (
+                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{codeMapAiModal.error}</div>
+                      ) : null}
+
+                      {codeMapAiModal.result && !codeMapAiModal.loading ? (
+                        <div className="space-y-4">
+                          <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Resumen absoluto</p>
+                            <p className="mt-2 text-sm text-slate-800">{codeMapAiModal.result.summary_absolute || 'Sin resumen disponible.'}</p>
+                          </section>
+                          {[
+                            ['Dolores', codeMapAiModal.result.dolores],
+                            ['Deseos', codeMapAiModal.result.deseos],
+                            ['Placeres', codeMapAiModal.result.placeres],
+                            ['Problemas', codeMapAiModal.result.problemas],
+                            ['Soluciones', codeMapAiModal.result.soluciones],
+                            ['Síntesis final', codeMapAiModal.result.sintesis_final],
+                          ].map(([title, section]) => (
+                            <section key={title} className="rounded-xl border border-slate-200 bg-white p-4">
+                              <h4 className="text-sm font-semibold text-slate-900">{title}</h4>
+                              <p className="mt-2 text-sm text-slate-700">{section?.analysis || 'Sin contenido.'}</p>
+                              {Array.isArray(section?.citations) && section.citations.length ? (
+                                <div className="mt-3 space-y-1">
+                                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Citas de evidencia</p>
+                                  {section.citations.map((citation, idx) => (
+                                    <div key={`${title}_${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-600">
+                                      <span className="font-medium text-slate-700">[{citation.fragment_id || 'fragmento'}]</span> {citation.excerpt || 'Sin extracto'}
+                                      {citation.code_slug ? <span className="ml-1 text-indigo-600">· código: {citation.code_slug}</span> : null}
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : null}
+                            </section>
+                          ))}
                         </div>
                       ) : null}
                     </div>
