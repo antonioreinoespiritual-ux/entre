@@ -2903,6 +2903,86 @@ function extractJsonObjectFromText(rawText = '') {
   }
 }
 
+function selectRelevantFragmentsForCodeMapChat({ fragments = [], question = '', limit = 8 }) {
+  const tokens = String(question || '')
+    .toLowerCase()
+    .split(/[^a-záéíóúñ0-9]+/i)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 4);
+  const tokenSet = new Set(tokens);
+  const safeFragments = Array.isArray(fragments) ? fragments : [];
+
+  const scored = safeFragments
+    .map((fragment) => {
+      const excerpt = String(fragment?.excerpt || fragment?.fragment_text || '').trim();
+      const lc = excerpt.toLowerCase();
+      let score = 0;
+      for (const token of tokenSet) {
+        if (lc.includes(token)) score += 1;
+      }
+      return {
+        fragment_id: String(fragment?.fragment_id || fragment?.id || '').trim(),
+        excerpt: compactAnalysisText(excerpt, 280),
+        source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+        score,
+      };
+    })
+    .filter((item) => item.fragment_id && item.excerpt)
+    .sort((a, b) => b.score - a.score);
+
+  const withSignal = scored.filter((item) => item.score > 0).slice(0, limit);
+  if (withSignal.length) return withSignal;
+  return scored.slice(0, Math.max(4, Math.min(limit, 8)));
+}
+
+function buildCodeMapAnalysisChatPrompt({ session = {}, question = '', relevantEvidence = [] }) {
+  const codeContext = {
+    code_slug: String(session?.code_slug || '').trim(),
+    code_name: String(session?.code_name || '').trim(),
+    code_description: compactAnalysisText(session?.code_description || '', 240),
+  };
+
+  const initialReport = session?.initial_report && typeof session.initial_report === 'object'
+    ? session.initial_report
+    : {};
+  const fixedSummary = {
+    summary_absolute: compactAnalysisText(initialReport.summary_absolute || '', 1200),
+    dolores: compactAnalysisText(initialReport?.dolores?.analysis || '', 700),
+    deseos: compactAnalysisText(initialReport?.deseos?.analysis || '', 700),
+    placeres: compactAnalysisText(initialReport?.placeres?.analysis || '', 700),
+    problemas: compactAnalysisText(initialReport?.problemas?.analysis || '', 700),
+    soluciones: compactAnalysisText(initialReport?.soluciones?.analysis || '', 700),
+    sintesis_final: compactAnalysisText(initialReport?.sintesis_final?.analysis || '', 700),
+  };
+
+  const history = Array.isArray(session?.conversation_history) ? session.conversation_history : [];
+  const recentHistory = history.slice(-8).map((message) => ({
+    role: String(message?.role || '').trim(),
+    content: compactAnalysisText(message?.content || '', 420),
+  }));
+
+  return [
+    'Eres un copiloto analítico especializado en un único código del Mapa de Códigos.',
+    'Regla crítica: mantener foco 100% en este código y su evidencia. No mezclar otros contextos.',
+    'No inventes; responde solo con base en el informe inicial, memoria y evidencia relevante adjunta.',
+    'Economía de tokens: no repitas todo el informe salvo que sea necesario para responder.',
+    'Formato de salida: JSON válido exacto:',
+    '{"answer":"","memory_summary":"","citations":[{"fragment_id":"","excerpt":"","code_slug":""}]}',
+    'memory_summary debe actualizar y compactar aprendizajes relevantes de la conversación (máx 900 caracteres).',
+    'CONTEXTO_FIJO_CODIGO_JSON:',
+    JSON.stringify(codeContext),
+    'INFORME_BASE_JSON:',
+    JSON.stringify(fixedSummary),
+    'MEMORIA_PREVIA_RESUMIDA:',
+    compactAnalysisText(session?.memory_summary || '', 900),
+    'HISTORIAL_RECIENTE_JSON:',
+    JSON.stringify(recentHistory),
+    'EVIDENCIA_RELEVANTE_JSON:',
+    JSON.stringify(relevantEvidence),
+    `PREGUNTA_USUARIO: ${String(question || '').trim()}`,
+  ].join('\n');
+}
+
 function clampConfidence(value, fallback = 0.75) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -2910,6 +2990,17 @@ function clampConfidence(value, fallback = 0.75) {
   if (parsed > 1) return 1;
   return Number(parsed.toFixed(3));
 }
+
+
+const normalizeRejectReason = (value) => {
+  const reason = String(value || '').trim().toLowerCase();
+  if (!reason) return '';
+  if (reason.includes('redund')) return 'comentario_redundante';
+  if (reason.includes('vago')) return 'texto_demasiado_vago';
+  if (reason.includes('riqueza') || reason.includes('semantic') || reason.includes('semantica')) return 'baja_riqueza_semantica';
+  if (reason.includes('codigo') || reason.includes('match') || reason.includes('encaje')) return 'sin_codigo_razonable';
+  return '';
+};
 
 function normalizeLookupKey(value = '') {
   return String(value || '')
@@ -7118,6 +7209,75 @@ const server = http.createServer(async (req, res) => {
     }
 
 
+    if (url.pathname === '/api/comment-base/code-map-analysis-chat' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body?.project_id || '').trim();
+      const campaignId = String(body?.campaign_id || '').trim();
+      const question = String(body?.question || '').trim();
+      const session = body?.analysis_session && typeof body.analysis_session === 'object' ? body.analysis_session : null;
+
+      if (!projectId || !campaignId || !question || !session) {
+        return sendJson(req, res, 400, { error: 'project_id, campaign_id, question y analysis_session son requeridos.' });
+      }
+
+      const [campaignRows] = await pool.query(
+        'SELECT id, project_id FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+        [campaignId, projectId, user.id],
+      );
+      const campaign = campaignRows[0] || null;
+      if (!campaign) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, { error: 'Debes configurar la integración de IA para usar el chat analítico por código.' });
+      }
+
+      const relevantEvidence = selectRelevantFragmentsForCodeMapChat({
+        fragments: Array.isArray(session?.fragments_snapshot) ? session.fragments_snapshot : [],
+        question,
+        limit: 8,
+      });
+
+      try {
+        const prompt = buildCodeMapAnalysisChatPrompt({ session, question, relevantEvidence });
+        const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: prompt },
+        ], { maxRetries: 3, baseDelayMs: 900 });
+
+        const parsed = extractJsonObjectFromText(completion.content) || {};
+        const normalizedCitations = (Array.isArray(parsed?.citations) ? parsed.citations : [])
+          .slice(0, 8)
+          .map((item) => ({
+            fragment_id: String(item?.fragment_id || '').trim(),
+            excerpt: compactAnalysisText(item?.excerpt || '', 220),
+            code_slug: String(item?.code_slug || '').trim() || String(session?.code_slug || '').trim(),
+          }))
+          .filter((item) => item.fragment_id && item.excerpt);
+
+        return sendJson(req, res, 200, {
+          data: {
+            answer: compactAnalysisText(parsed?.answer || '', 5000),
+            memory_summary: compactAnalysisText(parsed?.memory_summary || session?.memory_summary || '', 900),
+            citations: normalizedCitations,
+            meta: {
+              provider: integration.provider,
+              model: integration.model,
+              evidence_used: relevantEvidence.length,
+            },
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo generar respuesta del chat analítico del código.',
+        });
+      }
+    }
+
+
     if (url.pathname === '/api/comment-base/code-proposal-reviews' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
@@ -9664,12 +9824,3 @@ runMigrations()
     console.error('Failed to initialize backend:', error);
     process.exit(1);
   });
-  const normalizeRejectReason = (value) => {
-    const reason = String(value || '').trim().toLowerCase();
-    if (!reason) return '';
-    if (reason.includes('redund')) return 'comentario_redundante';
-    if (reason.includes('vago')) return 'texto_demasiado_vago';
-    if (reason.includes('riqueza') || reason.includes('semantic') || reason.includes('semantica')) return 'baja_riqueza_semantica';
-    if (reason.includes('codigo') || reason.includes('match') || reason.includes('encaje')) return 'sin_codigo_razonable';
-    return '';
-  };

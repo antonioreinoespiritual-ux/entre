@@ -170,10 +170,13 @@ const CommentsModePage = () => {
   const [codeMapAiModal, setCodeMapAiModal] = useState({
     open: false,
     loading: false,
+    sending: false,
     error: '',
     codeSlug: '',
     result: null,
+    sessionId: '',
   });
+  const [codeMapAiInput, setCodeMapAiInput] = useState('');
   const codeMapCanvasRef = useRef(null);
   const codeMapLayoutRef = useRef({});
   const [codeEditor, setCodeEditor] = useState({
@@ -207,9 +210,12 @@ const CommentsModePage = () => {
         codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
           ? parsed.codeMapLayoutsByHypothesis
           : {},
+        codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
+          ? parsed.codeMapAnalysisSessions
+          : {},
       };
     } catch {
-      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {} };
+      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {}, codeMapAnalysisSessions: {} };
     }
   });
 
@@ -245,6 +251,9 @@ const CommentsModePage = () => {
           codeMapLayoutsByHypothesis: indexedState.codeMapLayoutsByHypothesis && typeof indexedState.codeMapLayoutsByHypothesis === 'object'
             ? indexedState.codeMapLayoutsByHypothesis
             : {},
+          codeMapAnalysisSessions: indexedState.codeMapAnalysisSessions && typeof indexedState.codeMapAnalysisSessions === 'object'
+            ? indexedState.codeMapAnalysisSessions
+            : {},
         });
       } catch {
         // Si no se puede leer IndexedDB, se mantiene fallback de localStorage.
@@ -262,6 +271,9 @@ const CommentsModePage = () => {
   const hypotheses = store.hypotheses || [];
   const codeMapLayoutsByHypothesis = store.codeMapLayoutsByHypothesis && typeof store.codeMapLayoutsByHypothesis === 'object'
     ? store.codeMapLayoutsByHypothesis
+    : {};
+  const codeMapAnalysisSessions = store.codeMapAnalysisSessions && typeof store.codeMapAnalysisSessions === 'object'
+    ? store.codeMapAnalysisSessions
     : {};
   const readerComments = commentsTable.items || [];
 
@@ -1301,6 +1313,60 @@ const CommentsModePage = () => {
     })), [codeMapVisibleCodes, codeMapVisibleSlugSet]);
 
 
+
+  const buildCodeMapAnalysisSession = ({ slug, code, linkedFragments, relatedCodes, analysis }) => {
+    const now = new Date().toISOString();
+    const sessionId = `code_map_analysis_${slug}`;
+    return {
+      analysis_session_id: sessionId,
+      code_slug: slug,
+      code_name: String(code?.name || '').trim(),
+      code_description: String(code?.description || '').trim(),
+      fragments_snapshot: linkedFragments,
+      related_codes_snapshot: relatedCodes,
+      initial_report: analysis,
+      agent_outputs: {
+        dolores: analysis?.dolores || { analysis: '', citations: [] },
+        deseos: analysis?.deseos || { analysis: '', citations: [] },
+        placeres: analysis?.placeres || { analysis: '', citations: [] },
+        problemas: analysis?.problemas || { analysis: '', citations: [] },
+        soluciones: analysis?.soluciones || { analysis: '', citations: [] },
+        refinador: {
+          summary_absolute: String(analysis?.summary_absolute || '').trim(),
+        },
+        optimizador_final: analysis?.sintesis_final || { analysis: '', citations: [] },
+      },
+      conversation_history: [
+        {
+          id: `assistant_initial_${Date.now()}`,
+          role: 'assistant',
+          content: String(analysis?.summary_absolute || '').trim() || 'Informe inicial generado.',
+          created_at: now,
+          type: 'initial_report',
+        },
+      ],
+      memory_summary: String(analysis?.summary_absolute || '').trim().slice(0, 900),
+      created_at: now,
+      updated_at: now,
+      version: 1,
+    };
+  };
+
+  const saveCodeMapAnalysisSession = (session) => {
+    const slug = String(session?.code_slug || '').trim();
+    if (!slug) return;
+    persist({
+      ...store,
+      codeMapAnalysisSessions: {
+        ...codeMapAnalysisSessions,
+        [slug]: {
+          ...session,
+          updated_at: new Date().toISOString(),
+        },
+      },
+    });
+  };
+
   const openCodeMapAiAnalysis = async (codeSlug) => {
     const slug = String(codeSlug || '').trim();
     if (!slug) return;
@@ -1321,9 +1387,11 @@ const CommentsModePage = () => {
       setCodeMapAiModal({
         open: true,
         loading: false,
+        sending: false,
         error: 'Este código no tiene fragmentos vinculados con evidencia suficiente para analizar.',
         codeSlug: slug,
         result: null,
+        sessionId: '',
       });
       return;
     }
@@ -1348,7 +1416,21 @@ const CommentsModePage = () => {
       }))
       .filter((item) => item.slug && item.name);
 
-    setCodeMapAiModal({ open: true, loading: true, error: '', codeSlug: slug, result: null });
+    const existingSession = codeMapAnalysisSessions[slug];
+    if (existingSession?.initial_report) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        codeSlug: slug,
+        result: existingSession.initial_report,
+        sessionId: String(existingSession.analysis_session_id || ''),
+      });
+      return;
+    }
+
+    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', codeSlug: slug, result: null, sessionId: '' });
 
     try {
       const analysis = await commentsIngestionApi.runCodeMapAnalysisAgent({
@@ -1362,20 +1444,88 @@ const CommentsModePage = () => {
         fragments: linkedFragments,
         related_codes: relatedCodes,
       });
-      setCodeMapAiModal({ open: true, loading: false, error: '', codeSlug: slug, result: analysis });
+
+      const nextSession = buildCodeMapAnalysisSession({ slug, code, linkedFragments, relatedCodes, analysis });
+      saveCodeMapAnalysisSession(nextSession);
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        codeSlug: slug,
+        result: analysis,
+        sessionId: String(nextSession.analysis_session_id || ''),
+      });
     } catch (error) {
       setCodeMapAiModal({
         open: true,
         loading: false,
+        sending: false,
         error: error?.message || 'No se pudo generar el análisis IA del código.',
         codeSlug: slug,
         result: null,
+        sessionId: '',
       });
     }
   };
 
+  const sendCodeMapAiMessage = async () => {
+    const slug = String(codeMapAiModal.codeSlug || '').trim();
+    const question = String(codeMapAiInput || '').trim();
+    if (!slug || !question || codeMapAiModal.sending) return;
+    const session = codeMapAnalysisSessions[slug];
+    if (!session?.initial_report) return;
+
+    const userMessage = {
+      id: `user_${Date.now()}`,
+      role: 'user',
+      content: question,
+      created_at: new Date().toISOString(),
+      type: 'question',
+    };
+
+    const nextHistory = [...(Array.isArray(session.conversation_history) ? session.conversation_history : []), userMessage];
+    const draftSession = {
+      ...session,
+      conversation_history: nextHistory,
+      updated_at: new Date().toISOString(),
+    };
+    saveCodeMapAnalysisSession(draftSession);
+    setCodeMapAiInput('');
+    setCodeMapAiModal((prev) => ({ ...prev, sending: true, error: '' }));
+
+    try {
+      const response = await commentsIngestionApi.runCodeMapAnalysisChatTurn({
+        project_id: projectId,
+        campaign_id: campaignId,
+        question,
+        analysis_session: draftSession,
+      });
+      const assistantMessage = {
+        id: `assistant_${Date.now()}`,
+        role: 'assistant',
+        content: String(response?.answer || '').trim() || 'No tengo suficiente evidencia para responder con precisión.',
+        created_at: new Date().toISOString(),
+        type: 'answer',
+        citations: Array.isArray(response?.citations) ? response.citations : [],
+      };
+
+      const persisted = {
+        ...draftSession,
+        memory_summary: String(response?.memory_summary || draftSession.memory_summary || '').trim(),
+        conversation_history: [...nextHistory, assistantMessage],
+        updated_at: new Date().toISOString(),
+      };
+      saveCodeMapAnalysisSession(persisted);
+      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: '' }));
+    } catch (error) {
+      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: error?.message || 'No se pudo responder en el chat de este código.' }));
+    }
+  };
+
   const closeCodeMapAiModal = () => {
-    setCodeMapAiModal({ open: false, loading: false, error: '', codeSlug: '', result: null });
+    setCodeMapAiInput('');
+    setCodeMapAiModal({ open: false, loading: false, sending: false, error: '', codeSlug: '', result: null, sessionId: '' });
   };
 
   const handleCodeMapNodeMouseDown = (event, slug) => {
@@ -3712,58 +3862,76 @@ const CommentsModePage = () => {
 
               {codeMapAiModal.open ? (
                 <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 p-4">
-                  <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                  <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
                     <div className="flex items-start justify-between gap-3 border-b bg-gradient-to-r from-slate-900 to-indigo-900 px-5 py-4 text-white">
                       <div>
-                        <p className="text-[11px] uppercase tracking-[0.2em] text-indigo-200">Análisis IA por código</p>
+                        <p className="text-[11px] uppercase tracking-[0.2em] text-indigo-200">Chat analítico por código</p>
                         <h3 className="text-lg font-semibold">{codes.find((item) => String(item.slug) === String(codeMapAiModal.codeSlug || ''))?.name || codeMapAiModal.codeSlug}</h3>
-                        <p className="text-xs text-indigo-100">Ficha analítica multiagente basada en evidencia de fragmentos reales.</p>
+                        <p className="text-xs text-indigo-100">Memoria persistente: informe base + agentes + conversación especializada del código.</p>
                       </div>
                       <Button className="border border-white/40 bg-white/10 text-white hover:bg-white/20" onClick={closeCodeMapAiModal}>Cerrar</Button>
                     </div>
-                    <div className="overflow-y-auto px-5 py-4">
-                      {codeMapAiModal.loading ? (
-                        <div className="rounded-xl border border-indigo-200 bg-indigo-50 p-4">
-                          <p className="text-sm font-medium text-indigo-900">Generando análisis multiagente…</p>
-                          <p className="mt-1 text-xs text-indigo-700">Dolores → Deseos → Placeres → Problemas → Soluciones → Refinador → Optimizador final.</p>
-                        </div>
-                      ) : null}
-                      {codeMapAiModal.error ? (
-                        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">{codeMapAiModal.error}</div>
-                      ) : null}
-
-                      {codeMapAiModal.result && !codeMapAiModal.loading ? (
-                        <div className="space-y-4">
-                          <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Resumen absoluto</p>
-                            <p className="mt-2 text-sm text-slate-800">{codeMapAiModal.result.summary_absolute || 'Sin resumen disponible.'}</p>
-                          </section>
+                    <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[340px_minmax(0,1fr)]">
+                      <aside className="overflow-y-auto border-r bg-slate-50 p-4">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Informe base (bandera principal)</p>
+                        <p className="mt-2 text-sm text-slate-700">{codeMapAiModal.result?.summary_absolute || 'Sin informe inicial todavía.'}</p>
+                        <div className="mt-3 space-y-2">
                           {[
-                            ['Dolores', codeMapAiModal.result.dolores],
-                            ['Deseos', codeMapAiModal.result.deseos],
-                            ['Placeres', codeMapAiModal.result.placeres],
-                            ['Problemas', codeMapAiModal.result.problemas],
-                            ['Soluciones', codeMapAiModal.result.soluciones],
-                            ['Síntesis final', codeMapAiModal.result.sintesis_final],
+                            ['Dolores', codeMapAiModal.result?.dolores],
+                            ['Deseos', codeMapAiModal.result?.deseos],
+                            ['Placeres', codeMapAiModal.result?.placeres],
+                            ['Problemas', codeMapAiModal.result?.problemas],
+                            ['Soluciones', codeMapAiModal.result?.soluciones],
                           ].map(([title, section]) => (
-                            <section key={title} className="rounded-xl border border-slate-200 bg-white p-4">
-                              <h4 className="text-sm font-semibold text-slate-900">{title}</h4>
-                              <p className="mt-2 text-sm text-slate-700">{section?.analysis || 'Sin contenido.'}</p>
-                              {Array.isArray(section?.citations) && section.citations.length ? (
-                                <div className="mt-3 space-y-1">
-                                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Citas de evidencia</p>
-                                  {section.citations.map((citation, idx) => (
-                                    <div key={`${title}_${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs text-slate-600">
-                                      <span className="font-medium text-slate-700">[{citation.fragment_id || 'fragmento'}]</span> {citation.excerpt || 'Sin extracto'}
-                                      {citation.code_slug ? <span className="ml-1 text-indigo-600">· código: {citation.code_slug}</span> : null}
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : null}
-                            </section>
+                            <div key={title} className="rounded-lg border border-slate-200 bg-white p-2.5">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">{title}</p>
+                              <p className="mt-1 line-clamp-3 text-xs text-slate-700">{section?.analysis || 'Sin sección.'}</p>
+                            </div>
                           ))}
                         </div>
-                      ) : null}
+                        {codeMapAiModal.loading ? (
+                          <div className="mt-3 rounded-xl border border-indigo-200 bg-indigo-50 p-3">
+                            <p className="text-sm font-medium text-indigo-900">Generando memoria base multiagente…</p>
+                            <p className="mt-1 text-xs text-indigo-700">Dolores → Deseos → Placeres → Problemas → Soluciones → Refinador → Optimizador final.</p>
+                          </div>
+                        ) : null}
+                      </aside>
+
+                      <div className="flex min-h-0 flex-col">
+                        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto bg-white px-5 py-4">
+                          {codeMapAiModal.error ? (
+                            <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{codeMapAiModal.error}</div>
+                          ) : null}
+                          {(codeMapAnalysisSessions[codeMapAiModal.codeSlug]?.conversation_history || []).map((message) => (
+                            <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                              <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${message.role === 'user' ? 'bg-indigo-600 text-white' : 'border border-slate-200 bg-slate-50 text-slate-800'}`}>
+                                <p className="whitespace-pre-wrap">{message.content}</p>
+                                {Array.isArray(message.citations) && message.citations.length ? (
+                                  <div className="mt-2 space-y-1 border-t border-slate-200 pt-2 text-xs text-slate-600">
+                                    {message.citations.map((citation, idx) => (
+                                      <p key={`${message.id}_cite_${idx}`}>[{citation.fragment_id || 'fragmento'}] {citation.excerpt || 'Sin extracto'}</p>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          ))}
+                          {codeMapAiModal.sending ? <p className="text-xs text-slate-500">Analizando con memoria del código…</p> : null}
+                        </div>
+                        <div className="border-t bg-white px-5 py-3">
+                          <div className="flex items-end gap-2">
+                            <textarea
+                              className="h-20 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
+                              placeholder="Pregunta sobre este código. El chat mantiene memoria del informe base y evidencia del código."
+                              value={codeMapAiInput}
+                              onChange={(event) => setCodeMapAiInput(event.target.value)}
+                            />
+                            <Button className="bg-indigo-600 text-white" onClick={sendCodeMapAiMessage} disabled={codeMapAiModal.loading || codeMapAiModal.sending || !String(codeMapAiInput || '').trim()}>
+                              {codeMapAiModal.sending ? 'Enviando…' : 'Enviar'}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>
