@@ -2112,6 +2112,27 @@ async function ensureVideoHierarchyMigration() {
     }
   }
 
+  if (await tableExists('comment_dataset_comments')) {
+    try {
+      await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_comment_dataset_comments_scope_source
+        ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)`);
+    } catch (error) {
+      const message = String(error?.message || '').toLowerCase();
+      if (message.includes('unique') || message.includes('constraint')) {
+        await pool.query(`DELETE FROM comment_dataset_comments
+          WHERE rowid NOT IN (
+            SELECT MAX(rowid)
+            FROM comment_dataset_comments
+            GROUP BY user_id, project_id, campaign_id, workspace_id, source, source_comment_id
+          )`);
+        await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_comment_dataset_comments_scope_source
+          ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)`);
+      } else {
+        throw error;
+      }
+    }
+  }
+
   if (!(await hasColumn('videos', 'audience_id'))) {
     await pool.query('ALTER TABLE videos ADD COLUMN audience_id TEXT');
   }
