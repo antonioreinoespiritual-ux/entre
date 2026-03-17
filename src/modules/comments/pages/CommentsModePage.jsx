@@ -2246,8 +2246,8 @@ const CommentsModePage = () => {
   const saveFragmentEditor = async () => {
     const title = String(fragmentEditor.title || '').trim();
     const excerpt = String(fragmentEditor.excerpt || '').trim();
-    const linkedCode = COMMENT_CODE_EVOLUTION_DISABLED ? '' : String(fragmentEditor.linkedCode || '').trim();
-    const codeSlugs = linkedCode ? [linkedCode] : [];
+    const linkedCode = String(fragmentEditor.linkedCode || '').trim();
+    const codeSlugs = linkedCode && codes.some((code) => String(code.slug) === linkedCode) ? [linkedCode] : [];
 
     if (!excerpt) return;
 
@@ -2260,8 +2260,13 @@ const CommentsModePage = () => {
         source_type: 'manual',
         created_at: new Date().toISOString(),
       };
-      const [enrichedFragment] = await enrichFragmentsForIaSelection([nextFragment]);
-      const fragmentToStore = enrichedFragment || nextFragment;
+      let fragmentToStore = nextFragment;
+      try {
+        const [enrichedFragment] = await enrichFragmentsForIaSelection([nextFragment]);
+        fragmentToStore = enrichedFragment || nextFragment;
+      } catch {
+        fragmentToStore = nextFragment;
+      }
       persist({ ...store, fragments: [fragmentToStore, ...fragments] });
       setSelectedFragmentId(String(nextFragment.id));
       closeFragmentEditor();
