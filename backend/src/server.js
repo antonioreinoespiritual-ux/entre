@@ -4451,14 +4451,14 @@ function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes
   return `Tarea: crear taxonomía conceptual jerárquica desde comentarios completos.
 No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
 Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
-Naming: 2-5 palabras, conceptual, claro, reutilizable, no literal, sin números secuenciales.
+Naming: 3-7 palabras, conceptual, claro, completo y reutilizable; no literal ni telegráfico, sin números secuenciales.
 Prohibido en títulos: código, cluster, conceptual, tema, grupo, placeholders o prefijos vacíos. También prohibido: genérico, generic, patrón 1/2/3, código 1/2/3.
 El título debe comprimir la narrativa dominante (problema/emoción/conducta), no reciclar keywords sueltas.
 Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
 Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
 Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
 Regla: los subclusters deben ser conceptuales y no redundantes.
-Cada description debe ser específica y útil (mínimo 40 caracteres) explicando señal semántica, emoción o conducta dominante.
+Cada description debe ser concisa pero profunda (50-220 caracteres), explicando con precisión: señal semántica central, emoción/conducta dominante y contexto típico en el corpus.
 Formato de salida: JSON válido, sin texto adicional.
 {
   "proposals": [
@@ -4501,7 +4501,7 @@ function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, ma
   return `Consolida esta lista de candidatos en taxonomía final sin trazabilidad.
 Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, maximizando cobertura semántica y deteniéndose por saturación.
 Fusiona redundancias, descarta ruido y conserva solo nombres conceptuales reutilizables.
-Regla de naming: títulos de 2-5 palabras, sin números secuenciales ni términos genéricos (código/cluster/conceptual/tema/grupo/generic/generico).
+Regla de naming: títulos de 3-7 palabras, claros, completos y descriptivos; sin números secuenciales ni términos genéricos (código/cluster/conceptual/tema/grupo/generic/generico).
 Incluye subcódigos útiles y marca recommendation.
 Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
 
@@ -4532,7 +4532,7 @@ function buildCodeGenerationExpansionPrompt({ comments = [], existing = [], minA
 Objetivo: generar códigos adicionales no redundantes y de alta utilidad analítica.
 Debes proponer entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS.
 Prohibido repetir o parafrasear códigos existentes.
-Naming obligatorio: título claro, conciso y descriptivo (2-6 palabras), sin números ni placeholders.
+Naming obligatorio: título claro, completo, conciso y descriptivo (3-7 palabras), sin números ni placeholders.
 Descripción obligatoria: profunda y específica, derivada del corpus completo, explicando señal semántica, emoción/conducta dominante y alcance del patrón.
 No uses reglas heurísticas externas ni clustering auxiliar: solo análisis LLM del contenido.
 Salida: JSON válido con forma {"proposals":[...]} usando campos del flujo principal.
@@ -4639,7 +4639,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     if (/\b\d+\b/.test(normalized)) return true;
     if (/(^|\s)(generic|generico|placeholder)(\s|$)/.test(normalized)) return true;
     const tokens = normalized.split(/\s+/).filter(Boolean);
-    if (tokens.length < 2 || tokens.length > 5) return true;
+    if (tokens.length < 3 || tokens.length > 7) return true;
     const useful = tokens.filter((token) => !bannedTitleTokens.has(token));
     return useful.length < 2;
   };
@@ -4727,11 +4727,28 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       || /cluster\s*\d+/i.test(rawLower)
       || rawLower === nameLower;
 
-    if (looksPlaceholder || raw.length < 30) {
-      return `Agrupa comentarios que expresan ${nameLower || 'una dinámica emocional recurrente'} como patrón semántico dominante y recurrente en el corpus analizado.`;
+    const minLen = 50;
+    const maxLen = 220;
+
+    const buildAlignedDescription = () => {
+      const safeName = nameLower || 'un patrón semántico dominante';
+      return `Código "${name}": patrón semántico recurrente del corpus que expresa ${safeName}, mostrando una emoción/conducta dominante en contextos repetidos y con significado analítico estable.`;
+    };
+
+    let candidate = raw;
+    if (looksPlaceholder || raw.length < minLen) {
+      candidate = buildAlignedDescription();
     }
 
-    return raw;
+    if (candidate.length > maxLen) {
+      candidate = `${candidate.slice(0, maxLen - 1).trimEnd()}.`;
+    }
+
+    if (name && !String(candidate || "").toLowerCase().includes(String(nameLower))) {
+      candidate = `Código "${name}": ${candidate.charAt(0).toLowerCase()}${candidate.slice(1)}`;
+    }
+
+    return candidate;
   };
 
   const inferNameRationale = (name, description) => {
