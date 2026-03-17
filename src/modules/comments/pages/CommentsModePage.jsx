@@ -86,8 +86,9 @@ const buildCodeMapScopeKey = (value = '') => {
   return selected.join('__');
 };
 
-const buildCodeMapInitialAssistantReport = (analysis = {}, code = {}) => {
-  const codeName = String(code?.name || '').trim() || 'Código analítico';
+const buildCodeMapInitialAssistantReport = (analysis = {}, subject = {}, targetType = 'code') => {
+  const subjectName = String(subject?.name || '').trim() || (targetType === 'profile' ? 'Perfil estratégico' : 'Código analítico');
+  const subjectLabel = targetType === 'profile' ? 'PERFIL' : 'CÓDIGO';
   const summary = String(analysis?.summary_absolute || '').trim();
   const sintesisFinal = String(analysis?.sintesis_final?.analysis || '').trim();
   const sections = [
@@ -107,7 +108,7 @@ const buildCodeMapInitialAssistantReport = (analysis = {}, code = {}) => {
     .join('\n\n');
 
   return [
-    `INFORME ABSOLUTO DE INVESTIGACIÓN DEL CÓDIGO: ${codeName}`,
+    `INFORME ABSOLUTO DE INVESTIGACIÓN DEL ${subjectLabel}: ${subjectName}`,
     '',
     'Este es el informe fundacional del chat analítico por código. Se construye a partir de evidencia real y funciona como punto de partida para toda la conversación especializada.',
     '',
@@ -230,7 +231,9 @@ const CommentsModePage = () => {
     loading: false,
     sending: false,
     error: '',
-    codeSlug: '',
+    targetType: 'code',
+    targetId: '',
+    title: '',
     result: null,
     sessionId: '',
   });
@@ -1482,6 +1485,9 @@ const CommentsModePage = () => {
 
 
 
+
+  const buildCodeMapAnalysisSessionKey = (targetType, targetId) => `${String(targetType || 'code').trim()}:${String(targetId || '').trim()}`;
+
   const codeMapRenderableNodesById = useMemo(() => {
     const rows = [
       ...visibleCodeMapNodes.map((node) => ({ id: String(node.slug), x: Number(node.x) || 0, y: Number(node.y) || 0 })),
@@ -1490,14 +1496,21 @@ const CommentsModePage = () => {
     return new Map(rows.map((item) => [item.id, item]));
   }, [visibleCodeMapNodes, codeMapProfileNodes]);
 
-  const buildCodeMapAnalysisSession = ({ slug, code, linkedFragments, relatedCodes, analysis }) => {
+  const buildCodeMapAnalysisSession = ({ targetType = 'code', targetId = '', subject = {}, linkedFragments, relatedCodes, analysis }) => {
     const now = new Date().toISOString();
-    const sessionId = `code_map_analysis_${slug}`;
+    const normalizedType = String(targetType || 'code').trim() === 'profile' ? 'profile' : 'code';
+    const normalizedId = String(targetId || '').trim();
+    const sessionId = `code_map_analysis_${normalizedType}_${normalizedId}`;
     return {
       analysis_session_id: sessionId,
-      code_slug: slug,
-      code_name: String(code?.name || '').trim(),
-      code_description: String(code?.description || '').trim(),
+      target_type: normalizedType,
+      target_id: normalizedId,
+      code_slug: normalizedType === 'code' ? normalizedId : '',
+      code_name: normalizedType === 'code' ? String(subject?.name || '').trim() : '',
+      code_description: normalizedType === 'code' ? String(subject?.description || '').trim() : '',
+      profile_id: normalizedType === 'profile' ? normalizedId : '',
+      profile_name: normalizedType === 'profile' ? String(subject?.name || '').trim() : '',
+      profile_description: normalizedType === 'profile' ? String(subject?.description || '').trim() : '',
       fragments_snapshot: linkedFragments,
       related_codes_snapshot: relatedCodes,
       initial_report: analysis,
@@ -1516,7 +1529,7 @@ const CommentsModePage = () => {
         {
           id: `assistant_initial_${Date.now()}`,
           role: 'assistant',
-          content: buildCodeMapInitialAssistantReport(analysis, code),
+          content: buildCodeMapInitialAssistantReport(analysis, subject, normalizedType),
           created_at: now,
           type: 'initial_report',
         },
@@ -1529,14 +1542,18 @@ const CommentsModePage = () => {
   };
 
   const saveCodeMapAnalysisSession = (session) => {
-    const slug = String(session?.code_slug || '').trim();
-    if (!slug) return;
+    const targetType = String(session?.target_type || (session?.profile_id ? 'profile' : 'code')).trim();
+    const targetId = String(session?.target_id || (targetType === 'profile' ? session?.profile_id : session?.code_slug) || '').trim();
+    if (!targetId) return;
+    const key = buildCodeMapAnalysisSessionKey(targetType, targetId);
     persist({
       ...store,
       codeMapAnalysisSessions: {
         ...codeMapAnalysisSessions,
-        [slug]: {
+        [key]: {
           ...session,
+          target_type: targetType,
+          target_id: targetId,
           updated_at: new Date().toISOString(),
         },
       },
@@ -1566,7 +1583,9 @@ const CommentsModePage = () => {
         loading: false,
         sending: false,
         error: 'Este código no tiene fragmentos vinculados con evidencia suficiente para analizar.',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: null,
         sessionId: '',
       });
@@ -1593,21 +1612,24 @@ const CommentsModePage = () => {
       }))
       .filter((item) => item.slug && item.name);
 
-    const existingSession = codeMapAnalysisSessions[slug];
+    const sessionKey = buildCodeMapAnalysisSessionKey('code', slug);
+    const existingSession = codeMapAnalysisSessions[sessionKey] || codeMapAnalysisSessions[slug];
     if (!forceRefresh && existingSession?.initial_report) {
       setCodeMapAiModal({
         open: true,
         loading: false,
         sending: false,
         error: '',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: existingSession.initial_report,
         sessionId: String(existingSession.analysis_session_id || ''),
       });
       return;
     }
 
-    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', codeSlug: slug, result: null, sessionId: '' });
+    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', targetType: 'code', targetId: slug, title: String(code.name || slug), result: null, sessionId: '' });
 
     try {
       const analysis = await commentsIngestionApi.runCodeMapAnalysisAgent({
@@ -1622,14 +1644,16 @@ const CommentsModePage = () => {
         related_codes: relatedCodes,
       });
 
-      const nextSession = buildCodeMapAnalysisSession({ slug, code, linkedFragments, relatedCodes, analysis });
+      const nextSession = buildCodeMapAnalysisSession({ targetType: 'code', targetId: slug, subject: code, linkedFragments, relatedCodes, analysis });
       saveCodeMapAnalysisSession(nextSession);
       setCodeMapAiModal({
         open: true,
         loading: false,
         sending: false,
         error: '',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: analysis,
         sessionId: String(nextSession.analysis_session_id || ''),
       });
@@ -1639,34 +1663,166 @@ const CommentsModePage = () => {
         loading: false,
         sending: false,
         error: error?.message || 'No se pudo generar el análisis IA del código.',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: null,
         sessionId: '',
       });
     }
   };
 
+  const openProfileMapAiAnalysis = async (profileId, options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
+    const normalizedProfileId = String(profileId || '').trim();
+    if (!normalizedProfileId) return;
+    const profile = codeMapProfileNodes.find((item) => String(item.id) === normalizedProfileId);
+    if (!profile) return;
+
+    const profileCodeSlugs = Object.entries(codeMapProfileAssignments)
+      .filter(([, pid]) => String(pid || '') === normalizedProfileId)
+      .map(([codeSlug]) => String(codeSlug || '').trim())
+      .filter(Boolean);
+
+    if (!profileCodeSlugs.length) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: 'Este perfil no tiene códigos vinculados para analizar.',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: null,
+        sessionId: '',
+      });
+      return;
+    }
+
+    const profileCodes = codes.filter((item) => profileCodeSlugs.includes(String(item.slug || '')));
+    const linkedFragments = fragments
+      .filter((fragment) => {
+        const slugs = Array.isArray(fragment.code_slugs) ? fragment.code_slugs.map((s) => String(s || '')) : [];
+        return slugs.some((slug) => profileCodeSlugs.includes(slug));
+      })
+      .slice(0, 240)
+      .map((fragment, index) => ({
+        fragment_id: String(fragment.id || `fragment_${index + 1}`),
+        excerpt: String(fragment.excerpt || fragment.selected_text || '').trim(),
+        source_comment_id: String(fragment.source_comment_id || fragment.comment_id || '').trim(),
+        code_slugs: Array.isArray(fragment.code_slugs) ? fragment.code_slugs.map((slug) => String(slug || '').trim()).filter((slug) => profileCodeSlugs.includes(slug)) : [],
+      }))
+      .filter((fragment) => fragment.excerpt && Array.isArray(fragment.code_slugs) && fragment.code_slugs.length);
+
+    if (!linkedFragments.length) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: 'Este perfil no tiene fragmentos asociados en sus códigos vinculados.',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: null,
+        sessionId: '',
+      });
+      return;
+    }
+
+    const relatedCodes = profileCodes.map((item) => ({
+      slug: String(item.slug || '').trim(),
+      name: String(item.name || '').trim(),
+      description: String(item.description || '').trim(),
+      parent_slug: String(item.parent_slug || '').trim(),
+      relation: String(item.parent_slug || '').trim() ? (profileCodeSlugs.includes(String(item.parent_slug || '').trim()) ? 'hierarchy_child_in_profile' : 'hierarchy_child') : 'profile_member',
+    })).filter((item) => item.slug && item.name);
+
+    const sessionKey = buildCodeMapAnalysisSessionKey('profile', normalizedProfileId);
+    const existingSession = codeMapAnalysisSessions[sessionKey];
+    if (!forceRefresh && existingSession?.initial_report) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: existingSession.initial_report,
+        sessionId: String(existingSession.analysis_session_id || ''),
+      });
+      return;
+    }
+
+    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', targetType: 'profile', targetId: normalizedProfileId, title: String(profile.name || 'Perfil estratégico'), result: null, sessionId: '' });
+
+    try {
+      const analysis = await commentsIngestionApi.runProfileCodeMapAnalysisAgent({
+        project_id: projectId,
+        campaign_id: campaignId,
+        profile: {
+          id: normalizedProfileId,
+          name: String(profile.name || 'Perfil estratégico').trim(),
+          description: String(profile.description || '').trim(),
+        },
+        codes: relatedCodes,
+        fragments: linkedFragments,
+      });
+
+      const nextSession = buildCodeMapAnalysisSession({ targetType: 'profile', targetId: normalizedProfileId, subject: profile, linkedFragments, relatedCodes, analysis });
+      saveCodeMapAnalysisSession(nextSession);
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: analysis,
+        sessionId: String(nextSession.analysis_session_id || ''),
+      });
+    } catch (error) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: error?.message || 'No se pudo generar el análisis IA del perfil.',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: null,
+        sessionId: '',
+      });
+    }
+  };
 
   const refreshCodeMapAiChat = async () => {
-    const slug = String(codeMapAiModal.codeSlug || '').trim();
-    if (!slug || codeMapAiModal.loading || codeMapAiModal.sending) return;
+    const targetType = String(codeMapAiModal.targetType || 'code').trim();
+    const targetId = String(codeMapAiModal.targetId || '').trim();
+    if (!targetId || codeMapAiModal.loading || codeMapAiModal.sending) return;
 
     const nextSessions = { ...codeMapAnalysisSessions };
-    delete nextSessions[slug];
+    delete nextSessions[buildCodeMapAnalysisSessionKey(targetType, targetId)];
     persist({
       ...store,
       codeMapAnalysisSessions: nextSessions,
     });
 
     setCodeMapAiInput('');
-    await openCodeMapAiAnalysis(slug, { forceRefresh: true });
+    if (targetType === 'profile') {
+      await openProfileMapAiAnalysis(targetId, { forceRefresh: true });
+      return;
+    }
+    await openCodeMapAiAnalysis(targetId, { forceRefresh: true });
   };
 
   const sendCodeMapAiMessage = async () => {
-    const slug = String(codeMapAiModal.codeSlug || '').trim();
+    const targetType = String(codeMapAiModal.targetType || 'code').trim();
+    const targetId = String(codeMapAiModal.targetId || '').trim();
     const question = String(codeMapAiInput || '').trim();
-    if (!slug || !question || codeMapAiModal.sending) return;
-    const session = codeMapAnalysisSessions[slug];
+    if (!targetId || !question || codeMapAiModal.sending) return;
+    const session = codeMapAnalysisSessions[buildCodeMapAnalysisSessionKey(targetType, targetId)] || codeMapAnalysisSessions[targetId];
     if (!session?.initial_report) return;
 
     const userMessage = {
@@ -1680,6 +1836,8 @@ const CommentsModePage = () => {
     const nextHistory = [...(Array.isArray(session.conversation_history) ? session.conversation_history : []), userMessage];
     const draftSession = {
       ...session,
+      target_type: targetType,
+      target_id: targetId,
       conversation_history: nextHistory,
       updated_at: new Date().toISOString(),
     };
@@ -1712,13 +1870,13 @@ const CommentsModePage = () => {
       saveCodeMapAnalysisSession(persisted);
       setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: '' }));
     } catch (error) {
-      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: error?.message || 'No se pudo responder en el chat de este código.' }));
+      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: error?.message || 'No se pudo responder en el chat de este análisis.' }));
     }
   };
 
   const closeCodeMapAiModal = () => {
     setCodeMapAiInput('');
-    setCodeMapAiModal({ open: false, loading: false, sending: false, error: '', codeSlug: '', result: null, sessionId: '' });
+    setCodeMapAiModal({ open: false, loading: false, sending: false, error: '', targetType: 'code', targetId: '', title: '', result: null, sessionId: '' });
   };
 
   const createCodeMapProfile = () => {
@@ -4175,6 +4333,14 @@ const CommentsModePage = () => {
                             toggleCodeMapProfileCollapsed(codeMapProfileContextMenu.profileId);
                             setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
                           }}>{codeMapProfileCollapsed[String(codeMapProfileContextMenu.profileId)] ? 'Expandir códigos' : 'Colapsar códigos'}</button>
+                          <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            const targetProfileId = codeMapProfileContextMenu.profileId;
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                            openProfileMapAiAnalysis(targetProfileId);
+                          }}>
+                            <BrainCircuit size={14} />
+                            Análisis IA
+                          </button>
                           <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => {
                             removeCodeMapProfile(codeMapProfileContextMenu.profileId);
                             setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
@@ -4262,7 +4428,7 @@ const CommentsModePage = () => {
                     <div className="flex items-start justify-between gap-3 border-b bg-gradient-to-r from-slate-900 to-indigo-900 px-5 py-4 text-white">
                       <div>
                         <p className="text-[11px] uppercase tracking-[0.2em] text-indigo-200">Chat analítico por código</p>
-                        <h3 className="text-lg font-semibold">{codes.find((item) => String(item.slug) === String(codeMapAiModal.codeSlug || ''))?.name || codeMapAiModal.codeSlug}</h3>
+                        <h3 className="text-lg font-semibold">{codeMapAiModal.title || 'Análisis IA'}</h3>
                         <p className="text-xs text-indigo-100">Memoria persistente: informe base + agentes + conversación especializada del código.</p>
                       </div>
                       <div className="flex items-center gap-2">
@@ -4307,7 +4473,7 @@ const CommentsModePage = () => {
                           {codeMapAiModal.error ? (
                             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{codeMapAiModal.error}</div>
                           ) : null}
-                          {(codeMapAnalysisSessions[codeMapAiModal.codeSlug]?.conversation_history || []).map((message) => (
+                          {(codeMapAnalysisSessions[buildCodeMapAnalysisSessionKey(codeMapAiModal.targetType, codeMapAiModal.targetId)]?.conversation_history || []).map((message) => (
                             <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                               <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${message.role === 'user' ? 'bg-indigo-600 text-white' : 'border border-slate-200 bg-slate-50 text-slate-800'}`}>
                                 <p className="whitespace-pre-wrap">{message.content}</p>
@@ -4327,7 +4493,7 @@ const CommentsModePage = () => {
                           <div className="flex items-end gap-2">
                             <textarea
                               className="h-20 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
-                              placeholder="Pregunta sobre este código. El chat mantiene memoria del informe base y evidencia del código."
+                              placeholder={codeMapAiModal.targetType === 'profile' ? 'Pregunta sobre este perfil. El chat mantiene memoria del informe base, jerarquía y evidencia conjunta del perfil.' : 'Pregunta sobre este código. El chat mantiene memoria del informe base y evidencia del código.'}
                               value={codeMapAiInput}
                               onChange={(event) => setCodeMapAiInput(event.target.value)}
                             />

@@ -2778,6 +2778,64 @@ function serializeCodeMapAnalysisEvidence({ code, fragments = [], relatedCodes =
   };
 }
 
+
+function serializeProfileCodeMapAnalysisEvidence({ profile, codes = [], fragments = [] }) {
+  const safeProfile = {
+    id: String(profile?.id || '').trim(),
+    name: String(profile?.name || '').trim(),
+    description: compactAnalysisText(profile?.description || '', 260),
+  };
+
+  const serializedCodes = (Array.isArray(codes) ? codes : [])
+    .slice(0, 180)
+    .map((item) => ({
+      slug: String(item?.slug || '').trim(),
+      name: String(item?.name || '').trim(),
+      description: compactAnalysisText(item?.description || '', 220),
+      parent_slug: String(item?.parent_slug || '').trim(),
+      relation: String(item?.relation || '').trim(),
+    }))
+    .filter((item) => item.slug && item.name);
+
+  const profileCodeSet = new Set(serializedCodes.map((item) => item.slug));
+  const serializedFragments = (Array.isArray(fragments) ? fragments : [])
+    .slice(0, 320)
+    .map((fragment, index) => {
+      const codeSlugs = Array.isArray(fragment?.code_slugs)
+        ? fragment.code_slugs.map((slug) => String(slug || '').trim()).filter((slug) => profileCodeSet.has(slug))
+        : [];
+      return {
+        fragment_id: String(fragment?.fragment_id || fragment?.id || `fragment_${index + 1}`).trim(),
+        excerpt: compactAnalysisText(fragment?.excerpt || fragment?.fragment_text || '', 420),
+        source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+        code_slugs: codeSlugs,
+      };
+    })
+    .filter((fragment) => fragment.fragment_id && fragment.excerpt && Array.isArray(fragment.code_slugs) && fragment.code_slugs.length);
+
+  return {
+    profile: safeProfile,
+    codes: serializedCodes,
+    fragments: serializedFragments,
+  };
+}
+
+function buildProfileCodeMapAgentSectionPrompt({ agentName, sectionName, focusInstruction, evidence }) {
+  return [
+    `Rol: ${agentName}.`,
+    `Sección objetivo: ${sectionName}.`,
+    'Objetivo de calidad: síntesis de conjunto del perfil (no de un único código), profesional, profunda y accionable.',
+    'Regla crítica: usa únicamente la evidencia entregada del perfil completo. Está prohibido inventar o completar huecos.',
+    'Debes razonar sobre patrones transversales, tensiones internas, subgrupos y narrativa unificadora del perfil.',
+    'Cita explícitamente fragmentos reales y referencia los code_slugs cuando corresponda.',
+    `Instrucción de enfoque: ${focusInstruction}`,
+    'Devuelve únicamente JSON válido con este formato exacto:',
+    '{"analysis":"","citations":[{"fragment_id":"","excerpt":"","code_slug":""}]}',
+    'EVIDENCIA_PERFIL_JSON:',
+    JSON.stringify(evidence),
+  ].join('\n');
+}
+
 function buildCodeMapAgentSectionPrompt({ agentName, sectionName, focusInstruction, evidence }) {
   return [
     `Rol: ${agentName}.`,
@@ -2942,11 +3000,20 @@ function selectRelevantFragmentsForCodeMapChat({ fragments = [], question = '', 
 }
 
 function buildCodeMapAnalysisChatPrompt({ session = {}, question = '', relevantEvidence = [] }) {
-  const codeContext = {
-    code_slug: String(session?.code_slug || '').trim(),
-    code_name: String(session?.code_name || '').trim(),
-    code_description: compactAnalysisText(session?.code_description || '', 240),
-  };
+  const targetType = String(session?.target_type || (session?.profile_id ? 'profile' : 'code')).trim() === 'profile' ? 'profile' : 'code';
+  const codeContext = targetType === 'profile'
+    ? {
+      profile_id: String(session?.profile_id || session?.target_id || '').trim(),
+      profile_name: String(session?.profile_name || '').trim(),
+      profile_description: compactAnalysisText(session?.profile_description || '', 240),
+      scope: 'perfil_compuesto',
+    }
+    : {
+      code_slug: String(session?.code_slug || '').trim(),
+      code_name: String(session?.code_name || '').trim(),
+      code_description: compactAnalysisText(session?.code_description || '', 240),
+      scope: 'codigo_individual',
+    };
 
   const initialReport = session?.initial_report && typeof session.initial_report === 'object'
     ? session.initial_report
@@ -2968,8 +3035,12 @@ function buildCodeMapAnalysisChatPrompt({ session = {}, question = '', relevantE
   }));
 
   return [
-    'Eres un copiloto analítico especializado en un único código del Mapa de Códigos.',
-    'Regla crítica: mantener foco 100% en este código y su evidencia. No mezclar otros contextos.',
+    targetType === 'profile'
+      ? 'Eres un copiloto analítico especializado en un Perfil del Mapa de Códigos (unidad compuesta).'
+      : 'Eres un copiloto analítico especializado en un único código del Mapa de Códigos.',
+    targetType === 'profile'
+      ? 'Regla crítica: mantener foco 100% en este perfil y en la evidencia conjunta de todos sus códigos/fragmentos. No mezclar otros contextos.'
+      : 'Regla crítica: mantener foco 100% en este código y su evidencia. No mezclar otros contextos.',
     'No inventes; responde solo con base en el informe inicial, memoria y evidencia relevante adjunta.',
     'Economía de tokens: no repitas todo el informe salvo que sea necesario para responder.',
     'Formato de salida: JSON válido exacto:',
@@ -6847,6 +6918,175 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         return sendJson(req, res, 502, {
           error: error?.message || 'No se pudo ejecutar el análisis IA del código en el mapa.',
+        });
+      }
+    }
+
+
+    if (url.pathname === '/api/comment-base/code-map-profile-analysis-agent' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+
+      const body = await readBody(req);
+      const projectId = String(body?.project_id || '').trim();
+      const campaignId = String(body?.campaign_id || '').trim();
+      const profile = body?.profile && typeof body.profile === 'object' ? body.profile : {};
+      const profileId = String(profile?.id || '').trim();
+      const profileName = String(profile?.name || '').trim();
+      const codes = Array.isArray(body?.codes) ? body.codes : [];
+      const fragments = Array.isArray(body?.fragments) ? body.fragments : [];
+
+      if (!projectId || !campaignId || !profileId || !profileName) {
+        return sendJson(req, res, 400, { error: 'project_id, campaign_id y profile (id, name) son requeridos.' });
+      }
+
+      const safeCodes = codes
+        .map((item) => ({
+          slug: String(item?.slug || '').trim(),
+          name: String(item?.name || '').trim(),
+          description: String(item?.description || '').trim(),
+          parent_slug: String(item?.parent_slug || '').trim(),
+          relation: String(item?.relation || '').trim(),
+        }))
+        .filter((item) => item.slug && item.name)
+        .slice(0, 180);
+
+      if (!safeCodes.length) {
+        return sendJson(req, res, 400, { error: 'El perfil requiere códigos vinculados para analizar.' });
+      }
+
+      const codeSet = new Set(safeCodes.map((item) => item.slug));
+      const safeFragments = fragments
+        .map((fragment, index) => {
+          const codeSlugs = Array.isArray(fragment?.code_slugs)
+            ? fragment.code_slugs.map((slug) => String(slug || '').trim()).filter((slug) => codeSet.has(slug))
+            : [];
+          return {
+            fragment_id: String(fragment?.fragment_id || fragment?.id || `fragment_${index + 1}`).trim(),
+            excerpt: String(fragment?.excerpt || fragment?.fragment_text || '').trim(),
+            source_comment_id: String(fragment?.source_comment_id || fragment?.comment_id || '').trim(),
+            code_slugs: codeSlugs,
+          };
+        })
+        .filter((fragment) => fragment.fragment_id && fragment.excerpt && fragment.code_slugs.length)
+        .slice(0, 320);
+
+      if (!safeFragments.length) {
+        return sendJson(req, res, 400, { error: 'Se requieren fragmentos con evidencia para analizar el perfil.' });
+      }
+
+      const [campaignRows] = await pool.query(
+        'SELECT id, project_id FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+        [campaignId, projectId, user.id],
+      );
+      const campaign = campaignRows[0] || null;
+      if (!campaign) {
+        return sendJson(req, res, 404, { error: 'Campaign not found' });
+      }
+
+      const integration = await getAiIntegrationByUserId(user.id);
+      if (!integration || !integration.provider || !integration.model) {
+        return sendJson(req, res, 400, {
+          error: 'Debes configurar la integración de Inteligencia Artificial antes de usar Análisis IA de perfiles en el mapa de códigos.',
+        });
+      }
+
+      const evidence = serializeProfileCodeMapAnalysisEvidence({
+        profile: {
+          id: profileId,
+          name: profileName,
+          description: String(profile?.description || '').trim(),
+        },
+        codes: safeCodes,
+        fragments: safeFragments,
+      });
+
+      const runSectionAgent = async ({ agentName, sectionName, focusInstruction }) => {
+        const prompt = buildProfileCodeMapAgentSectionPrompt({
+          agentName,
+          sectionName,
+          focusInstruction,
+          evidence,
+        });
+        const completion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: prompt },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const parsed = extractJsonObjectFromText(completion.content);
+        return normalizeCodeMapAnalysisSection(parsed, 'Sin evidencia suficiente para esta sección del perfil.');
+      };
+
+      try {
+        const dolores = await runSectionAgent({
+          agentName: 'Agente de Dolores de Perfil',
+          sectionName: 'Dolores',
+          focusInstruction: 'Analiza dolores dominantes del perfil completo, incluyendo convergencias y diferencias entre códigos y subcódigos.',
+        });
+        const deseos = await runSectionAgent({
+          agentName: 'Agente de Deseos de Perfil',
+          sectionName: 'Deseos',
+          focusInstruction: 'Analiza deseos compartidos y deseos divergentes en el conjunto de códigos del perfil.',
+        });
+        const placeres = await runSectionAgent({
+          agentName: 'Agente de Placeres de Perfil',
+          sectionName: 'Placeres',
+          focusInstruction: 'Analiza placeres, recompensas esperadas y alivios buscados a nivel de constelación de códigos del perfil.',
+        });
+        const problemas = await runSectionAgent({
+          agentName: 'Agente de Problemas de Perfil',
+          sectionName: 'Problemas',
+          focusInstruction: 'Define problemas centrales, tensiones entre subgrupos y estructura problemática global del perfil.',
+        });
+        const soluciones = await runSectionAgent({
+          agentName: 'Agente de Soluciones de Perfil',
+          sectionName: 'Soluciones',
+          focusInstruction: 'Analiza soluciones deseadas, intentos de solución y oportunidades estratégicas emergentes del perfil.',
+        });
+
+        const baseSections = {
+          summary_absolute: '',
+          dolores,
+          deseos,
+          placeres,
+          problemas,
+          soluciones,
+          sintesis_final: { analysis: '', citations: [] },
+        };
+
+        const refinerPrompt = buildCodeMapAnalysisRefinerPrompt({ evidence, sections: baseSections });
+        const refinedCompletion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: `${refinerPrompt}
+INSTRUCCION_ADICIONAL: este análisis corresponde a un PERFIL (unidad compuesta), no a un código individual.` },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const refinedParsed = extractJsonObjectFromText(refinedCompletion.content);
+        const refinedDocument = normalizeCodeMapAnalysisDocument(refinedParsed, baseSections);
+
+        const optimizerPrompt = buildCodeMapAnalysisOptimizerPrompt({ evidence, refinedDocument });
+        const optimizedCompletion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+          { role: 'system', content: 'Responde solo con JSON válido. No uses markdown.' },
+          { role: 'user', content: `${optimizerPrompt}
+INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.` },
+        ], { maxRetries: 3, baseDelayMs: 1100 });
+        const optimizedParsed = extractJsonObjectFromText(optimizedCompletion.content);
+        const finalDocument = normalizeCodeMapAnalysisDocument(optimizedParsed, refinedDocument);
+
+        return sendJson(req, res, 200, {
+          data: {
+            ...finalDocument,
+            meta: {
+              provider: integration.provider,
+              model: integration.model,
+              profile_id: profileId,
+              profile_codes_used: evidence.codes.length,
+              fragments_used: evidence.fragments.length,
+              flow: 'profile_dolores->deseos->placeres->problemas->soluciones->refinador->optimizador_final',
+            },
+          },
+        });
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo ejecutar el análisis IA del perfil en el mapa.',
         });
       }
     }
