@@ -7489,6 +7489,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const body = await readBody(req);
       const projectId = String(body.project_id || '').trim();
       const campaignId = String(body.campaign_id || '').trim();
+      const workspaceIdRaw = String(body.workspace_id || '').trim();
       const comments = Array.isArray(body.comments) ? body.comments : [];
 
       if (!projectId || !campaignId) {
@@ -7500,6 +7501,8 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       if (!campaign || String(campaign.project_id) !== String(projectId)) {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
+
+      const workspace = await resolveCommentWorkspace(user.id, projectId, campaignId, workspaceIdRaw);
 
       const integration = await getAiIntegrationByUserId(user.id);
       if (!integration || !integration.provider || !integration.model) {
@@ -7519,9 +7522,9 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         const [dbRows] = await pool.query(
           `SELECT id, source_comment_id, text
            FROM comment_dataset_comments
-           WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+           WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND workspace_id = ?
            ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC`,
-          [user.id, projectId, campaignId],
+          [user.id, projectId, campaignId, String(workspace.id)],
         );
 
         const dbComments = (Array.isArray(dbRows) ? dbRows : []).map((row) => ({

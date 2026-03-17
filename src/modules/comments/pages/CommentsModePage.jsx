@@ -2500,6 +2500,7 @@ const CommentsModePage = () => {
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
+        workspaceId: workspaceContext.workspaceId,
         limit: commentsTable.limit,
         offset: 0,
         q: '',
@@ -2700,6 +2701,7 @@ const CommentsModePage = () => {
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
+        workspaceId: workspaceContext.workspaceId,
         limit,
         offset,
         q: '',
