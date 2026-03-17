@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit, RotateCcw } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit, RotateCcw, PanelsTopLeft } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -222,6 +222,9 @@ const CommentsModePage = () => {
   const [selectedCodeMapEdge, setSelectedCodeMapEdge] = useState('');
   const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
   const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
+  const [codeMapProfileContextMenu, setCodeMapProfileContextMenu] = useState({ open: false, x: 0, y: 0, profileId: '' });
+  const [codeMapProfileEditor, setCodeMapProfileEditor] = useState({ open: false, mode: 'create', id: '', name: '', description: '' });
+  const [profileConnectSource, setProfileConnectSource] = useState('');
   const [codeMapAiModal, setCodeMapAiModal] = useState({
     open: false,
     loading: false,
@@ -268,9 +271,12 @@ const CommentsModePage = () => {
         codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
           ? parsed.codeMapAnalysisSessions
           : {},
+        codeMapVisualProfilesByScope: parsed.codeMapVisualProfilesByScope && typeof parsed.codeMapVisualProfilesByScope === 'object'
+          ? parsed.codeMapVisualProfilesByScope
+          : {},
       };
     } catch {
-      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {}, codeMapAnalysisSessions: {} };
+      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {}, codeMapAnalysisSessions: {}, codeMapVisualProfilesByScope: {} };
     }
   });
 
@@ -309,6 +315,9 @@ const CommentsModePage = () => {
           codeMapAnalysisSessions: indexedState.codeMapAnalysisSessions && typeof indexedState.codeMapAnalysisSessions === 'object'
             ? indexedState.codeMapAnalysisSessions
             : {},
+          codeMapVisualProfilesByScope: indexedState.codeMapVisualProfilesByScope && typeof indexedState.codeMapVisualProfilesByScope === 'object'
+            ? indexedState.codeMapVisualProfilesByScope
+            : {},
         });
       } catch {
         // Si no se puede leer IndexedDB, se mantiene fallback de localStorage.
@@ -329,6 +338,9 @@ const CommentsModePage = () => {
     : {};
   const codeMapAnalysisSessions = store.codeMapAnalysisSessions && typeof store.codeMapAnalysisSessions === 'object'
     ? store.codeMapAnalysisSessions
+    : {};
+  const codeMapVisualProfilesByScope = store.codeMapVisualProfilesByScope && typeof store.codeMapVisualProfilesByScope === 'object'
+    ? store.codeMapVisualProfilesByScope
     : {};
   const readerComments = commentsTable.items || [];
 
@@ -1191,7 +1203,17 @@ const CommentsModePage = () => {
       ...fragment,
       code_slugs: (fragment.code_slugs || []).filter((item) => !descendants.has(String(item))),
     }));
-    persist({ ...store, codes: nextCodes, fragments: nextFragments });
+    const cleanedVisualScopes = Object.fromEntries(Object.entries(codeMapVisualProfilesByScope).map(([scope, data]) => {
+      const safe = data && typeof data === 'object' ? data : {};
+      const assignments = safe.assignments && typeof safe.assignments === 'object' ? safe.assignments : {};
+      const nextAssignments = Object.fromEntries(Object.entries(assignments).filter(([codeSlug]) => !descendants.has(String(codeSlug))));
+      return [scope, {
+        profiles: Array.isArray(safe.profiles) ? safe.profiles : [],
+        assignments: nextAssignments,
+        collapsed: safe.collapsed && typeof safe.collapsed === 'object' ? safe.collapsed : {},
+      }];
+    }));
+    persist({ ...store, codes: nextCodes, fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
     if (String(codeCardSlug || '') && descendants.has(String(codeCardSlug))) {
@@ -1210,7 +1232,15 @@ const CommentsModePage = () => {
       ...fragment,
       code_slugs: [],
     }));
-    persist({ ...store, codes: [], fragments: nextFragments });
+    const cleanedVisualScopes = Object.fromEntries(Object.entries(codeMapVisualProfilesByScope).map(([scope, data]) => {
+      const safe = data && typeof data === 'object' ? data : {};
+      return [scope, {
+        profiles: Array.isArray(safe.profiles) ? safe.profiles : [],
+        assignments: {},
+        collapsed: safe.collapsed && typeof safe.collapsed === 'object' ? safe.collapsed : {},
+      }];
+    }));
+    persist({ ...store, codes: [], fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
     setCodeCardSlug('');
@@ -1311,6 +1341,57 @@ const CommentsModePage = () => {
     [codeHypothesisFilter],
   );
 
+  const scopedVisualProfiles = codeMapVisualProfilesByScope[codeMapScopeKey] && typeof codeMapVisualProfilesByScope[codeMapScopeKey] === 'object'
+    ? codeMapVisualProfilesByScope[codeMapScopeKey]
+    : { profiles: [], assignments: {}, collapsed: {} };
+  const codeMapProfiles = Array.isArray(scopedVisualProfiles.profiles) ? scopedVisualProfiles.profiles : [];
+  const codeMapProfileAssignments = scopedVisualProfiles.assignments && typeof scopedVisualProfiles.assignments === 'object' ? scopedVisualProfiles.assignments : {};
+  const codeMapProfileCollapsed = scopedVisualProfiles.collapsed && typeof scopedVisualProfiles.collapsed === 'object' ? scopedVisualProfiles.collapsed : {};
+
+  const persistCodeMapVisualScope = (scopeKey, nextScopeData) => {
+    const normalizedScope = String(scopeKey || CODE_MAP_ALL_SCOPE);
+    const safeData = nextScopeData && typeof nextScopeData === 'object' ? nextScopeData : { profiles: [], assignments: {}, collapsed: {} };
+    persist({
+      ...store,
+      codeMapVisualProfilesByScope: {
+        ...codeMapVisualProfilesByScope,
+        [normalizedScope]: {
+          profiles: Array.isArray(safeData.profiles) ? safeData.profiles : [],
+          assignments: safeData.assignments && typeof safeData.assignments === 'object' ? safeData.assignments : {},
+          collapsed: safeData.collapsed && typeof safeData.collapsed === 'object' ? safeData.collapsed : {},
+        },
+      },
+    });
+  };
+
+  const upsertCodeMapProfile = (profile) => {
+    if (!profile || !String(profile.id || '').trim()) return;
+    const profileId = String(profile.id).trim();
+    const existing = codeMapProfiles.find((item) => String(item.id) === profileId);
+    const nextProfiles = existing
+      ? codeMapProfiles.map((item) => (String(item.id) === profileId ? { ...item, ...profile } : item))
+      : [...codeMapProfiles, profile];
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: nextProfiles,
+      assignments: codeMapProfileAssignments,
+      collapsed: codeMapProfileCollapsed,
+    });
+  };
+
+  const removeCodeMapProfile = (profileId) => {
+    const normalizedProfileId = String(profileId || '').trim();
+    if (!normalizedProfileId) return;
+    const nextProfiles = codeMapProfiles.filter((item) => String(item.id) !== normalizedProfileId);
+    const nextAssignments = Object.fromEntries(Object.entries(codeMapProfileAssignments).filter(([, value]) => String(value || '') !== normalizedProfileId));
+    const nextCollapsed = { ...codeMapProfileCollapsed };
+    delete nextCollapsed[normalizedProfileId];
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: nextProfiles,
+      assignments: nextAssignments,
+      collapsed: nextCollapsed,
+    });
+  };
+
   useEffect(() => {
     const scopedLayout = codeMapLayoutsByHypothesis[codeMapScopeKey];
     setCodeMapLayoutBySlug(scopedLayout && typeof scopedLayout === 'object' ? scopedLayout : {});
@@ -1358,16 +1439,56 @@ const CommentsModePage = () => {
 
   const codeMapVisibleSlugSet = useMemo(() => new Set(codeMapVisibleCodes.map((code) => String(code.slug))), [codeMapVisibleCodes]);
 
-  const codeMapEdges = useMemo(() => codeMapVisibleCodes
-    .filter((code) => code.parent_slug && String(code.parent_slug) !== String(code.slug))
-    .filter((code) => codeMapVisibleSlugSet.has(String(code.slug)) && codeMapVisibleSlugSet.has(String(code.parent_slug)))
-    .map((code) => ({
-      id: `edge_${code.parent_slug}_${code.slug}`,
-      source: String(code.parent_slug),
-      target: String(code.slug),
-    })), [codeMapVisibleCodes, codeMapVisibleSlugSet]);
+  const codeMapProfileNodes = useMemo(() => (Array.isArray(codeMapProfiles) ? codeMapProfiles : []).map((profile, index) => {
+    const fallbackX = 80 + ((index % 3) * 320);
+    const fallbackY = 36 + (Math.floor(index / 3) * 210);
+    return {
+      id: String(profile.id || ''),
+      name: String(profile.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
+      description: String(profile.description || '').trim(),
+      x: Number.isFinite(Number(profile.x)) ? Number(profile.x) : fallbackX,
+      y: Number.isFinite(Number(profile.y)) ? Number(profile.y) : fallbackY,
+    };
+  }).filter((profile) => profile.id), [codeMapProfiles]);
+
+  const codeMapProfileNodeById = useMemo(() => new Map(codeMapProfileNodes.map((profile) => [String(profile.id), profile])), [codeMapProfileNodes]);
+
+  const collapsedProfileIds = useMemo(() => new Set(Object.entries(codeMapProfileCollapsed).filter(([, collapsed]) => Boolean(collapsed)).map(([profileId]) => String(profileId))), [codeMapProfileCollapsed]);
+  const visibleCodeMapNodes = useMemo(() => codeMapNodes.filter((code) => !collapsedProfileIds.has(String(codeMapProfileAssignments[String(code.slug)] || ''))), [codeMapNodes, collapsedProfileIds, codeMapProfileAssignments]);
+
+  const codeMapEdges = useMemo(() => {
+    const visibleCodeSlugSet = new Set(visibleCodeMapNodes.map((code) => String(code.slug)));
+    const hierarchyEdges = visibleCodeMapNodes
+      .filter((code) => code.parent_slug && String(code.parent_slug) !== String(code.slug))
+      .filter((code) => visibleCodeSlugSet.has(String(code.slug)) && visibleCodeSlugSet.has(String(code.parent_slug)))
+      .map((code) => ({
+        id: `edge_${code.parent_slug}_${code.slug}`,
+        source: String(code.parent_slug),
+        target: String(code.slug),
+      }));
+
+    const profileEdges = Object.entries(codeMapProfileAssignments)
+      .filter(([codeSlug, profileId]) => visibleCodeSlugSet.has(String(codeSlug)) && codeMapProfileNodeById.has(String(profileId)))
+      .map(([codeSlug, profileId]) => ({
+        id: `edge_profile_${profileId}_${codeSlug}`,
+        source: String(profileId),
+        target: String(codeSlug),
+        type: 'profile_link',
+      }));
+
+    return [...hierarchyEdges, ...profileEdges];
+  }, [visibleCodeMapNodes, codeMapProfileAssignments, codeMapProfileNodeById]);
 
 
+
+
+  const codeMapRenderableNodesById = useMemo(() => {
+    const rows = [
+      ...visibleCodeMapNodes.map((node) => ({ id: String(node.slug), x: Number(node.x) || 0, y: Number(node.y) || 0 })),
+      ...codeMapProfileNodes.map((profile) => ({ id: String(profile.id), x: Number(profile.x) || 0, y: Number(profile.y) || 0 })),
+    ];
+    return new Map(rows.map((item) => [item.id, item]));
+  }, [visibleCodeMapNodes, codeMapProfileNodes]);
 
   const buildCodeMapAnalysisSession = ({ slug, code, linkedFragments, relatedCodes, analysis }) => {
     const now = new Date().toISOString();
@@ -1600,6 +1721,84 @@ const CommentsModePage = () => {
     setCodeMapAiModal({ open: false, loading: false, sending: false, error: '', codeSlug: '', result: null, sessionId: '' });
   };
 
+  const createCodeMapProfile = () => {
+    setCodeMapProfileEditor({ open: true, mode: 'create', id: '', name: '', description: '' });
+    setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+  };
+
+  const saveCodeMapProfileEditor = () => {
+    const name = String(codeMapProfileEditor.name || '').trim();
+    if (!name) return;
+    const profileId = String(codeMapProfileEditor.id || '').trim() || `profile_${Date.now()}`;
+    const existing = codeMapProfileNodes.find((profile) => String(profile.id) === profileId);
+    upsertCodeMapProfile({
+      id: profileId,
+      name,
+      description: String(codeMapProfileEditor.description || '').trim(),
+      x: Number(existing?.x) || 120,
+      y: Number(existing?.y) || 56,
+    });
+    setCodeMapProfileEditor({ open: false, mode: 'create', id: '', name: '', description: '' });
+  };
+
+  const assignCodeToProfile = (codeSlug, profileId) => {
+    const normalizedCodeSlug = String(codeSlug || '').trim();
+    if (!normalizedCodeSlug) return;
+    const normalizedProfileId = String(profileId || '').trim();
+    const nextAssignments = { ...codeMapProfileAssignments };
+    if (normalizedProfileId) nextAssignments[normalizedCodeSlug] = normalizedProfileId;
+    else delete nextAssignments[normalizedCodeSlug];
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: codeMapProfiles,
+      assignments: nextAssignments,
+      collapsed: codeMapProfileCollapsed,
+    });
+  };
+
+  const toggleCodeMapProfileCollapsed = (profileId) => {
+    const normalizedProfileId = String(profileId || '').trim();
+    if (!normalizedProfileId) return;
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: codeMapProfiles,
+      assignments: codeMapProfileAssignments,
+      collapsed: {
+        ...codeMapProfileCollapsed,
+        [normalizedProfileId]: !codeMapProfileCollapsed[normalizedProfileId],
+      },
+    });
+  };
+
+  const handleCodeMapProfileMouseDown = (event, profileId) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const id = String(profileId || '').trim();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startProfile = codeMapProfileNodes.find((profile) => String(profile.id) === id) || { x: 0, y: 0 };
+    const startNodeX = Number(startProfile.x) || 0;
+    const startNodeY = Number(startProfile.y) || 0;
+
+    const onMove = (moveEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / (codeMapZoom || 1);
+      const deltaY = (moveEvent.clientY - startY) / (codeMapZoom || 1);
+      upsertCodeMapProfile({
+        ...startProfile,
+        id,
+        x: Math.max(12, Math.round(startNodeX + deltaX)),
+        y: Math.max(12, Math.round(startNodeY + deltaY)),
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
   const handleCodeMapNodeMouseDown = (event, slug) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -1625,9 +1824,13 @@ const CommentsModePage = () => {
       }));
     };
 
-    const onUp = () => {
+    const onUp = (upEvent) => {
       setDraggingCodeMapNode('');
       persistCodeMapLayoutForScope(codeMapScopeKey, codeMapLayoutRef.current);
+      const profileElement = upEvent?.target?.closest?.('[data-code-map-profile-id]');
+      if (profileElement) {
+        assignCodeToProfile(slug, profileElement.getAttribute('data-code-map-profile-id'));
+      }
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -1638,10 +1841,11 @@ const CommentsModePage = () => {
 
   const handleCodeMapCanvasMouseDown = (event) => {
     if (event.button !== 0) return;
-    if (event.target.closest('[data-code-map-node="true"]')) return;
+    if (event.target.closest('[data-code-map-node="true"]') || event.target.closest('[data-code-map-profile="true"]')) return;
     setSelectedCodeMapNode('');
     setSelectedCodeMapEdge('');
     setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+    setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
     setIsCodeMapPanning(true);
     const startX = event.clientX;
     const startY = event.clientY;
@@ -1671,7 +1875,11 @@ const CommentsModePage = () => {
       if (event.key !== 'Delete' && event.key !== 'Backspace') return;
       const edge = codeMapEdges.find((item) => item.id === selectedCodeMapEdge);
       if (!edge) return;
-      setCodeParent(edge.target, '');
+      if (String(edge.type || '') === 'profile_link') {
+        assignCodeToProfile(edge.target, '');
+      } else {
+        setCodeParent(edge.target, '');
+      }
       setSelectedCodeMapEdge('');
     };
     window.addEventListener('keydown', onKeyDown);
@@ -3816,6 +4024,7 @@ const CommentsModePage = () => {
                         </select>
                         <label className="text-xs text-slate-600">Zoom</label>
                         <input type="range" min={0.6} max={1.8} step={0.1} value={codeMapZoom} onChange={(e) => setCodeMapZoom(Number(e.target.value) || 1)} />
+                        <Button className="bg-white border text-slate-700" onClick={createCodeMapProfile}><PanelsTopLeft className="mr-1 h-4 w-4" />Crear Perfil</Button>
                         <Button className="bg-white border text-slate-700" onClick={() => { setCodeMapPan({ x: 0, y: 0 }); setCodeMapZoom(1); }}>Reset</Button>
                         <Button className="bg-white border text-slate-700" onClick={() => setCodeMapOpen(false)}>Cerrar</Button>
                       </div>
@@ -3838,8 +4047,8 @@ const CommentsModePage = () => {
                       >
                         <svg className="absolute inset-0 h-full w-full">
                           {codeMapEdges.map((edge) => {
-                            const source = codeMapNodes.find((node) => String(node.slug) === String(edge.source));
-                            const target = codeMapNodes.find((node) => String(node.slug) === String(edge.target));
+                            const source = codeMapRenderableNodesById.get(String(edge.source));
+                            const target = codeMapRenderableNodesById.get(String(edge.target));
                             if (!source || !target) return null;
                             const selected = selectedCodeMapEdge === edge.id;
                             return (
@@ -3849,7 +4058,7 @@ const CommentsModePage = () => {
                                 y1={source.y + 26}
                                 x2={target.x + 90}
                                 y2={target.y + 26}
-                                stroke={selected ? '#4f46e5' : '#9CA3AF'}
+                                stroke={selected ? '#4f46e5' : edge.type === 'profile_link' ? '#0f766e' : '#9CA3AF'}
                                 strokeWidth={selected ? 2 : 1.5}
                                 className="cursor-pointer"
                                 onClick={(event) => {
@@ -3862,7 +4071,42 @@ const CommentsModePage = () => {
                           })}
                         </svg>
 
-                        {codeMapNodes.map((code) => {
+                        {codeMapProfileNodes.map((profile) => {
+                          const isCollapsed = Boolean(codeMapProfileCollapsed[String(profile.id)]);
+                          return (
+                            <div
+                              key={profile.id}
+                              data-code-map-profile="true"
+                              data-code-map-profile-id={profile.id}
+                              className="absolute min-w-[160px] rounded-lg border-2 border-teal-300 bg-teal-50/90 px-3 py-2 text-[12px] text-teal-900 shadow-sm"
+                              style={{ left: profile.x, top: profile.y, width: '220px' }}
+                              onMouseDown={(event) => handleCodeMapProfileMouseDown(event, profile.id)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (profileConnectSource) {
+                                  assignCodeToProfile(profileConnectSource, profile.id);
+                                  setProfileConnectSource('');
+                                }
+                              }}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                const canvasRect = codeMapCanvasRef.current?.getBoundingClientRect();
+                                const relativeX = canvasRect ? event.clientX - canvasRect.left : event.clientX;
+                                const relativeY = canvasRect ? event.clientY - canvasRect.top : event.clientY;
+                                setCodeMapProfileContextMenu({ open: true, x: relativeX, y: relativeY, profileId: profile.id });
+                              }}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-semibold">{profile.name}</p>
+                                <button type="button" className="rounded border border-teal-300 bg-white px-1.5 text-[10px]" onClick={(event) => { event.stopPropagation(); toggleCodeMapProfileCollapsed(profile.id); }}>{isCollapsed ? 'Expandir' : 'Colapsar'}</button>
+                              </div>
+                              <p className="mt-1 text-[11px] text-teal-800">{profile.description || 'Perfil estratégico para agrupar códigos visualmente.'}</p>
+                            </div>
+                          );
+                        })}
+
+                        {visibleCodeMapNodes.map((code) => {
                           const isNodeSelected = selectedCodeMapNode === code.slug;
                           const nodeWidth = Math.max(100, Math.min(220, 100 + (Number(code.scoreTotal || 0) * 1.1)));
                           return (
@@ -3906,6 +4150,38 @@ const CommentsModePage = () => {
                         })}
                       </div>
 
+                      {codeMapProfileContextMenu.open ? (
+                        <div
+                          style={{ left: codeMapProfileContextMenu.x, top: codeMapProfileContextMenu.y }}
+                          className="absolute z-30 min-w-[220px] rounded-md border border-teal-200 bg-white p-1 shadow-lg"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            const target = codeMapProfileNodes.find((item) => String(item.id) === String(codeMapProfileContextMenu.profileId));
+                            setCodeMapProfileEditor({
+                              open: true,
+                              mode: 'edit',
+                              id: String(target?.id || ''),
+                              name: String(target?.name || ''),
+                              description: String(target?.description || ''),
+                            });
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                          }}>Editar perfil</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            toggleCodeMapProfileCollapsed(codeMapProfileContextMenu.profileId);
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                          }}>{codeMapProfileCollapsed[String(codeMapProfileContextMenu.profileId)] ? 'Expandir códigos' : 'Colapsar códigos'}</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => {
+                            removeCodeMapProfile(codeMapProfileContextMenu.profileId);
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                          }}>Eliminar perfil</button>
+                        </div>
+                      ) : null}
+
                       {codeMapContextMenu.open ? (
                         <div
                           style={{ left: codeMapContextMenu.x, top: codeMapContextMenu.y }}
@@ -3933,6 +4209,14 @@ const CommentsModePage = () => {
                             setCodeParent(codeMapContextMenu.slug, '');
                             setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
                           }}>Quitar padre</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            setProfileConnectSource(codeMapContextMenu.slug);
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Conectar con perfil</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            assignCodeToProfile(codeMapContextMenu.slug, '');
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Desvincular de perfil</button>
                           <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
                             const targetSlug = codeMapContextMenu.slug;
                             setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
@@ -3948,6 +4232,25 @@ const CommentsModePage = () => {
                           }}>Eliminar código</button>
                         </div>
                       ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {codeMapProfileEditor.open ? (
+                <div className="fixed inset-0 z-[72] flex items-center justify-center bg-slate-900/45 p-4">
+                  <div className="w-full max-w-lg rounded-xl border bg-white shadow-2xl">
+                    <div className="border-b px-4 py-3">
+                      <h3 className="text-sm font-semibold text-slate-900">{codeMapProfileEditor.mode === 'create' ? 'Crear Perfil' : 'Editar Perfil'}</h3>
+                      <p className="text-xs text-slate-500">Entidad visual estratégica para agrupar códigos sin afectar su semántica.</p>
+                    </div>
+                    <div className="space-y-3 px-4 py-4">
+                      <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Nombre del perfil" value={codeMapProfileEditor.name} onChange={(event) => setCodeMapProfileEditor((prev) => ({ ...prev, name: event.target.value }))} />
+                      <textarea className="h-24 w-full rounded-lg border px-3 py-2 text-sm" placeholder="Descripción breve (opcional)" value={codeMapProfileEditor.description} onChange={(event) => setCodeMapProfileEditor((prev) => ({ ...prev, description: event.target.value }))} />
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t px-4 py-3">
+                      <Button className="bg-white border text-slate-700" onClick={() => setCodeMapProfileEditor({ open: false, mode: 'create', id: '', name: '', description: '' })}>Cancelar</Button>
+                      <Button className="bg-teal-600 text-white" onClick={saveCodeMapProfileEditor}>Guardar Perfil</Button>
                     </div>
                   </div>
                 </div>
