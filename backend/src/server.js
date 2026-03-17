@@ -4509,6 +4509,41 @@ CANDIDATOS:
 ${candidateLines}`;
 }
 
+
+
+function buildCodeGenerationExpansionPrompt({ comments = [], existing = [], minAdditional = 8, maxAdditional = 18 }) {
+  const compactText = (value, max = 180) => String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+
+  const commentLines = (Array.isArray(comments) ? comments : [])
+    .slice(0, 220)
+    .map((item, index) => `${index + 1}) ${compactText(item?.text || item?.comment_text || item?.body || item?.content || '', 180)}`)
+    .filter((line) => /\)\s*\S+/.test(line))
+    .join('\n');
+
+  const existingLines = (Array.isArray(existing) ? existing : [])
+    .slice(0, 80)
+    .map((item, index) => `${index + 1}) ${compactText(item?.suggested_code_name || item?.cluster_name, 90)} :: ${compactText(item?.description, 140)}`)
+    .join('\n');
+
+  return `Expande taxonomía de códigos SOLO con razonamiento LLM a partir del corpus de comentarios.
+Objetivo: generar códigos adicionales no redundantes y de alta utilidad analítica.
+Debes proponer entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS.
+Prohibido repetir o parafrasear códigos existentes.
+Naming obligatorio: título claro, conciso y descriptivo (2-6 palabras), sin números ni placeholders.
+Descripción obligatoria: profunda y específica, derivada del corpus completo, explicando señal semántica, emoción/conducta dominante y alcance del patrón.
+No uses reglas heurísticas externas ni clustering auxiliar: solo análisis LLM del contenido.
+Salida: JSON válido con forma {"proposals":[...]} usando campos del flujo principal.
+
+CODIGOS EXISTENTES (NO REPETIR):
+${existingLines}
+
+CORPUS DE COMENTARIOS:
+${commentLines}`;
+}
+
 function flattenSubclustersAsCodeProposals(proposals = []) {
   const normalized = Array.isArray(proposals) ? proposals : [];
   const extra = [];
@@ -7673,53 +7708,51 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
           MAX_CODES,
         );
 
-        if (finalProposals.length < 30) {
-          const deterministicFragments = allComments.map((comment, index) => ({
-            id: String(comment?.id || `workspace_comment_${index + 1}`),
-            excerpt: String(comment?.text || '').trim(),
-            source_comment_id: String(comment?.id || `workspace_comment_${index + 1}`),
-            density_score: 0.62,
-            novelty_score: 0.64,
-            extraction_quality_score: 0.66,
-            redundancy_score: 0.18,
-          })).filter((fragment) => String(fragment.excerpt || '').length >= 18);
+        if (finalProposals.length < 30 && allComments.length >= 120) {
+          const EXPANSION_MAX_ROUNDS = 3;
+          for (let round = 0; round < EXPANSION_MAX_ROUNDS && finalProposals.length < 30; round += 1) {
+            const expansionPrompt = buildCodeGenerationExpansionPrompt({
+              comments: allComments,
+              existing: finalProposals,
+              minAdditional: Math.max(6, 30 - finalProposals.length),
+              maxAdditional: Math.max(10, 40 - finalProposals.length),
+            });
 
-          const rankedFallback = rankAndSelectFragmentsForCoding(deterministicFragments);
-          const clusteredFallback = buildCompressedCodesFromSelectedFragments({
-            selectedFragments: rankedFallback.selected,
-            existingCodes: [],
-          });
+            let expansionCompletion;
+            try {
+              expansionCompletion = await requestAiChatCompletionWithRateLimitRetry(integration, [
+                { role: 'system', content: 'Responde únicamente JSON válido, sin markdown ni texto extra.' },
+                { role: 'user', content: expansionPrompt },
+              ], { maxRetries: 2, baseDelayMs: 1000 });
+            } catch (error) {
+              if (isDailyTokenLimitError(error)) {
+                tokenBudgetError = String(error?.message || 'daily_token_limit_reached');
+                stoppedBy = 'daily_token_limit';
+                break;
+              }
+              throw error;
+            }
 
-          const fallbackSeed = (Array.isArray(clusteredFallback.semanticClusters) ? clusteredFallback.semanticClusters : [])
-            .sort((a, b) => Number(b.quality_score || 0) - Number(a.quality_score || 0))
-            .map((cluster, index) => ({
-              cluster_name: String(cluster?.suggested_pattern_name || `patrón semántico emergente ${index + 1}`).trim(),
-              suggested_code_name: String(cluster?.suggested_pattern_name || `patrón semántico emergente ${index + 1}`).trim(),
-              description: `Agrupa comentarios del workspace que comparten ${String(cluster?.suggested_pattern_name || 'una dinámica semántica dominante').toLowerCase()} con coherencia ${Number(cluster?.coherence || 0).toFixed(2)} y calidad ${Number(cluster?.quality_score || 0).toFixed(2)}.`,
-              coherence_level: Number(cluster?.coherence || 0) >= 0.55 ? 'alta' : Number(cluster?.coherence || 0) >= 0.4 ? 'media' : 'baja',
-              pattern_size: Number(cluster?.size || 0) >= 22 ? 'alto' : Number(cluster?.size || 0) >= 10 ? 'medio' : 'bajo',
-              recommendation: Number(cluster?.existing_similarity_score || 0) >= 0.45 ? 'fusionar' : 'crear',
-              subclusters: [],
-            }));
+            const parsedExpansion = extractJsonObjectFromText(expansionCompletion.content);
+            const normalizedExpansion = normalizeCodeGenerationAgentOutput(parsedExpansion);
+            const repairedExpansion = await repairInvalidCodeGenerationProposals({
+              integration,
+              proposals: normalizedExpansion,
+            });
 
-          const normalizedFallback = dedupeCodeProposalsByName(
-            normalizeCodeGenerationAgentOutput({ proposals: fallbackSeed }),
-            MAX_CODES,
-          );
-
-          if (normalizedFallback.length >= 30) {
-            finalProposals = normalizedFallback.slice(0, MAX_CODES);
-            stoppedBy = `${stoppedBy}_fallback_semantic_clusters`;
-          } else if (normalizedFallback.length) {
             finalProposals = dedupeCodeProposalsByName([
               ...finalProposals,
-              ...normalizedFallback,
+              ...flattenSubclustersAsCodeProposals(repairedExpansion),
             ], MAX_CODES);
-            if (finalProposals.length < 30) {
-              stoppedBy = `${stoppedBy}_low_cardinality`;
-            }
+          }
+
+          if (finalProposals.length < 30) {
+            stoppedBy = `${stoppedBy}_llm_low_cardinality`;
+          } else {
+            stoppedBy = `${stoppedBy}_llm_expansion`;
           }
         }
+
 
         return sendJson(req, res, 200, {
           data: {
