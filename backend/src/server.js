@@ -4732,7 +4732,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
 
     const buildAlignedDescription = () => {
       const safeName = nameLower || 'un patrón semántico dominante';
-      return `Código "${name}": patrón semántico recurrente del corpus que expresa ${safeName}, mostrando una emoción/conducta dominante en contextos repetidos y con significado analítico estable.`;
+      return `Expresa ${safeName} como patrón semántico recurrente del corpus, mostrando una emoción o conducta dominante en contextos repetidos con significado analítico estable.`;
     };
 
     let candidate = raw;
@@ -4745,7 +4745,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     }
 
     if (name && !String(candidate || "").toLowerCase().includes(String(nameLower))) {
-      candidate = `Código "${name}": ${candidate.charAt(0).toLowerCase()}${candidate.slice(1)}`;
+      candidate = `Describe de forma precisa cómo se manifiesta ${nameLower} en el corpus y qué patrón de fondo encapsula.`;
     }
 
     return candidate;
