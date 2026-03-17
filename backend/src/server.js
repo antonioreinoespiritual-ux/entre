@@ -4725,14 +4725,33 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       || /patron\s+conceptual\s*\d+/i.test(rawLower)
       || /codigo\s+conceptual\s*\d+/i.test(rawLower)
       || /cluster\s*\d+/i.test(rawLower)
-      || rawLower === nameLower;
+      || rawLower === nameLower
+      || /describe de forma precisa cómo se manifiesta/i.test(rawLower);
 
     const minLen = 50;
     const maxLen = 220;
 
     const buildAlignedDescription = () => {
-      const safeName = nameLower || 'un patrón semántico dominante';
-      return `Expresa ${safeName} como patrón semántico recurrente del corpus, mostrando una emoción o conducta dominante en contextos repetidos con significado analítico estable.`;
+      const n = nameLower;
+      if (/desinteres|distancia|alejamiento/.test(n)) {
+        return 'Agrupa comentarios donde se interpreta menor contacto, frialdad o distancia como señal de pérdida de interés afectivo y desconexión emocional.';
+      }
+      if (/ansiedad|inseguridad|temor/.test(n)) {
+        return 'Reúne expresiones de inquietud emocional sostenida, anticipación de rechazo y dificultad para sostener seguridad afectiva en el vínculo.';
+      }
+      if (/reconcili|volver|retomar/.test(n)) {
+        return 'Incluye comentarios que sostienen expectativa activa de retomar el vínculo, reabrir contacto y reconstruir la relación tras una ruptura o distancia.';
+      }
+      if (/validacion|apoyo|afectiv/.test(n)) {
+        return 'Agrupa mensajes donde se busca reconocimiento emocional explícito, contención afectiva y señales claras de importancia dentro del vínculo.';
+      }
+      if (/control|manipul|exigencia/.test(n)) {
+        return 'Describe dinámicas de presión relacional, control emocional o exigencias que restringen la autonomía y deterioran la calidad del vínculo.';
+      }
+      if (/culpa|reproche|arrepent/.test(n)) {
+        return 'Reúne narrativas centradas en reproche, autoacusación o arrepentimiento que organizan el conflicto relacional desde la culpa emocional.';
+      }
+      return `Agrupa comentarios que comparten el patrón de ${nameLower || 'una dinámica relacional dominante'}, expresado de forma recurrente en emociones, interpretaciones y conductas consistentes.`;
     };
 
     let candidate = raw;
@@ -4744,8 +4763,8 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       candidate = `${candidate.slice(0, maxLen - 1).trimEnd()}.`;
     }
 
-    if (name && !String(candidate || "").toLowerCase().includes(String(nameLower))) {
-      candidate = `Describe de forma precisa cómo se manifiesta ${nameLower} en el corpus y qué patrón de fondo encapsula.`;
+    if (name && !String(candidate || '').toLowerCase().includes(String(nameLower))) {
+      candidate = `Agrupa comentarios que comparten el patrón de ${nameLower}, visible en una narrativa recurrente y semánticamente consistente dentro del corpus.`;
     }
 
     return candidate;
@@ -4834,7 +4853,9 @@ function validateGeneratedCodeProposal(proposal = {}) {
     || /^(null|undefined)$/i.test(descNormalized)
     || descNormalized === titleNormalized
     || description.length < 30
-    || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized);
+    || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized)
+    || /describe de forma precisa cómo se manifiesta/i.test(descNormalized)
+    || /codigo\s*"?.*"?\s*:/i.test(descNormalized);
 
   return {
     valid: !titleInvalid && !descriptionInvalid,
@@ -4861,9 +4882,9 @@ function buildCodeGenerationRepairPrompt({ proposals = [] }) {
     'Reglas obligatorias:',
     '1) suggested_code_name: concepto compacto, 2-5 palabras, semántico, sin placeholders ni números secuenciales.',
     '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
-    '3) description: explicación clara del patrón semántico del código, mínimo 30 caracteres.',
-    '4) description NO puede ser vacía, null, undefined, placeholder ni repetición literal del título.',
-    '5) Mantén coherence_level/pattern_size/recommendation.',
+    '3) description: explicación clara, específica e intuitiva del patrón semántico del código (no plantilla), mínimo 50 caracteres.',
+    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frases plantilla tipo "Describe de forma precisa cómo se manifiesta...".',
+    '5) El título y la descripción deben referirse al MISMO fenómeno; si no hay coherencia, reescribe ambos.',
     'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
     'INPUT:',
     JSON.stringify({ proposals: items }),
