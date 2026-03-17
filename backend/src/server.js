@@ -7673,6 +7673,54 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
           MAX_CODES,
         );
 
+        if (finalProposals.length < 30) {
+          const deterministicFragments = allComments.map((comment, index) => ({
+            id: String(comment?.id || `workspace_comment_${index + 1}`),
+            excerpt: String(comment?.text || '').trim(),
+            source_comment_id: String(comment?.id || `workspace_comment_${index + 1}`),
+            density_score: 0.62,
+            novelty_score: 0.64,
+            extraction_quality_score: 0.66,
+            redundancy_score: 0.18,
+          })).filter((fragment) => String(fragment.excerpt || '').length >= 18);
+
+          const rankedFallback = rankAndSelectFragmentsForCoding(deterministicFragments);
+          const clusteredFallback = buildCompressedCodesFromSelectedFragments({
+            selectedFragments: rankedFallback.selected,
+            existingCodes: [],
+          });
+
+          const fallbackSeed = (Array.isArray(clusteredFallback.semanticClusters) ? clusteredFallback.semanticClusters : [])
+            .sort((a, b) => Number(b.quality_score || 0) - Number(a.quality_score || 0))
+            .map((cluster, index) => ({
+              cluster_name: String(cluster?.suggested_pattern_name || `patrón semántico emergente ${index + 1}`).trim(),
+              suggested_code_name: String(cluster?.suggested_pattern_name || `patrón semántico emergente ${index + 1}`).trim(),
+              description: `Agrupa comentarios del workspace que comparten ${String(cluster?.suggested_pattern_name || 'una dinámica semántica dominante').toLowerCase()} con coherencia ${Number(cluster?.coherence || 0).toFixed(2)} y calidad ${Number(cluster?.quality_score || 0).toFixed(2)}.`,
+              coherence_level: Number(cluster?.coherence || 0) >= 0.55 ? 'alta' : Number(cluster?.coherence || 0) >= 0.4 ? 'media' : 'baja',
+              pattern_size: Number(cluster?.size || 0) >= 22 ? 'alto' : Number(cluster?.size || 0) >= 10 ? 'medio' : 'bajo',
+              recommendation: Number(cluster?.existing_similarity_score || 0) >= 0.45 ? 'fusionar' : 'crear',
+              subclusters: [],
+            }));
+
+          const normalizedFallback = dedupeCodeProposalsByName(
+            normalizeCodeGenerationAgentOutput({ proposals: fallbackSeed }),
+            MAX_CODES,
+          );
+
+          if (normalizedFallback.length >= 30) {
+            finalProposals = normalizedFallback.slice(0, MAX_CODES);
+            stoppedBy = `${stoppedBy}_fallback_semantic_clusters`;
+          } else if (normalizedFallback.length) {
+            finalProposals = dedupeCodeProposalsByName([
+              ...finalProposals,
+              ...normalizedFallback,
+            ], MAX_CODES);
+            if (finalProposals.length < 30) {
+              stoppedBy = `${stoppedBy}_low_cardinality`;
+            }
+          }
+        }
+
         return sendJson(req, res, 200, {
           data: {
             proposals: finalProposals,
