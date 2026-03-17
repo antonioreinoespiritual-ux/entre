@@ -134,6 +134,39 @@ const buildCodeMapInitialAssistantReport = (analysis = {}, subject = {}, targetT
   ].join('\n');
 };
 
+const createEmptyCommentsStore = () => ({
+  fragments: [],
+  codes: [],
+  codeProposals: [],
+  hypotheses: [],
+  codeMapLayoutsByHypothesis: {},
+  codeMapAnalysisSessions: {},
+  codeMapVisualProfilesByScope: {},
+});
+
+const loadCommentsStoreFromLocalStorage = (storageKey = '') => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    return {
+      fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
+      codes: Array.isArray(parsed.codes) ? parsed.codes : [],
+      codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
+      hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
+      codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
+        ? parsed.codeMapLayoutsByHypothesis
+        : {},
+      codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
+        ? parsed.codeMapAnalysisSessions
+        : {},
+      codeMapVisualProfilesByScope: parsed.codeMapVisualProfilesByScope && typeof parsed.codeMapVisualProfilesByScope === 'object'
+        ? parsed.codeMapVisualProfilesByScope
+        : {},
+    };
+  } catch {
+    return createEmptyCommentsStore();
+  }
+};
+
 const normalizeGeneratedProposalName = (value = '', fallback = 'Dinámica emocional recurrente') => {
   const raw = String(value || '').replace(/\s+/g, ' ').trim();
   if (!raw) return fallback;
@@ -294,28 +327,7 @@ const CommentsModePage = () => {
   });
   const readerTextContainerRef = useRef(null);
 
-  const [store, setStore] = useState(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
-      return {
-        fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
-        codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-        codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
-        hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
-        codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
-          ? parsed.codeMapLayoutsByHypothesis
-          : {},
-        codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
-          ? parsed.codeMapAnalysisSessions
-          : {},
-        codeMapVisualProfilesByScope: parsed.codeMapVisualProfilesByScope && typeof parsed.codeMapVisualProfilesByScope === 'object'
-          ? parsed.codeMapVisualProfilesByScope
-          : {},
-      };
-    } catch {
-      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {}, codeMapAnalysisSessions: {}, codeMapVisualProfilesByScope: {} };
-    }
-  });
+  const [store, setStore] = useState(() => loadCommentsStoreFromLocalStorage(storageKey));
 
   const persist = (next) => {
     setStore(next);
@@ -432,10 +444,15 @@ const CommentsModePage = () => {
 
   useEffect(() => {
     let cancelled = false;
+    setStore(loadCommentsStoreFromLocalStorage(storageKey));
     const hydrateStore = async () => {
       try {
         const indexedState = await loadCommentsModeStore(storageKey);
-        if (cancelled || !indexedState || typeof indexedState !== 'object') return;
+        if (cancelled) return;
+        if (!indexedState || typeof indexedState !== 'object') {
+          setStore(loadCommentsStoreFromLocalStorage(storageKey));
+          return;
+        }
         setStore({
           fragments: Array.isArray(indexedState.fragments) ? indexedState.fragments : [],
           codes: Array.isArray(indexedState.codes) ? indexedState.codes : [],
@@ -452,7 +469,7 @@ const CommentsModePage = () => {
             : {},
         });
       } catch {
-        // Si no se puede leer IndexedDB, se mantiene fallback de localStorage.
+        if (!cancelled) setStore(loadCommentsStoreFromLocalStorage(storageKey));
       }
     };
     hydrateStore();
