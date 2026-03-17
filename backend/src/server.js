@@ -291,6 +291,7 @@ const schemaSql = [
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
     audience_id TEXT,
     user_id TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -308,6 +309,7 @@ const schemaSql = [
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
     audience_id TEXT,
     segment TEXT,
     related_client_id TEXT,
@@ -414,11 +416,29 @@ const schemaSql = [
     FOREIGN KEY (document_node_id) REFERENCES cloud_nodes(id) ON DELETE CASCADE
   )`,
   'CREATE INDEX IF NOT EXISTS idx_interview_semantic_fragments_document ON interview_semantic_fragments(document_node_id, created_at)',
+  `CREATE TABLE IF NOT EXISTS comment_workspaces (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
+    is_migrated INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, project_id, campaign_id, name)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_workspaces_campaign ON comment_workspaces(user_id, project_id, campaign_id, created_at DESC)',
   `CREATE TABLE IF NOT EXISTS comment_ingestion_runs (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
     source TEXT NOT NULL,
     source_job TEXT NOT NULL,
     input_id TEXT,
@@ -436,12 +456,13 @@ const schemaSql = [
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_runs_campaign ON comment_ingestion_runs(user_id, project_id, campaign_id, created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_runs_campaign ON comment_ingestion_runs(user_id, project_id, campaign_id, workspace_id, created_at DESC)',
   `CREATE TABLE IF NOT EXISTS comment_ingestion_inputs (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
     source TEXT NOT NULL,
     name TEXT,
     config_json TEXT NOT NULL,
@@ -453,12 +474,13 @@ const schemaSql = [
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
     FOREIGN KEY (linked_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_inputs_campaign ON comment_ingestion_inputs(user_id, project_id, campaign_id, created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_ingestion_inputs_campaign ON comment_ingestion_inputs(user_id, project_id, campaign_id, workspace_id, created_at DESC)',
   `CREATE TABLE IF NOT EXISTS comment_dataset_comments (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
     project_id TEXT NOT NULL,
     campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
     audience_id TEXT,
     hypothesis_id TEXT,
     source TEXT NOT NULL,
@@ -485,9 +507,9 @@ const schemaSql = [
     FOREIGN KEY (hypothesis_id) REFERENCES interview_hypotheses(id) ON DELETE SET NULL,
     FOREIGN KEY (source_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL,
     FOREIGN KEY (source_input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
-    UNIQUE(user_id, project_id, campaign_id, source, source_comment_id)
+    UNIQUE(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, published_at DESC, created_at DESC)',
+  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)',
   `CREATE TABLE IF NOT EXISTS comment_code_proposal_reviews (
     id TEXT PRIMARY KEY,
@@ -588,6 +610,73 @@ function buildEntityId(entityType, fallbackPrefix = 'id_') {
 function nowIso() {
   return new Date().toISOString();
 }
+
+const COMMENT_WORKSPACE_LEGACY = '__legacy_workspace__';
+const COMMENT_WORKSPACE_ACTIVE_LIMIT = 5;
+
+async function ensureCommentWorkspaceBackfill(userId, projectId, campaignId) {
+  const [workspaceRows] = await pool.query(
+    `SELECT id FROM comment_workspaces
+     WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+     ORDER BY created_at ASC LIMIT 1`,
+    [userId, projectId, campaignId],
+  );
+  if (workspaceRows[0]) return workspaceRows[0].id;
+
+  const [legacyRunRows] = await pool.query(
+    `SELECT id FROM comment_ingestion_runs
+     WHERE user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [userId, projectId, campaignId],
+  );
+  const [legacyInputRows] = await pool.query(
+    `SELECT id FROM comment_ingestion_inputs
+     WHERE user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [userId, projectId, campaignId],
+  );
+  const [legacyCommentRows] = await pool.query(
+    `SELECT id FROM comment_dataset_comments
+     WHERE user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [userId, projectId, campaignId],
+  );
+
+  if (!legacyRunRows[0] && !legacyInputRows[0] && !legacyCommentRows[0]) return '';
+
+  const now = nowIso();
+  await pool.query(
+    `INSERT INTO comment_workspaces (id, user_id, project_id, campaign_id, name, description, status, is_migrated, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)`,
+    [COMMENT_WORKSPACE_LEGACY, userId, projectId, campaignId, 'Workspace migrado', 'Workspace inicial creado automáticamente para conservar datos previos.', now, now],
+  );
+  return COMMENT_WORKSPACE_LEGACY;
+}
+
+async function resolveCommentWorkspace(userId, projectId, campaignId, requestedWorkspaceId = '') {
+  await ensureCommentWorkspaceBackfill(userId, projectId, campaignId);
+  const requested = String(requestedWorkspaceId || '').trim();
+  if (requested) {
+    const [requestedRows] = await pool.query(
+      `SELECT * FROM comment_workspaces
+       WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ?
+       LIMIT 1`,
+      [requested, userId, projectId, campaignId],
+    );
+    const workspace = requestedRows[0] || null;
+    if (!workspace) throw new Error('Workspace no encontrado para esta campaña.');
+    return workspace;
+  }
+
+  const [fallbackRows] = await pool.query(
+    `SELECT * FROM comment_workspaces
+     WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+     ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, created_at ASC
+     LIMIT 1`,
+    [userId, projectId, campaignId],
+  );
+  const fallback = fallbackRows[0] || null;
+  if (!fallback) throw new Error('Workspace no encontrado para esta campaña.');
+  return fallback;
+}
+
 function autoExternalIdForVideo(videoType, videoId) {
   const normalizedVideoType = String(videoType || 'organic').trim().toLowerCase();
   const normalizedVideoId = String(videoId || '').trim();
@@ -1996,6 +2085,7 @@ async function ensureVideoHierarchyMigration() {
 
   const optionalCommentIngestionRunColumns = [
     ['input_id', 'TEXT'],
+    ['workspace_id', "TEXT DEFAULT '__legacy_workspace__'"],
   ];
   for (const [columnName, columnType] of optionalCommentIngestionRunColumns) {
     if (await tableExists('comment_ingestion_runs') && !(await hasColumn('comment_ingestion_runs', columnName))) {
@@ -2003,8 +2093,18 @@ async function ensureVideoHierarchyMigration() {
     }
   }
 
+  const optionalCommentIngestionInputColumns = [
+    ['workspace_id', "TEXT DEFAULT '__legacy_workspace__'"],
+  ];
+  for (const [columnName, columnType] of optionalCommentIngestionInputColumns) {
+    if (await tableExists('comment_ingestion_inputs') && !(await hasColumn('comment_ingestion_inputs', columnName))) {
+      await pool.query(`ALTER TABLE comment_ingestion_inputs ADD COLUMN ${columnName} ${columnType}`);
+    }
+  }
+
   const optionalCommentDatasetColumns = [
     ['source_input_id', 'TEXT'],
+    ['workspace_id', "TEXT DEFAULT '__legacy_workspace__'"],
   ];
   for (const [columnName, columnType] of optionalCommentDatasetColumns) {
     if (await tableExists('comment_dataset_comments') && !(await hasColumn('comment_dataset_comments', columnName))) {
@@ -7092,6 +7192,102 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
     }
 
 
+
+    if (url.pathname === '/api/comment-base/workspaces' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      const workspaceIdRaw = String(url.searchParams.get('workspaceId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      await ensureCommentWorkspaceBackfill(user.id, projectId, campaignId);
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_workspaces WHERE user_id = ? AND project_id = ? AND campaign_id = ? ORDER BY created_at DESC`,
+        [user.id, projectId, campaignId],
+      );
+      const activeCount = rows.filter((item) => String(item.status || '').trim() === 'active').length;
+      return sendJson(req, res, 200, { data: { items: rows, active_count: activeCount, limit_active: COMMENT_WORKSPACE_ACTIVE_LIMIT } });
+    }
+
+    if (url.pathname === '/api/comment-base/workspaces' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      const name = String(body.name || '').trim();
+      const description = String(body.description || '').trim();
+      const status = String(body.status || 'active').trim() === 'inactive' ? 'inactive' : 'active';
+      if (!projectId || !campaignId || !name) return sendJson(req, res, 400, { error: 'project_id, campaign_id y name son requeridos' });
+
+      const [campaignRows] = await pool.query('SELECT id, project_id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1', [campaignId, user.id]);
+      const campaign = campaignRows[0] || null;
+      if (!campaign || String(campaign.project_id) !== String(projectId)) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      const [countRows] = await pool.query(
+        `SELECT COUNT(*) AS total FROM comment_workspaces WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND status = 'active'`,
+        [user.id, projectId, campaignId],
+      );
+      const activeCount = Number(countRows?.[0]?.total || 0);
+      if (status === 'active' && activeCount >= COMMENT_WORKSPACE_ACTIVE_LIMIT) {
+        return sendJson(req, res, 400, { error: `No puedes tener más de ${COMMENT_WORKSPACE_ACTIVE_LIMIT} workspaces activos por campaña.` });
+      }
+
+      const workspaceId = buildEntityId('comment_workspace');
+      const now = nowIso();
+      await pool.query(
+        `INSERT INTO comment_workspaces (id, user_id, project_id, campaign_id, name, description, status, is_migrated, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+        [workspaceId, user.id, projectId, campaignId, name, description || null, status, now, now],
+      );
+      return sendJson(req, res, 200, { data: { id: workspaceId, project_id: projectId, campaign_id: campaignId, name, description, status, is_migrated: 0, created_at: now, updated_at: now } });
+    }
+
+    const workspaceUpdateMatch = url.pathname.match(/^\/api\/comment-base\/workspaces\/([^/]+)$/);
+    if (workspaceUpdateMatch && req.method === 'PATCH') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const workspaceId = String(workspaceUpdateMatch[1] || '').trim();
+      const body = await readBody(req);
+      const projectId = String(body.project_id || '').trim();
+      const campaignId = String(body.campaign_id || '').trim();
+      if (!workspaceId || !projectId || !campaignId) return sendJson(req, res, 400, { error: 'workspace_id, project_id y campaign_id son requeridos' });
+
+      const [rows] = await pool.query(
+        `SELECT * FROM comment_workspaces WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+        [workspaceId, user.id, projectId, campaignId],
+      );
+      const workspace = rows[0] || null;
+      if (!workspace) return sendJson(req, res, 404, { error: 'Workspace not found' });
+
+      const nextName = String(body.name ?? workspace.name).trim() || workspace.name;
+      const nextDescription = String((body.description ?? workspace.description) || '').trim();
+      const requestedStatus = String(body.status || workspace.status || 'active').trim() === 'inactive' ? 'inactive' : 'active';
+
+      if (requestedStatus === 'active' && String(workspace.status) !== 'active') {
+        const [countRows] = await pool.query(
+          `SELECT COUNT(*) AS total FROM comment_workspaces WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND status = 'active'`,
+          [user.id, projectId, campaignId],
+        );
+        const activeCount = Number(countRows?.[0]?.total || 0);
+        if (activeCount >= COMMENT_WORKSPACE_ACTIVE_LIMIT) {
+          return sendJson(req, res, 400, { error: `No puedes activar más de ${COMMENT_WORKSPACE_ACTIVE_LIMIT} workspaces por campaña.` });
+        }
+      }
+
+      const now = nowIso();
+      await pool.query(
+        `UPDATE comment_workspaces SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?`,
+        [nextName, nextDescription || null, requestedStatus, now, workspaceId],
+      );
+      return sendJson(req, res, 200, { data: { ...workspace, name: nextName, description: nextDescription, status: requestedStatus, updated_at: now } });
+    }
+
     if (url.pathname === '/api/comment-base/inputs' && req.method === 'POST') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
@@ -7099,6 +7295,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const body = await readBody(req);
       const projectId = String(body.project_id || '').trim();
       const campaignId = String(body.campaign_id || '').trim();
+      const workspaceIdRaw = String(body.workspace_id || '').trim();
       if (!projectId || !campaignId) {
         return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
       }
@@ -7108,6 +7305,8 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       if (!campaign || String(campaign.project_id) !== String(projectId)) {
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
+
+      const workspace = await resolveCommentWorkspace(user.id, projectId, campaignId, workspaceIdRaw);
 
       let normalizedInput;
       try {
@@ -7120,13 +7319,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const createdAt = nowIso();
       await pool.query(
         `INSERT INTO comment_ingestion_inputs
-          (id, user_id, project_id, campaign_id, source, name, config_json, linked_run_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, user_id, project_id, campaign_id, workspace_id, source, name, config_json, linked_run_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           inputId,
           user.id,
           projectId,
           campaignId,
+          String(workspace.id),
           'youtube',
           String(body.name || normalizedInput.video_url || normalizedInput.video_id || normalizedInput.channel_id || 'YouTube input').trim(),
           JSON.stringify(normalizedInput),
@@ -7152,13 +7352,15 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const projectId = String(url.searchParams.get('projectId') || '').trim();
       const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      const workspaceIdRaw = String(url.searchParams.get('workspaceId') || '').trim();
       if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
 
+      const workspace = await resolveCommentWorkspace(user.id, projectId, campaignId, workspaceIdRaw);
       const [rows] = await pool.query(
         `SELECT * FROM comment_ingestion_inputs
-         WHERE user_id = ? AND project_id = ? AND campaign_id = ?
+         WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND workspace_id = ?
          ORDER BY created_at DESC LIMIT 100`,
-        [user.id, projectId, campaignId],
+        [user.id, projectId, campaignId, String(workspace.id)],
       );
       const items = rows.map((row) => ({
         ...row,
@@ -7591,6 +7793,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const body = await readBody(req);
       const projectId = String(body.project_id || '').trim();
       const campaignId = String(body.campaign_id || '').trim();
+      const workspaceIdRaw = String(body.workspace_id || '').trim();
       if (!projectId || !campaignId) {
         return sendJson(req, res, 400, { error: 'project_id and campaign_id are required' });
       }
@@ -7604,6 +7807,8 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         return sendJson(req, res, 404, { error: 'Campaign not found' });
       }
 
+      const workspace = await resolveCommentWorkspace(user.id, projectId, campaignId, workspaceIdRaw);
+
       const requestedInputId = String(body.input_id || '').trim();
       let inputId = requestedInputId;
       let normalizedInput = null;
@@ -7611,8 +7816,8 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       if (requestedInputId) {
         const [inputRows] = await pool.query(
           `SELECT * FROM comment_ingestion_inputs
-           WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
-          [requestedInputId, user.id, projectId, campaignId],
+           WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? AND workspace_id = ? LIMIT 1`,
+          [requestedInputId, user.id, projectId, campaignId, String(workspace.id)],
         );
         const savedInput = inputRows[0] || null;
         if (!savedInput) return sendJson(req, res, 404, { error: 'Input not found' });
@@ -7633,13 +7838,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         inputId = buildEntityId('comment_ingestion_input');
         await pool.query(
           `INSERT INTO comment_ingestion_inputs
-            (id, user_id, project_id, campaign_id, source, name, config_json, linked_run_id, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (id, user_id, project_id, campaign_id, workspace_id, source, name, config_json, linked_run_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             inputId,
             user.id,
             projectId,
             campaignId,
+            String(workspace.id),
             'youtube',
             String(body.name || normalizedInput.video_url || normalizedInput.video_id || normalizedInput.channel_id || 'YouTube input').trim(),
             JSON.stringify(normalizedInput),
@@ -7654,13 +7860,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const startedAt = nowIso();
       await pool.query(
         `INSERT INTO comment_ingestion_runs
-          (id, user_id, project_id, campaign_id, source, source_job, input_id, source_query_json, status, started_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, user_id, project_id, campaign_id, workspace_id, source, source_job, input_id, source_query_json, status, started_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           runId,
           user.id,
           projectId,
           campaignId,
+          String(workspace.id),
           'youtube',
           'youtube_comments_ingestion',
           inputId,
@@ -7694,11 +7901,11 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
           const id = buildEntityId('comment_record');
           await pool.query(
             `INSERT INTO comment_dataset_comments
-              (id, user_id, project_id, campaign_id, audience_id, hypothesis_id, source, source_comment_id, parent_comment_id,
+              (id, user_id, project_id, campaign_id, workspace_id, audience_id, hypothesis_id, source, source_comment_id, parent_comment_id,
                video_id, channel_id, author_name, author_channel_id, text, published_at, like_count, reply_count,
                source_job, source_run_id, source_input_id, source_query_json, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(user_id, project_id, campaign_id, source, source_comment_id) DO UPDATE SET
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(user_id, project_id, campaign_id, workspace_id, source, source_comment_id) DO UPDATE SET
                parent_comment_id = excluded.parent_comment_id,
                video_id = excluded.video_id,
                channel_id = excluded.channel_id,
@@ -7718,6 +7925,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
               user.id,
               projectId,
               campaignId,
+              String(workspace.id),
               audienceId,
               hypothesisId,
               row.source,
@@ -7801,14 +8009,16 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const projectId = String(url.searchParams.get('projectId') || '').trim();
       const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      const workspaceIdRaw = String(url.searchParams.get('workspaceId') || '').trim();
       if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
 
       const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') || 100)));
       const offset = Math.max(0, Number(url.searchParams.get('offset') || 0));
       const q = String(url.searchParams.get('q') || '').trim();
 
-      const where = ['user_id = ?', 'project_id = ?', 'campaign_id = ?'];
-      const values = [user.id, projectId, campaignId];
+      const workspace = await resolveCommentWorkspace(user.id, projectId, campaignId, workspaceIdRaw);
+      const where = ['user_id = ?', 'project_id = ?', 'campaign_id = ?', 'workspace_id = ?'];
+      const values = [user.id, projectId, campaignId, String(workspace.id)];
       if (q) {
         where.push('(text LIKE ? OR author_name LIKE ? OR source_comment_id LIKE ?)');
         values.push(`%${q}%`, `%${q}%`, `%${q}%`);
@@ -7838,15 +8048,16 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
       const projectId = String(url.searchParams.get('projectId') || '').trim();
       const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      const workspaceIdRaw = String(url.searchParams.get('workspaceId') || '').trim();
       if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
 
       const [rows] = await pool.query(
         `SELECT r.*, i.name AS input_name, i.config_json AS input_config_json
          FROM comment_ingestion_runs r
          LEFT JOIN comment_ingestion_inputs i ON i.id = r.input_id
-         WHERE r.user_id = ? AND r.project_id = ? AND r.campaign_id = ?
+         WHERE r.user_id = ? AND r.project_id = ? AND r.campaign_id = ? AND r.workspace_id = ?
          ORDER BY r.created_at DESC LIMIT 30`,
-        [user.id, projectId, campaignId],
+        [user.id, projectId, campaignId, String((await resolveCommentWorkspace(user.id, projectId, campaignId, workspaceIdRaw)).id)],
       );
       const items = rows.map((row) => ({
         ...row,
@@ -7864,22 +8075,24 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const runId = String(deleteRunMatch[1] || '').trim();
       const projectId = String(url.searchParams.get('projectId') || '').trim();
       const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      const workspaceIdRaw = String(url.searchParams.get('workspaceId') || '').trim();
       if (!runId || !projectId || !campaignId) {
         return sendJson(req, res, 400, { error: 'run id, projectId and campaignId are required' });
       }
 
+      const workspace = await resolveCommentWorkspace(user.id, projectId, campaignId, workspaceIdRaw);
       const [runRows] = await pool.query(
-        `SELECT * FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
-        [runId, user.id, projectId, campaignId],
+        `SELECT * FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? AND workspace_id = ? LIMIT 1`,
+        [runId, user.id, projectId, campaignId, String(workspace.id)],
       );
       const run = runRows[0] || null;
       if (!run) return sendJson(req, res, 404, { error: 'Run not found' });
 
-      await pool.query('DELETE FROM comment_dataset_comments WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND source_run_id = ?', [user.id, projectId, campaignId, runId]);
+      await pool.query('DELETE FROM comment_dataset_comments WHERE user_id = ? AND project_id = ? AND campaign_id = ? AND workspace_id = ? AND source_run_id = ?', [user.id, projectId, campaignId, String(workspace.id), runId]);
       if (run.input_id) {
-        await pool.query('DELETE FROM comment_ingestion_inputs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ?', [run.input_id, user.id, projectId, campaignId]);
+        await pool.query('DELETE FROM comment_ingestion_inputs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? AND workspace_id = ?', [run.input_id, user.id, projectId, campaignId, String(workspace.id)]);
       }
-      await pool.query('DELETE FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ?', [runId, user.id, projectId, campaignId]);
+      await pool.query('DELETE FROM comment_ingestion_runs WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? AND workspace_id = ?', [runId, user.id, projectId, campaignId, String(workspace.id)]);
 
       return sendJson(req, res, 200, { data: { deleted_run_id: runId, deleted_input_id: run.input_id || null } });
     }
@@ -8250,7 +8463,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       await pool.query(
         `INSERT INTO interview_semantic_fragments
          (id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           fragment.id,
           fragment.user_id,
@@ -8851,7 +9064,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const now = nowIso();
       await pool.query(
         `INSERT INTO interview_clients (id, project_id, campaign_id, audience_id, user_id, name, contact, notes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [buildEntityId('interview_client'), projectId, campaignId, body.audience_id || null, user.id, body.name || 'Cliente', body.contact || null, body.notes || null, now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_clients WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);

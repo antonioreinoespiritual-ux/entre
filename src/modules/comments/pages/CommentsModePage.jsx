@@ -74,6 +74,21 @@ const COMMENT_CODE_EVOLUTION_DISABLED = true;
 
 const CODE_MAP_ALL_SCOPE = '__all__';
 
+
+const LEGACY_WORKSPACE_ID = '__legacy_workspace__';
+const WORKSPACE_ACTIVE_LIMIT = 5;
+
+const normalizeWorkspace = (item = {}) => ({
+  id: String(item?.id || '').trim(),
+  name: String(item?.name || 'Workspace').trim() || 'Workspace',
+  description: String(item?.description || '').trim(),
+  status: String(item?.status || 'active').trim() === 'inactive' ? 'inactive' : 'active',
+  is_migrated: Number(item?.is_migrated || 0) ? 1 : 0,
+  created_at: String(item?.created_at || ''),
+  updated_at: String(item?.updated_at || ''),
+});
+
+
 const parseHypothesisSelection = (value = '') => {
   const raw = String(value || '').trim();
   if (!raw) return [];
@@ -144,7 +159,26 @@ const normalizeGeneratedProposalDescription = (description = '', name = '') => {
 
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
-  const storageKey = `comments-mode:${projectId}:${campaignId}`;
+  const workspacePreferenceKey = `comments-mode:workspace-selection:${projectId}:${campaignId}`;
+  const legacyStorageKey = `comments-mode:${projectId}:${campaignId}`;
+
+  const [workspaceModalOpen, setWorkspaceModalOpen] = useState(true);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState('');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(() => {
+    try {
+      return String(localStorage.getItem(workspacePreferenceKey) || '').trim();
+    } catch {
+      return '';
+    }
+  });
+  const [workspaceEditor, setWorkspaceEditor] = useState({ open: false, mode: 'create', id: '', name: '', description: '', status: 'active' });
+
+  const storageKey = activeWorkspaceId
+    ? (activeWorkspaceId === LEGACY_WORKSPACE_ID ? legacyStorageKey : `${legacyStorageKey}:workspace:${activeWorkspaceId}`)
+    : legacyStorageKey;
 
   const [tab, setTab] = useState('comments');
   const [commentsSubtab, setCommentsSubtab] = useState('ingestion');
@@ -295,11 +329,106 @@ const CommentsModePage = () => {
     });
   };
 
+
+  const activeWorkspace = useMemo(
+    () => workspaces.find((item) => String(item.id) === String(activeWorkspaceId)) || null,
+    [workspaces, activeWorkspaceId],
+  );
+
+  const activeWorkspaceCount = useMemo(
+    () => workspaces.filter((item) => String(item.status || 'active') === 'active').length,
+    [workspaces],
+  );
+
+  const workspaceContext = useMemo(() => ({
+    workspaceId: String(activeWorkspaceId || '').trim(),
+  }), [activeWorkspaceId]);
+
+  const loadWorkspaces = async (preferredId = '') => {
+    if (!projectId || !campaignId) return;
+    setWorkspaceBusy(true);
+    setWorkspaceError('');
+    try {
+      const response = await commentsIngestionApi.listWorkspaces({ projectId, campaignId, workspaceId: workspaceContext.workspaceId });
+      const items = (Array.isArray(response?.items) ? response.items : []).map(normalizeWorkspace).filter((item) => item.id);
+      setWorkspaces(items);
+      const preferred = String(preferredId || activeWorkspaceId || '').trim();
+      const validPreferred = preferred && items.some((item) => String(item.id) === preferred);
+      const fallback = items.find((item) => String(item.status) === 'active') || items[0] || null;
+      const nextActive = validPreferred ? preferred : String(fallback?.id || '');
+      if (nextActive) {
+        setActiveWorkspaceId(nextActive);
+        try { localStorage.setItem(workspacePreferenceKey, nextActive); } catch {}
+      }
+      if (!nextActive) setWorkspaceModalOpen(true);
+    } catch (error) {
+      setWorkspaceError(error?.message || 'No se pudieron cargar los workspaces.');
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+
+  const selectWorkspace = (workspaceId) => {
+    const id = String(workspaceId || '').trim();
+    if (!id) return;
+    setActiveWorkspaceId(id);
+    try { localStorage.setItem(workspacePreferenceKey, id); } catch {}
+    setWorkspaceModalOpen(false);
+    setWorkspaceMenuOpen(false);
+  };
+
+  const saveWorkspaceEditor = async () => {
+    const name = String(workspaceEditor.name || '').trim();
+    if (!name) {
+      setWorkspaceError('El workspace requiere un nombre.');
+      return;
+    }
+    if (workspaceEditor.mode === 'create' && String(workspaceEditor.status) === 'active' && activeWorkspaceCount >= WORKSPACE_ACTIVE_LIMIT) {
+      setWorkspaceError(`No puedes tener más de ${WORKSPACE_ACTIVE_LIMIT} workspaces activos por campaña.`);
+      return;
+    }
+    setWorkspaceBusy(true);
+    setWorkspaceError('');
+    try {
+      if (workspaceEditor.mode === 'create') {
+        const created = await commentsIngestionApi.createWorkspace({
+          project_id: projectId,
+          campaign_id: campaignId,
+          name,
+          description: String(workspaceEditor.description || '').trim(),
+          status: String(workspaceEditor.status || 'active'),
+        });
+        const normalized = normalizeWorkspace(created);
+        await loadWorkspaces(normalized.id);
+      } else {
+        const updated = await commentsIngestionApi.updateWorkspace({
+          workspaceId: workspaceEditor.id,
+          project_id: projectId,
+          campaign_id: campaignId,
+          name,
+          description: String(workspaceEditor.description || '').trim(),
+          status: String(workspaceEditor.status || 'active'),
+        });
+        const normalized = normalizeWorkspace(updated);
+        await loadWorkspaces(normalized.id || workspaceEditor.id);
+      }
+      setWorkspaceEditor({ open: false, mode: 'create', id: '', name: '', description: '', status: 'active' });
+    } catch (error) {
+      setWorkspaceError(error?.message || 'No se pudo guardar el workspace.');
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+
   const guardCodeEvolution = () => {
     if (!COMMENT_CODE_EVOLUTION_DISABLED) return false;
     setSemanticAgentError('La evolución de fragmentos a códigos está deshabilitada en Modo Comentarios.');
     return true;
   };
+
+  useEffect(() => {
+    loadWorkspaces();
+  }, [projectId, campaignId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -483,6 +612,7 @@ const CommentsModePage = () => {
       await commentsIngestionApi.saveCodeProposalReview({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         proposal_id: String(proposal?.id || '').trim(),
         fragment_id: String(proposal?.fragment_id || '').trim(),
         action: String(action || '').trim() || 'revision',
@@ -514,6 +644,7 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.enrichFragments({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         fragments: preparedIncoming,
         existing_fragments: fragments.slice(0, 5000).map((fragment) => ({
           id: fragment.id,
@@ -648,6 +779,7 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.runCodeSelectionAgent({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         fragments: targetFragments,
         existing_codes: codes,
       });
@@ -1635,6 +1767,7 @@ const CommentsModePage = () => {
       const analysis = await commentsIngestionApi.runCodeMapAnalysisAgent({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         code: {
           slug,
           name: String(code.name || '').trim(),
@@ -1760,6 +1893,7 @@ const CommentsModePage = () => {
       const analysis = await commentsIngestionApi.runProfileCodeMapAnalysisAgent({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         profile: {
           id: normalizedProfileId,
           name: String(profile.name || 'Perfil estratégico').trim(),
@@ -1849,6 +1983,7 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.runCodeMapAnalysisChatTurn({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         question,
         analysis_session: draftSession,
       });
@@ -2381,6 +2516,7 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.runCodeGenerationAgent({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         comments: [],
       });
 
@@ -2881,7 +3017,7 @@ const CommentsModePage = () => {
 
   const loadInputs = async () => {
     try {
-      const data = await commentsIngestionApi.listInputs({ projectId, campaignId });
+      const data = await commentsIngestionApi.listInputs({ projectId, campaignId, workspaceId: workspaceContext.workspaceId });
       setIngestionInputs(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
       setIngestionError(error.message || 'No se pudieron cargar inputs guardados.');
@@ -2910,6 +3046,7 @@ const CommentsModePage = () => {
       const saved = await commentsIngestionApi.saveInput({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         name: ingestionDraft.videoUrl?.trim() || ingestionDraft.videoId?.trim() || ingestionDraft.channelId?.trim() || ingestionDraft.videoSearchQuery?.trim() || `input_${ingestionInputs.length + 1}`,
         video_url: ingestionDraft.videoUrl,
         video_id: sourceVideoId,
@@ -2934,6 +3071,7 @@ const CommentsModePage = () => {
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
+        workspaceId: workspaceContext.workspaceId,
         limit: commentsTable.limit,
         offset,
         q,
@@ -2953,7 +3091,7 @@ const CommentsModePage = () => {
 
   const loadRuns = async () => {
     try {
-      const data = await commentsIngestionApi.listRuns({ projectId, campaignId });
+      const data = await commentsIngestionApi.listRuns({ projectId, campaignId, workspaceId: workspaceContext.workspaceId });
       setIngestionRuns(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
       setIngestionError(error.message || 'No se pudo cargar historial de runs.');
@@ -2966,7 +3104,7 @@ const CommentsModePage = () => {
       return;
     }
     try {
-      const data = await commentsIngestionApi.listCodeProposalReviews({ projectId, campaignId, limit: 2000 });
+      const data = await commentsIngestionApi.listCodeProposalReviews({ projectId, campaignId, workspaceId: workspaceContext.workspaceId, limit: 2000 });
       setProposalFeedbackSummary(data?.summaryByCode && typeof data.summaryByCode === 'object' ? data.summaryByCode : {});
     } catch {
       setProposalFeedbackSummary({});
@@ -2977,7 +3115,7 @@ const CommentsModePage = () => {
     if (!runId) return;
     if (!window.confirm('¿Eliminar este run? También se eliminarán su input asociado y sus comentarios de la base total.')) return;
     try {
-      await commentsIngestionApi.deleteRun({ runId, projectId, campaignId });
+      await commentsIngestionApi.deleteRun({ runId, projectId, campaignId, workspaceId: workspaceContext.workspaceId });
       await Promise.all([loadRuns(), loadInputs(), loadCommentsTable({ offset: 0, q: commentsTable.q })]);
     } catch (error) {
       setIngestionError(error.message || 'No se pudo eliminar el run.');
@@ -2985,6 +3123,7 @@ const CommentsModePage = () => {
   };
 
   useEffect(() => {
+    if (!workspaceContext.workspaceId) return;
     if (tab !== 'comments' && tab !== 'reader') return;
     loadCommentsTable({ offset: commentsTable.offset, q: commentsTable.q });
     if (commentsSubtab === 'table') loadCommentsTable({ offset: 0, q: commentsTable.q });
@@ -2992,12 +3131,13 @@ const CommentsModePage = () => {
       loadRuns();
       loadInputs();
     }
-  }, [tab, commentsSubtab]);
+  }, [tab, commentsSubtab, workspaceContext.workspaceId]);
 
   useEffect(() => {
+    if (!workspaceContext.workspaceId) return;
     if (tab !== 'codes') return;
     loadProposalReviews();
-  }, [tab, projectId, campaignId]);
+  }, [tab, projectId, campaignId, workspaceContext.workspaceId]);
 
   useEffect(() => {
     if (!selectedReaderCommentId && readerComments.length) {
@@ -3066,6 +3206,7 @@ const CommentsModePage = () => {
       await commentsIngestionApi.runIngestion({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         video_url: ingestionDraft.videoUrl,
         video_id: sourceVideoId,
         channel_id: sourceChannelId,
@@ -3303,9 +3444,22 @@ const CommentsModePage = () => {
               <h1 className="text-2xl font-bold text-slate-900">Modo comentarios</h1>
               <p className="text-xs text-slate-500">Proyecto {projectId} · Campaña {campaignId}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button className="bg-indigo-600 text-white" onClick={() => setTab('reader')}>Abrir lector</Button>
-              <Button className="bg-white border text-indigo-700" onClick={() => setTab('codes')}>Crear código</Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-2.5 py-1 text-xs ${activeWorkspace ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>
+                Workspace: {activeWorkspace?.name || 'Sin seleccionar'}
+              </span>
+              <div className="relative">
+                <Button className="bg-white border text-slate-700" onClick={() => setWorkspaceMenuOpen((prev) => !prev)}>
+                  <MoreHorizontal className="mr-1 h-4 w-4" /> Opciones
+                </Button>
+                {workspaceMenuOpen ? (
+                  <div className="absolute right-0 top-11 z-40 min-w-[180px] rounded-lg border bg-white p-1.5 shadow-lg">
+                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100" onClick={() => { setWorkspaceModalOpen(true); setWorkspaceMenuOpen(false); }}>Ver Workspaces</button>
+                  </div>
+                ) : null}
+              </div>
+              <Button className="bg-indigo-600 text-white" onClick={() => setTab('reader')} disabled={!workspaceContext.workspaceId}>Abrir lector</Button>
+              <Button className="bg-white border text-indigo-700" onClick={() => setTab('codes')} disabled={!workspaceContext.workspaceId}>Crear código</Button>
             </div>
           </div>
 
@@ -4509,6 +4663,64 @@ const CommentsModePage = () => {
               ) : null}
             </div>
           )}
+
+
+
+          {workspaceModalOpen ? (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/55 p-4">
+              <div className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                <div className="flex items-center justify-between border-b px-5 py-4">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900">Workspaces de campaña</h3>
+                    <p className="text-xs text-slate-500">Selecciona un workspace o crea uno nuevo. Máximo {WORKSPACE_ACTIVE_LIMIT} activos.</p>
+                  </div>
+                  <Button className="bg-white border" onClick={() => setWorkspaceEditor({ open: true, mode: 'create', id: '', name: '', description: '', status: 'active' })}>Nuevo workspace</Button>
+                </div>
+                <div className="max-h-[60vh] overflow-auto p-4">
+                  {workspaceError ? <p className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{workspaceError}</p> : null}
+                  {workspaceBusy ? <p className="text-sm text-slate-600">Cargando workspaces...</p> : null}
+                  <div className="space-y-2">
+                    {workspaces.length === 0 ? <p className="text-sm text-slate-500">No hay workspaces todavía para esta campaña.</p> : workspaces.map((workspace) => (
+                      <div key={workspace.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{workspace.name}</p>
+                          <p className="text-xs text-slate-500">{workspace.description || 'Sin descripción'}</p>
+                          <p className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] ${workspace.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{workspace.status === 'active' ? 'Activo' : 'Inactivo'}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button className="bg-white border" onClick={() => setWorkspaceEditor({ open: true, mode: 'edit', id: workspace.id, name: workspace.name, description: workspace.description, status: workspace.status })}>Editar</Button>
+                          <Button className="bg-indigo-600 text-white" disabled={workspace.status !== 'active'} onClick={() => selectWorkspace(workspace.id)}>Entrar</Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {workspaceEditor.open ? (
+            <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/50 p-4">
+              <div className="w-full max-w-lg rounded-xl border bg-white shadow-xl">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">{workspaceEditor.mode === 'create' ? 'Crear Workspace' : 'Editar Workspace'}</h3>
+                </div>
+                <div className="space-y-3 px-4 py-4">
+                  <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Nombre" value={workspaceEditor.name} onChange={(event) => setWorkspaceEditor((prev) => ({ ...prev, name: event.target.value }))} />
+                  <textarea className="h-24 w-full rounded-lg border px-3 py-2 text-sm" placeholder="Descripción" value={workspaceEditor.description} onChange={(event) => setWorkspaceEditor((prev) => ({ ...prev, description: event.target.value }))} />
+                  <select className="w-full rounded-lg border px-3 py-2 text-sm" value={workspaceEditor.status} onChange={(event) => setWorkspaceEditor((prev) => ({ ...prev, status: event.target.value }))}>
+                    <option value="active">Activo</option>
+                    <option value="inactive">Inactivo</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-end gap-2 border-t px-4 py-3">
+                  <Button className="bg-white border" onClick={() => setWorkspaceEditor({ open: false, mode: 'create', id: '', name: '', description: '', status: 'active' })}>Cancelar</Button>
+                  <Button className="bg-indigo-600 text-white" onClick={saveWorkspaceEditor} disabled={workspaceBusy}>Guardar</Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
 
 
 
