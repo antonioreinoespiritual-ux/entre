@@ -4448,17 +4448,32 @@ function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes
       target: 'Taxonomía final: 20-40 códigos usando saturación semántica.',
     };
 
-  return `Tarea: crear taxonomía conceptual jerárquica desde comentarios completos.
-No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
-Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
-Naming: 2-4 palabras preferiblemente, conceptual, limpio, compacto y útil como etiqueta analítica; sin literalidad, sin números y sin residuos del corpus.
-Prohibido en títulos: código, cluster, conceptual, tema, grupo, placeholders o prefijos vacíos. También prohibido: genérico, generic, patrón 1/2/3, código 1/2/3.
-El título debe comprimir la narrativa dominante (problema/emoción/conducta), no reciclar keywords sueltas.
-Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
-Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
+  return `Tarea: generar códigos cualitativos interpretativos desde comentarios reales de clientes.
+NO hacer: etiquetas temáticas, clasificación superficial, nombrar eventos literalmente, reciclar palabras clave del corpus.
+Naturaleza del código: cada código es una hipótesis interpretativa condensada sobre cómo el cliente vive, explica y actúa frente a su problema.
+
+MARCO INTERPRETATIVO OBLIGATORIO — cada código debe integrar simultáneamente:
+1. INTERPRETACIÓN DEL PROBLEMA: cómo el cliente entiende lo que le ocurre (no el evento, sino el significado que le atribuye).
+2. ESTADO EMOCIONAL DOMINANTE: la emoción estructural que organiza el discurso (no palabras emocionales aisladas).
+3. INTENCIÓN CONDUCTUAL: qué acción desea realizar el cliente o qué comportamiento está evaluando.
+4. CREENCIA EXPLICATIVA: la narrativa causal del cliente sobre por qué ocurre el problema.
+5. RELACIÓN TEMPORAL: fase psicológica del cliente — impacto reciente / desesperación activa / intento de recuperación / resignación / racionalización / aprendizaje / reconstrucción.
+6. PERCEPCIÓN DE PODER O CONTROL: si el cliente se percibe en desventaja / con pérdida de control / buscando recuperar poder / manipulando la situación / resignado / empoderado.
+
+FORMA DEL CÓDIGO — el suggested_code_name debe ser una interpretación semántica completa, NO una etiqueta corta.
+Correcto: "infidelidad vivida como humillación social que genera urgencia por recuperar control"
+Correcto: "pérdida económica interpretada como fracaso personal que paraliza la toma de decisiones"
+Correcto: "traición percibida como señal de incompetencia propia que activa búsqueda urgente de validación externa"
+Incorrecto: "infidelidad", "pérdida económica", "traición del proveedor"
+El código debe responder implícitamente: ¿Qué está viviendo realmente este cliente y qué tipo de acción comercial permitiría intervenir sobre esa vivencia?
+
+PRINCIPIO DE ANÁLISIS EMERGENTE: los códigos deben emerger desde los datos. Interpretar patrones de sentido, no contar palabras. Priorizar profundidad interpretativa sobre cantidad.
+Un código solo es válido si revela una estructura de sentido psicológica y conductual relevante para la acción comercial.
+
+Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar redundancias; descartar ruido. ${stageConfig.target}
 Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
-Regla: los subclusters deben ser conceptuales y no redundantes.
-Cada description debe ser breve, profesional y directamente útil: debe explicar el fenómeno que representa el código con una redacción comparable a ejemplos como "Evitar mencionar adquisiciones para no generar envidia". No repetir mecánicamente el título ni usar plantillas.
+Regla subclusters: solo si existe heterogeneidad real dentro del patrón interpretativo; cada subcluster también debe ser una interpretación completa, no una etiqueta.
+Cada description debe explicar el valor comercial del código: qué acción de marketing, producto o segmentación habilita. No repetir el título ni usar plantillas genéricas.
 Formato de salida: JSON válido, sin texto adicional.
 {
   "proposals": [
@@ -4498,14 +4513,28 @@ function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, ma
     .map((item, index) => `${index + 1}) ${compactText(item.suggested_code_name, 90)} :: ${compactText(item.description, 140)}`)
     .join('\n');
 
-  return `Consolida esta lista de candidatos en taxonomía final sin trazabilidad.
-Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, maximizando cobertura semántica y deteniéndose por saturación.
-Fusiona redundancias, descarta ruido y conserva solo nombres conceptuales reutilizables.
-Regla de naming: títulos compactos de 2-4 palabras preferiblemente, limpios y conceptuales, similares en calidad a "Identificación Miradas Actitudes" o "Reconocer Envidia Propia"; sin números secuenciales ni términos genéricos.
-Incluye subcódigos útiles y marca recommendation.
+  return `Consolida esta lista de candidatos en taxonomía final de códigos cualitativos interpretativos.
+Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, priorizando profundidad interpretativa sobre cantidad.
+
+CRITERIO DE CONSOLIDACIÓN — conservar solo códigos que cumplan TODOS los criterios:
+- Revelan cómo el cliente INTERPRETA su problema (no solo lo nombran)
+- Capturan una EMOCIÓN ESTRUCTURAL dominante (no palabras emocionales sueltas)
+- Sugieren una INTENCIÓN CONDUCTUAL o impulso de acción del cliente
+- Expresan la CREENCIA CAUSAL del cliente sobre por qué ocurre el problema
+- Ubican al cliente en una FASE TEMPORAL/PSICOLÓGICA del proceso
+- Reflejan la PERCEPCIÓN DE PODER O CONTROL del cliente
+
+REGLA DE NAMING — el suggested_code_name debe ser una interpretación semántica completa:
+Correcto: "traición del proveedor vivida como pérdida de control que activa búsqueda desesperada de alternativas"
+Incorrecto: "traición del proveedor", "pérdida de control", "búsqueda de alternativas"
+Fusiona candidatos redundantes generando una sola formulación interpretativa que integre la riqueza de ambos.
+Descarta candidatos que sean solo etiquetas temáticas, clasificaciones superficiales o nombres de eventos sin interpretación psicológica.
+
+Incluye subcódigos solo si representan variantes interpretativas reales dentro del patrón (también en forma de interpretación completa).
+Marca recommendation por cada código: crear si tiene alto valor comercial, fusionar si existe solapamiento, descartar si es ruido o etiqueta superficial.
 Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
 
-CANDIDATOS:
+CANDIDATOS A CONSOLIDAR:
 ${candidateLines}`;
 }
 
@@ -4528,13 +4557,25 @@ function buildCodeGenerationExpansionPrompt({ comments = [], existing = [], minA
     .map((item, index) => `${index + 1}) ${compactText(item?.suggested_code_name || item?.cluster_name, 90)} :: ${compactText(item?.description, 140)}`)
     .join('\n');
 
-  return `Expande taxonomía de códigos SOLO con razonamiento LLM a partir del corpus de comentarios.
-Objetivo: generar códigos adicionales no redundantes y de alta utilidad analítica.
-Debes proponer entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS.
-Prohibido repetir o parafrasear códigos existentes.
-Naming obligatorio: título corto, limpio y conceptual (2-4 palabras preferiblemente), sin números ni placeholders.
-Descripción obligatoria: explicación breve, profesional y precisa del patrón, en el estilo de una definición útil de codebook. Debe decir qué fenómeno representa el código sin plantillas ni ruido.
-No uses reglas heurísticas externas ni clustering auxiliar: solo análisis LLM del contenido.
+  return `Expande la taxonomía generando códigos cualitativos interpretativos adicionales SOLO mediante razonamiento LLM desde el corpus.
+Objetivo: proponer entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS con alta profundidad interpretativa.
+Prohibido repetir, parafrasear o reformular los códigos existentes.
+No uses clustering auxiliar ni reglas heurísticas externas: solo interpretación LLM del discurso real del cliente.
+
+MARCO INTERPRETATIVO OBLIGATORIO — cada código nuevo debe capturar simultáneamente:
+1. Cómo el cliente INTERPRETA su problema (el significado subjetivo, no el evento literal)
+2. La EMOCIÓN ESTRUCTURAL dominante que organiza su discurso
+3. La INTENCIÓN CONDUCTUAL que emerge (qué desea hacer, qué está evaluando)
+4. La CREENCIA CAUSAL del cliente (por qué cree que ocurre el problema)
+5. La FASE PSICOLÓGICA/TEMPORAL en que se encuentra
+6. Su PERCEPCIÓN DE PODER O CONTROL sobre la situación
+
+FORMA OBLIGATORIA DEL NOMBRE — debe ser una interpretación semántica completa, no una etiqueta:
+Correcto: "dependencia económica vivida como trampa sin salida que genera parálisis decisional y búsqueda de culpables externos"
+Correcto: "frustración con el sistema percibida como injusticia estructural que activa narrativa de resistencia y búsqueda de aliados"
+Incorrecto: "dependencia económica", "frustración", "búsqueda de alternativas"
+
+Descripción obligatoria: explicar el valor comercial del código — qué acción de marketing, segmentación, diseño de oferta o comunicación habilita. Sin plantillas ni ruido.
 Salida: JSON válido con forma {"proposals":[...]} usando campos del flujo principal.
 
 CODIGOS EXISTENTES (NO REPETIR):
