@@ -4451,14 +4451,14 @@ function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes
   return `Tarea: crear taxonomía conceptual jerárquica desde comentarios completos.
 No hacer: trazabilidad, asignación comentario-código, clasificación uno a uno.
 Método: clusterizar por significado, subclusterizar solo si hay heterogeneidad real, proponer códigos y subcódigos.
-Naming: 3-7 palabras, conceptual, claro, completo y reutilizable; no literal ni telegráfico, sin números secuenciales.
+Naming: 2-4 palabras preferiblemente, conceptual, limpio, compacto y útil como etiqueta analítica; sin literalidad, sin números y sin residuos del corpus.
 Prohibido en títulos: código, cluster, conceptual, tema, grupo, placeholders o prefijos vacíos. También prohibido: genérico, generic, patrón 1/2/3, código 1/2/3.
 El título debe comprimir la narrativa dominante (problema/emoción/conducta), no reciclar keywords sueltas.
 Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
 Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
 Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
 Regla: los subclusters deben ser conceptuales y no redundantes.
-Cada description debe ser una explicación conceptual precisa del código: debe explicar por qué ese patrón merece ese nombre, qué tipo de comentarios agrupa y cuál es el insight dominante. No repetir el título ni usar plantillas fijas; variar la redacción según el fenómeno detectado.
+Cada description debe ser breve, profesional y directamente útil: debe explicar el fenómeno que representa el código con una redacción comparable a ejemplos como "Evitar mencionar adquisiciones para no generar envidia". No repetir mecánicamente el título ni usar plantillas.
 Formato de salida: JSON válido, sin texto adicional.
 {
   "proposals": [
@@ -4501,7 +4501,7 @@ function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, ma
   return `Consolida esta lista de candidatos en taxonomía final sin trazabilidad.
 Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, maximizando cobertura semántica y deteniéndose por saturación.
 Fusiona redundancias, descarta ruido y conserva solo nombres conceptuales reutilizables.
-Regla de naming: títulos de 3-7 palabras, claros, completos y descriptivos; sin números secuenciales ni términos genéricos (código/cluster/conceptual/tema/grupo/generic/generico).
+Regla de naming: títulos compactos de 2-4 palabras preferiblemente, limpios y conceptuales, similares en calidad a "Identificación Miradas Actitudes" o "Reconocer Envidia Propia"; sin números secuenciales ni términos genéricos.
 Incluye subcódigos útiles y marca recommendation.
 Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
 
@@ -4532,8 +4532,8 @@ function buildCodeGenerationExpansionPrompt({ comments = [], existing = [], minA
 Objetivo: generar códigos adicionales no redundantes y de alta utilidad analítica.
 Debes proponer entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS.
 Prohibido repetir o parafrasear códigos existentes.
-Naming obligatorio: título claro, completo, conciso y descriptivo (3-7 palabras), sin números ni placeholders.
-Descripción obligatoria: explicación conceptual precisa del código, derivada del corpus completo, aclarando por qué ese nombre resume el patrón y qué insight dominante encapsula. La redacción debe variar según el fenómeno.
+Naming obligatorio: título corto, limpio y conceptual (2-4 palabras preferiblemente), sin números ni placeholders.
+Descripción obligatoria: explicación breve, profesional y precisa del patrón, en el estilo de una definición útil de codebook. Debe decir qué fenómeno representa el código sin plantillas ni ruido.
 No uses reglas heurísticas externas ni clustering auxiliar: solo análisis LLM del contenido.
 Salida: JSON válido con forma {"proposals":[...]} usando campos del flujo principal.
 
@@ -4639,7 +4639,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     if (/\b\d+\b/.test(normalized)) return true;
     if (/(^|\s)(generic|generico|placeholder)(\s|$)/.test(normalized)) return true;
     const tokens = normalized.split(/\s+/).filter(Boolean);
-    if (tokens.length < 3 || tokens.length > 7) return true;
+    if (tokens.length < 2 || tokens.length > 4) return true;
     const useful = tokens.filter((token) => !bannedTitleTokens.has(token));
     if (useful.length < 2) return true;
     if (/^comentarios?\s+\w+(\s+\w+){0,2}$/i.test(normalized)) return true;
@@ -4792,14 +4792,15 @@ function validateGeneratedCodeProposal(proposal = {}) {
     || /^(null|undefined)$/i.test(titleNormalized)
     || /^(patron|patron conceptual|codigo|codigo conceptual|cluster|tema|grupo)\s*\d*$/i.test(titleNormalized)
     || /(patron\s+conceptual\s*\d+|codigo\s+conceptual\s*\d+|cluster\s*\d+)/i.test(titleNormalized)
-    || title.split(/\s+/).filter(Boolean).length < 3
+    || title.split(/\s+/).filter(Boolean).length < 2
+    || title.split(/\s+/).filter(Boolean).length > 4
     || /^comentarios?\s+\w+(\s+\w+){0,2}$/i.test(titleNormalized)
     || /(palabra|termino|sustantivo|reiteracion|reiteración)/i.test(titleNormalized);
 
   const descriptionInvalid = !description
     || /^(null|undefined)$/i.test(descNormalized)
     || descNormalized === titleNormalized
-    || description.length < 50
+    || description.length < 35
     || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized)
     || /describe de forma precisa cómo se manifiesta/i.test(descNormalized)
     || /codigo\s*"?.*"?\s*:/i.test(descNormalized);
@@ -4827,11 +4828,11 @@ function buildCodeGenerationRepairPrompt({ proposals = [] }) {
   return [
     'Corrige la lista de códigos para que cada item tenga título y descripción de calidad analítica.',
     'Reglas obligatorias:',
-    '1) suggested_code_name: etiqueta conceptual profesional (3-7 palabras), semántica, sin placeholders ni residuos léxicos.',
+    '1) suggested_code_name: etiqueta conceptual profesional de 2-4 palabras preferiblemente, limpia, compacta y semántica, sin placeholders ni residuos léxicos.',
     '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
-    '3) description: explicación conceptual precisa del código, indicando por qué ese nombre resume el patrón y qué tipo de comentarios agrupa, mínimo 50 caracteres.',
-    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frases plantilla. Debe sonar como insight profesional, no como relleno.',
-    '5) El título y la descripción deben referirse al MISMO fenómeno; la descripción debe justificar conceptualmente por qué ese código fue escogido para ese patrón.',
+    '3) description: explicación breve, profesional y precisa del fenómeno que representa el código, comparable en calidad a una definición útil de codebook, mínimo 35 caracteres.',
+    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frase genérica. Debe sonar como definición breve y profesional del fenómeno.',
+    '5) El título y la descripción deben referirse al MISMO fenómeno y parecerse en calidad a ejemplos como: Identificación Miradas Actitudes / Evitar Mencionar Adquisiciones / Reconocer Envidia Propia.',
     '6) confidence y size_estimate deben quedar exactamente en 0 (no calcular, no inferir).',
     'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
     'INPUT:',
