@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit } from 'lucide-react';
+import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit, RotateCcw, PanelsTopLeft } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
@@ -74,6 +74,21 @@ const COMMENT_CODE_EVOLUTION_DISABLED = true;
 
 const CODE_MAP_ALL_SCOPE = '__all__';
 
+
+const LEGACY_WORKSPACE_ID = '__legacy_workspace__';
+const WORKSPACE_ACTIVE_LIMIT = 5;
+
+const normalizeWorkspace = (item = {}) => ({
+  id: String(item?.id || '').trim(),
+  name: String(item?.name || 'Workspace').trim() || 'Workspace',
+  description: String(item?.description || '').trim(),
+  status: String(item?.status || 'active').trim() === 'inactive' ? 'inactive' : 'active',
+  is_migrated: Number(item?.is_migrated || 0) ? 1 : 0,
+  created_at: String(item?.created_at || ''),
+  updated_at: String(item?.updated_at || ''),
+});
+
+
 const parseHypothesisSelection = (value = '') => {
   const raw = String(value || '').trim();
   if (!raw) return [];
@@ -86,9 +101,132 @@ const buildCodeMapScopeKey = (value = '') => {
   return selected.join('__');
 };
 
+const buildCodeMapInitialAssistantReport = (analysis = {}, subject = {}, targetType = 'code') => {
+  const subjectName = String(subject?.name || '').trim() || (targetType === 'profile' ? 'Perfil estratégico' : 'Código analítico');
+  const subjectLabel = targetType === 'profile' ? 'PERFIL' : 'CÓDIGO';
+  const summary = String(analysis?.summary_absolute || '').trim();
+  const sintesisFinal = String(analysis?.sintesis_final?.analysis || '').trim();
+  const sections = [
+    ['Dolores', analysis?.dolores?.analysis],
+    ['Deseos', analysis?.deseos?.analysis],
+    ['Placeres', analysis?.placeres?.analysis],
+    ['Problemas', analysis?.problemas?.analysis],
+    ['Soluciones', analysis?.soluciones?.analysis],
+  ];
+  const sectionBlocks = sections
+    .map(([title, body]) => {
+      const text = String(body || '').trim();
+      if (!text) return '';
+      return `\n${title}\n${text}`;
+    })
+    .filter(Boolean)
+    .join('\n\n');
+
+  return [
+    `INFORME ABSOLUTO DE INVESTIGACIÓN DEL ${subjectLabel}: ${subjectName}`,
+    '',
+    'Este es el informe fundacional del chat analítico por código. Se construye a partir de evidencia real y funciona como punto de partida para toda la conversación especializada.',
+    '',
+    summary || 'No hay evidencia suficiente para construir el informe base completo.',
+    sectionBlocks ? `\n\nDESARROLLO ANALÍTICO POR CAPAS\n${sectionBlocks}` : '',
+    sintesisFinal ? `\n\nSÍNTESIS ESTRATÉGICA FINAL\n${sintesisFinal}` : '',
+    '\n\nNota metodológica: este primer mensaje es el informe más completo del chat. Las respuestas posteriores pueden ser más específicas, pero siempre deben anclarse a esta base analítica.',
+  ].join('\n');
+};
+
+const createEmptyCommentsStore = () => ({
+  fragments: [],
+  codes: [],
+  codeProposals: [],
+  hypotheses: [],
+  codeMapLayoutsByHypothesis: {},
+  codeMapAnalysisSessions: {},
+  codeMapVisualProfilesByScope: {},
+});
+
+const loadCommentsStoreFromLocalStorage = (storageKey = '') => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    return {
+      fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
+      codes: Array.isArray(parsed.codes) ? parsed.codes : [],
+      codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
+      hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
+      codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
+        ? parsed.codeMapLayoutsByHypothesis
+        : {},
+      codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
+        ? parsed.codeMapAnalysisSessions
+        : {},
+      codeMapVisualProfilesByScope: parsed.codeMapVisualProfilesByScope && typeof parsed.codeMapVisualProfilesByScope === 'object'
+        ? parsed.codeMapVisualProfilesByScope
+        : {},
+    };
+  } catch {
+    return createEmptyCommentsStore();
+  }
+};
+
+const normalizeGeneratedProposalName = (value = '', fallback = 'Dinámica emocional recurrente') => {
+  const raw = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return fallback;
+  const normalized = raw
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+  const invalid = !normalized
+    || /(^|\s)(generic|generico|placeholder)(\s|$)/i.test(normalized)
+    || /(^(codigo|cluster|tema|grupo)\s*\d*$)/i.test(normalized)
+    || /(patron\s+conceptual\s*\d+|codigo\s+conceptual\s*\d+|cluster\s*\d+)/i.test(normalized)
+    || raw.split(/\s+/).filter(Boolean).length < 2;
+  if (invalid) return fallback;
+  return raw;
+};
+
+const normalizeGeneratedProposalDescription = (description = '', name = '') => {
+  const value = String(description || '').replace(/\s+/g, ' ').trim();
+  const bannedTemplate = /agrupa comentarios que expresan|suficiente densidad sem[aá]ntica|describe de forma precisa cómo se manifiesta|describe un patr[oó]n donde|organiza el significado dominante/i;
+  if (value.length >= 30 && !bannedTemplate.test(value)) return value;
+
+  const safeName = String(name || '').trim();
+  const safeLower = safeName.toLowerCase();
+  const parts = safeLower.split(/\s+/).filter(Boolean);
+  const first = parts[0] || '';
+  const rest = parts.slice(1).join(' ');
+
+  if (/^proteccion|^protección/.test(first)) return `Invocación de ${rest || safeLower} como figura de resguardo frente a amenazas o fuerzas percibidas como dañinas.`;
+  if (/^cobertura/.test(first)) return `Solicitud de resguardo sobre ${rest || 'un ámbito específico'} para evitar daño, bloqueo o interferencia.`;
+  if (/^declaracion|^declaración/.test(first)) return `Afirmación de ${rest || 'un resultado esperado'} como certeza que fortalece convicción y desplaza escenarios adversos.`;
+  if (/^fortaleza/.test(first)) return `Petición de fuerza interior para sostenerse ante ${rest || 'pruebas o conflictos'} sin ceder al desgaste.`;
+  if (/^ruptura/.test(first)) return `Acción simbólica de romper ${rest || 'una carga persistente'} para cortar su efecto y abrir una sensación de liberación.`;
+  if (/^reconocer/.test(first)) return `Reconocimiento consciente de ${rest || 'un impulso interno'} como punto de partida para comprenderlo o transformarlo.`;
+  if (/^evitar/.test(first)) return `Decisión de evitar ${rest || 'una exposición concreta'} para prevenir consecuencias negativas o afectación percibida.`;
+  if (/^identificacion|^identificación/.test(first)) return `Identificación de ${rest || 'señales relevantes'} como indicios que permiten interpretar el fenómeno dominante.`;
+  return safeLower ? `Describe ${safeLower} como un fenómeno reconocible que explica por qué estos comentarios comparten un mismo patrón.` : '';
+};
+
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
-  const storageKey = `comments-mode:${projectId}:${campaignId}`;
+  const workspacePreferenceKey = `comments-mode:workspace-selection:${projectId}:${campaignId}`;
+  const legacyStorageKey = `comments-mode:${projectId}:${campaignId}`;
+
+  const [workspaceModalOpen, setWorkspaceModalOpen] = useState(true);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [workspaceBusy, setWorkspaceBusy] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState('');
+  const [workspaces, setWorkspaces] = useState([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(() => {
+    try {
+      return String(localStorage.getItem(workspacePreferenceKey) || '').trim();
+    } catch {
+      return '';
+    }
+  });
+  const [workspaceEditor, setWorkspaceEditor] = useState({ open: false, mode: 'create', id: '', name: '', description: '', status: 'active' });
+
+  const storageKey = activeWorkspaceId
+    ? (activeWorkspaceId === LEGACY_WORKSPACE_ID ? legacyStorageKey : `${legacyStorageKey}:workspace:${activeWorkspaceId}`)
+    : legacyStorageKey;
 
   const [tab, setTab] = useState('comments');
   const [commentsSubtab, setCommentsSubtab] = useState('ingestion');
@@ -167,12 +305,17 @@ const CommentsModePage = () => {
   const [selectedCodeMapEdge, setSelectedCodeMapEdge] = useState('');
   const [codeMapConnectSource, setCodeMapConnectSource] = useState('');
   const [codeMapContextMenu, setCodeMapContextMenu] = useState({ open: false, x: 0, y: 0, slug: '' });
+  const [codeMapProfileContextMenu, setCodeMapProfileContextMenu] = useState({ open: false, x: 0, y: 0, profileId: '' });
+  const [codeMapProfileEditor, setCodeMapProfileEditor] = useState({ open: false, mode: 'create', id: '', name: '', description: '' });
+  const [profileConnectSource, setProfileConnectSource] = useState('');
   const [codeMapAiModal, setCodeMapAiModal] = useState({
     open: false,
     loading: false,
     sending: false,
     error: '',
-    codeSlug: '',
+    targetType: 'code',
+    targetId: '',
+    title: '',
     result: null,
     sessionId: '',
   });
@@ -199,25 +342,7 @@ const CommentsModePage = () => {
   });
   const readerTextContainerRef = useRef(null);
 
-  const [store, setStore] = useState(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
-      return {
-        fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
-        codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-        codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
-        hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
-        codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
-          ? parsed.codeMapLayoutsByHypothesis
-          : {},
-        codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
-          ? parsed.codeMapAnalysisSessions
-          : {},
-      };
-    } catch {
-      return { fragments: [], codes: [], codeProposals: [], hypotheses: [], codeMapLayoutsByHypothesis: {}, codeMapAnalysisSessions: {} };
-    }
-  });
+  const [store, setStore] = useState(() => loadCommentsStoreFromLocalStorage(storageKey));
 
   const persist = (next) => {
     setStore(next);
@@ -231,6 +356,97 @@ const CommentsModePage = () => {
     });
   };
 
+
+  const activeWorkspace = useMemo(
+    () => workspaces.find((item) => String(item.id) === String(activeWorkspaceId)) || null,
+    [workspaces, activeWorkspaceId],
+  );
+
+  const activeWorkspaceCount = useMemo(
+    () => workspaces.filter((item) => String(item.status || 'active') === 'active').length,
+    [workspaces],
+  );
+
+  const workspaceContext = useMemo(() => ({
+    workspaceId: String(activeWorkspaceId || '').trim(),
+  }), [activeWorkspaceId]);
+
+  const loadWorkspaces = async (preferredId = '') => {
+    if (!projectId || !campaignId) return;
+    setWorkspaceBusy(true);
+    setWorkspaceError('');
+    try {
+      const response = await commentsIngestionApi.listWorkspaces({ projectId, campaignId, workspaceId: workspaceContext.workspaceId });
+      const items = (Array.isArray(response?.items) ? response.items : []).map(normalizeWorkspace).filter((item) => item.id);
+      setWorkspaces(items);
+      const preferred = String(preferredId || activeWorkspaceId || '').trim();
+      const validPreferred = preferred && items.some((item) => String(item.id) === preferred);
+      const fallback = items.find((item) => String(item.status) === 'active') || items[0] || null;
+      const nextActive = validPreferred ? preferred : String(fallback?.id || '');
+      if (nextActive) {
+        setActiveWorkspaceId(nextActive);
+        try { localStorage.setItem(workspacePreferenceKey, nextActive); } catch {}
+      }
+      if (!nextActive) setWorkspaceModalOpen(true);
+    } catch (error) {
+      setWorkspaceError(error?.message || 'No se pudieron cargar los workspaces.');
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+
+  const selectWorkspace = (workspaceId) => {
+    const id = String(workspaceId || '').trim();
+    if (!id) return;
+    setActiveWorkspaceId(id);
+    try { localStorage.setItem(workspacePreferenceKey, id); } catch {}
+    setWorkspaceModalOpen(false);
+    setWorkspaceMenuOpen(false);
+  };
+
+  const saveWorkspaceEditor = async () => {
+    const name = String(workspaceEditor.name || '').trim();
+    if (!name) {
+      setWorkspaceError('El workspace requiere un nombre.');
+      return;
+    }
+    if (workspaceEditor.mode === 'create' && String(workspaceEditor.status) === 'active' && activeWorkspaceCount >= WORKSPACE_ACTIVE_LIMIT) {
+      setWorkspaceError(`No puedes tener más de ${WORKSPACE_ACTIVE_LIMIT} workspaces activos por campaña.`);
+      return;
+    }
+    setWorkspaceBusy(true);
+    setWorkspaceError('');
+    try {
+      if (workspaceEditor.mode === 'create') {
+        const created = await commentsIngestionApi.createWorkspace({
+          project_id: projectId,
+          campaign_id: campaignId,
+          name,
+          description: String(workspaceEditor.description || '').trim(),
+          status: String(workspaceEditor.status || 'active'),
+        });
+        const normalized = normalizeWorkspace(created);
+        await loadWorkspaces(normalized.id);
+      } else {
+        const updated = await commentsIngestionApi.updateWorkspace({
+          workspaceId: workspaceEditor.id,
+          project_id: projectId,
+          campaign_id: campaignId,
+          name,
+          description: String(workspaceEditor.description || '').trim(),
+          status: String(workspaceEditor.status || 'active'),
+        });
+        const normalized = normalizeWorkspace(updated);
+        await loadWorkspaces(normalized.id || workspaceEditor.id);
+      }
+      setWorkspaceEditor({ open: false, mode: 'create', id: '', name: '', description: '', status: 'active' });
+    } catch (error) {
+      setWorkspaceError(error?.message || 'No se pudo guardar el workspace.');
+    } finally {
+      setWorkspaceBusy(false);
+    }
+  };
+
   const guardCodeEvolution = () => {
     if (!COMMENT_CODE_EVOLUTION_DISABLED) return false;
     setSemanticAgentError('La evolución de fragmentos a códigos está deshabilitada en Modo Comentarios.');
@@ -238,11 +454,20 @@ const CommentsModePage = () => {
   };
 
   useEffect(() => {
+    loadWorkspaces();
+  }, [projectId, campaignId]);
+
+  useEffect(() => {
     let cancelled = false;
+    setStore(loadCommentsStoreFromLocalStorage(storageKey));
     const hydrateStore = async () => {
       try {
         const indexedState = await loadCommentsModeStore(storageKey);
-        if (cancelled || !indexedState || typeof indexedState !== 'object') return;
+        if (cancelled) return;
+        if (!indexedState || typeof indexedState !== 'object') {
+          setStore(loadCommentsStoreFromLocalStorage(storageKey));
+          return;
+        }
         setStore({
           fragments: Array.isArray(indexedState.fragments) ? indexedState.fragments : [],
           codes: Array.isArray(indexedState.codes) ? indexedState.codes : [],
@@ -254,9 +479,12 @@ const CommentsModePage = () => {
           codeMapAnalysisSessions: indexedState.codeMapAnalysisSessions && typeof indexedState.codeMapAnalysisSessions === 'object'
             ? indexedState.codeMapAnalysisSessions
             : {},
+          codeMapVisualProfilesByScope: indexedState.codeMapVisualProfilesByScope && typeof indexedState.codeMapVisualProfilesByScope === 'object'
+            ? indexedState.codeMapVisualProfilesByScope
+            : {},
         });
       } catch {
-        // Si no se puede leer IndexedDB, se mantiene fallback de localStorage.
+        if (!cancelled) setStore(loadCommentsStoreFromLocalStorage(storageKey));
       }
     };
     hydrateStore();
@@ -274,6 +502,9 @@ const CommentsModePage = () => {
     : {};
   const codeMapAnalysisSessions = store.codeMapAnalysisSessions && typeof store.codeMapAnalysisSessions === 'object'
     ? store.codeMapAnalysisSessions
+    : {};
+  const codeMapVisualProfilesByScope = store.codeMapVisualProfilesByScope && typeof store.codeMapVisualProfilesByScope === 'object'
+    ? store.codeMapVisualProfilesByScope
     : {};
   const readerComments = commentsTable.items || [];
 
@@ -413,6 +644,7 @@ const CommentsModePage = () => {
       await commentsIngestionApi.saveCodeProposalReview({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         proposal_id: String(proposal?.id || '').trim(),
         fragment_id: String(proposal?.fragment_id || '').trim(),
         action: String(action || '').trim() || 'revision',
@@ -444,6 +676,7 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.enrichFragments({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         fragments: preparedIncoming,
         existing_fragments: fragments.slice(0, 5000).map((fragment) => ({
           id: fragment.id,
@@ -578,6 +811,7 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.runCodeSelectionAgent({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         fragments: targetFragments,
         existing_codes: codes,
       });
@@ -1136,7 +1370,17 @@ const CommentsModePage = () => {
       ...fragment,
       code_slugs: (fragment.code_slugs || []).filter((item) => !descendants.has(String(item))),
     }));
-    persist({ ...store, codes: nextCodes, fragments: nextFragments });
+    const cleanedVisualScopes = Object.fromEntries(Object.entries(codeMapVisualProfilesByScope).map(([scope, data]) => {
+      const safe = data && typeof data === 'object' ? data : {};
+      const assignments = safe.assignments && typeof safe.assignments === 'object' ? safe.assignments : {};
+      const nextAssignments = Object.fromEntries(Object.entries(assignments).filter(([codeSlug]) => !descendants.has(String(codeSlug))));
+      return [scope, {
+        profiles: Array.isArray(safe.profiles) ? safe.profiles : [],
+        assignments: nextAssignments,
+        collapsed: safe.collapsed && typeof safe.collapsed === 'object' ? safe.collapsed : {},
+      }];
+    }));
+    persist({ ...store, codes: nextCodes, fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
     if (String(codeCardSlug || '') && descendants.has(String(codeCardSlug))) {
@@ -1155,7 +1399,15 @@ const CommentsModePage = () => {
       ...fragment,
       code_slugs: [],
     }));
-    persist({ ...store, codes: [], fragments: nextFragments });
+    const cleanedVisualScopes = Object.fromEntries(Object.entries(codeMapVisualProfilesByScope).map(([scope, data]) => {
+      const safe = data && typeof data === 'object' ? data : {};
+      return [scope, {
+        profiles: Array.isArray(safe.profiles) ? safe.profiles : [],
+        assignments: {},
+        collapsed: safe.collapsed && typeof safe.collapsed === 'object' ? safe.collapsed : {},
+      }];
+    }));
+    persist({ ...store, codes: [], fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
     setCodeCardSlug('');
@@ -1256,6 +1508,57 @@ const CommentsModePage = () => {
     [codeHypothesisFilter],
   );
 
+  const scopedVisualProfiles = codeMapVisualProfilesByScope[codeMapScopeKey] && typeof codeMapVisualProfilesByScope[codeMapScopeKey] === 'object'
+    ? codeMapVisualProfilesByScope[codeMapScopeKey]
+    : { profiles: [], assignments: {}, collapsed: {} };
+  const codeMapProfiles = Array.isArray(scopedVisualProfiles.profiles) ? scopedVisualProfiles.profiles : [];
+  const codeMapProfileAssignments = scopedVisualProfiles.assignments && typeof scopedVisualProfiles.assignments === 'object' ? scopedVisualProfiles.assignments : {};
+  const codeMapProfileCollapsed = scopedVisualProfiles.collapsed && typeof scopedVisualProfiles.collapsed === 'object' ? scopedVisualProfiles.collapsed : {};
+
+  const persistCodeMapVisualScope = (scopeKey, nextScopeData) => {
+    const normalizedScope = String(scopeKey || CODE_MAP_ALL_SCOPE);
+    const safeData = nextScopeData && typeof nextScopeData === 'object' ? nextScopeData : { profiles: [], assignments: {}, collapsed: {} };
+    persist({
+      ...store,
+      codeMapVisualProfilesByScope: {
+        ...codeMapVisualProfilesByScope,
+        [normalizedScope]: {
+          profiles: Array.isArray(safeData.profiles) ? safeData.profiles : [],
+          assignments: safeData.assignments && typeof safeData.assignments === 'object' ? safeData.assignments : {},
+          collapsed: safeData.collapsed && typeof safeData.collapsed === 'object' ? safeData.collapsed : {},
+        },
+      },
+    });
+  };
+
+  const upsertCodeMapProfile = (profile) => {
+    if (!profile || !String(profile.id || '').trim()) return;
+    const profileId = String(profile.id).trim();
+    const existing = codeMapProfiles.find((item) => String(item.id) === profileId);
+    const nextProfiles = existing
+      ? codeMapProfiles.map((item) => (String(item.id) === profileId ? { ...item, ...profile } : item))
+      : [...codeMapProfiles, profile];
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: nextProfiles,
+      assignments: codeMapProfileAssignments,
+      collapsed: codeMapProfileCollapsed,
+    });
+  };
+
+  const removeCodeMapProfile = (profileId) => {
+    const normalizedProfileId = String(profileId || '').trim();
+    if (!normalizedProfileId) return;
+    const nextProfiles = codeMapProfiles.filter((item) => String(item.id) !== normalizedProfileId);
+    const nextAssignments = Object.fromEntries(Object.entries(codeMapProfileAssignments).filter(([, value]) => String(value || '') !== normalizedProfileId));
+    const nextCollapsed = { ...codeMapProfileCollapsed };
+    delete nextCollapsed[normalizedProfileId];
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: nextProfiles,
+      assignments: nextAssignments,
+      collapsed: nextCollapsed,
+    });
+  };
+
   useEffect(() => {
     const scopedLayout = codeMapLayoutsByHypothesis[codeMapScopeKey];
     setCodeMapLayoutBySlug(scopedLayout && typeof scopedLayout === 'object' ? scopedLayout : {});
@@ -1303,25 +1606,75 @@ const CommentsModePage = () => {
 
   const codeMapVisibleSlugSet = useMemo(() => new Set(codeMapVisibleCodes.map((code) => String(code.slug))), [codeMapVisibleCodes]);
 
-  const codeMapEdges = useMemo(() => codeMapVisibleCodes
-    .filter((code) => code.parent_slug && String(code.parent_slug) !== String(code.slug))
-    .filter((code) => codeMapVisibleSlugSet.has(String(code.slug)) && codeMapVisibleSlugSet.has(String(code.parent_slug)))
-    .map((code) => ({
-      id: `edge_${code.parent_slug}_${code.slug}`,
-      source: String(code.parent_slug),
-      target: String(code.slug),
-    })), [codeMapVisibleCodes, codeMapVisibleSlugSet]);
+  const codeMapProfileNodes = useMemo(() => (Array.isArray(codeMapProfiles) ? codeMapProfiles : []).map((profile, index) => {
+    const fallbackX = 80 + ((index % 3) * 320);
+    const fallbackY = 36 + (Math.floor(index / 3) * 210);
+    return {
+      id: String(profile.id || ''),
+      name: String(profile.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
+      description: String(profile.description || '').trim(),
+      x: Number.isFinite(Number(profile.x)) ? Number(profile.x) : fallbackX,
+      y: Number.isFinite(Number(profile.y)) ? Number(profile.y) : fallbackY,
+    };
+  }).filter((profile) => profile.id), [codeMapProfiles]);
+
+  const codeMapProfileNodeById = useMemo(() => new Map(codeMapProfileNodes.map((profile) => [String(profile.id), profile])), [codeMapProfileNodes]);
+
+  const collapsedProfileIds = useMemo(() => new Set(Object.entries(codeMapProfileCollapsed).filter(([, collapsed]) => Boolean(collapsed)).map(([profileId]) => String(profileId))), [codeMapProfileCollapsed]);
+  const visibleCodeMapNodes = useMemo(() => codeMapNodes.filter((code) => !collapsedProfileIds.has(String(codeMapProfileAssignments[String(code.slug)] || ''))), [codeMapNodes, collapsedProfileIds, codeMapProfileAssignments]);
+
+  const codeMapEdges = useMemo(() => {
+    const visibleCodeSlugSet = new Set(visibleCodeMapNodes.map((code) => String(code.slug)));
+    const hierarchyEdges = visibleCodeMapNodes
+      .filter((code) => code.parent_slug && String(code.parent_slug) !== String(code.slug))
+      .filter((code) => visibleCodeSlugSet.has(String(code.slug)) && visibleCodeSlugSet.has(String(code.parent_slug)))
+      .map((code) => ({
+        id: `edge_${code.parent_slug}_${code.slug}`,
+        source: String(code.parent_slug),
+        target: String(code.slug),
+      }));
+
+    const profileEdges = Object.entries(codeMapProfileAssignments)
+      .filter(([codeSlug, profileId]) => visibleCodeSlugSet.has(String(codeSlug)) && codeMapProfileNodeById.has(String(profileId)))
+      .map(([codeSlug, profileId]) => ({
+        id: `edge_profile_${profileId}_${codeSlug}`,
+        source: String(profileId),
+        target: String(codeSlug),
+        type: 'profile_link',
+      }));
+
+    return [...hierarchyEdges, ...profileEdges];
+  }, [visibleCodeMapNodes, codeMapProfileAssignments, codeMapProfileNodeById]);
 
 
 
-  const buildCodeMapAnalysisSession = ({ slug, code, linkedFragments, relatedCodes, analysis }) => {
+
+
+  const buildCodeMapAnalysisSessionKey = (targetType, targetId) => `${String(targetType || 'code').trim()}:${String(targetId || '').trim()}`;
+
+  const codeMapRenderableNodesById = useMemo(() => {
+    const rows = [
+      ...visibleCodeMapNodes.map((node) => ({ id: String(node.slug), x: Number(node.x) || 0, y: Number(node.y) || 0 })),
+      ...codeMapProfileNodes.map((profile) => ({ id: String(profile.id), x: Number(profile.x) || 0, y: Number(profile.y) || 0 })),
+    ];
+    return new Map(rows.map((item) => [item.id, item]));
+  }, [visibleCodeMapNodes, codeMapProfileNodes]);
+
+  const buildCodeMapAnalysisSession = ({ targetType = 'code', targetId = '', subject = {}, linkedFragments, relatedCodes, analysis }) => {
     const now = new Date().toISOString();
-    const sessionId = `code_map_analysis_${slug}`;
+    const normalizedType = String(targetType || 'code').trim() === 'profile' ? 'profile' : 'code';
+    const normalizedId = String(targetId || '').trim();
+    const sessionId = `code_map_analysis_${normalizedType}_${normalizedId}`;
     return {
       analysis_session_id: sessionId,
-      code_slug: slug,
-      code_name: String(code?.name || '').trim(),
-      code_description: String(code?.description || '').trim(),
+      target_type: normalizedType,
+      target_id: normalizedId,
+      code_slug: normalizedType === 'code' ? normalizedId : '',
+      code_name: normalizedType === 'code' ? String(subject?.name || '').trim() : '',
+      code_description: normalizedType === 'code' ? String(subject?.description || '').trim() : '',
+      profile_id: normalizedType === 'profile' ? normalizedId : '',
+      profile_name: normalizedType === 'profile' ? String(subject?.name || '').trim() : '',
+      profile_description: normalizedType === 'profile' ? String(subject?.description || '').trim() : '',
       fragments_snapshot: linkedFragments,
       related_codes_snapshot: relatedCodes,
       initial_report: analysis,
@@ -1340,7 +1693,7 @@ const CommentsModePage = () => {
         {
           id: `assistant_initial_${Date.now()}`,
           role: 'assistant',
-          content: String(analysis?.summary_absolute || '').trim() || 'Informe inicial generado.',
+          content: buildCodeMapInitialAssistantReport(analysis, subject, normalizedType),
           created_at: now,
           type: 'initial_report',
         },
@@ -1353,21 +1706,26 @@ const CommentsModePage = () => {
   };
 
   const saveCodeMapAnalysisSession = (session) => {
-    const slug = String(session?.code_slug || '').trim();
-    if (!slug) return;
+    const targetType = String(session?.target_type || (session?.profile_id ? 'profile' : 'code')).trim();
+    const targetId = String(session?.target_id || (targetType === 'profile' ? session?.profile_id : session?.code_slug) || '').trim();
+    if (!targetId) return;
+    const key = buildCodeMapAnalysisSessionKey(targetType, targetId);
     persist({
       ...store,
       codeMapAnalysisSessions: {
         ...codeMapAnalysisSessions,
-        [slug]: {
+        [key]: {
           ...session,
+          target_type: targetType,
+          target_id: targetId,
           updated_at: new Date().toISOString(),
         },
       },
     });
   };
 
-  const openCodeMapAiAnalysis = async (codeSlug) => {
+  const openCodeMapAiAnalysis = async (codeSlug, options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
     const slug = String(codeSlug || '').trim();
     if (!slug) return;
     const code = codes.find((item) => String(item.slug) === slug);
@@ -1389,7 +1747,9 @@ const CommentsModePage = () => {
         loading: false,
         sending: false,
         error: 'Este código no tiene fragmentos vinculados con evidencia suficiente para analizar.',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: null,
         sessionId: '',
       });
@@ -1416,26 +1776,30 @@ const CommentsModePage = () => {
       }))
       .filter((item) => item.slug && item.name);
 
-    const existingSession = codeMapAnalysisSessions[slug];
-    if (existingSession?.initial_report) {
+    const sessionKey = buildCodeMapAnalysisSessionKey('code', slug);
+    const existingSession = codeMapAnalysisSessions[sessionKey] || codeMapAnalysisSessions[slug];
+    if (!forceRefresh && existingSession?.initial_report) {
       setCodeMapAiModal({
         open: true,
         loading: false,
         sending: false,
         error: '',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: existingSession.initial_report,
         sessionId: String(existingSession.analysis_session_id || ''),
       });
       return;
     }
 
-    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', codeSlug: slug, result: null, sessionId: '' });
+    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', targetType: 'code', targetId: slug, title: String(code.name || slug), result: null, sessionId: '' });
 
     try {
       const analysis = await commentsIngestionApi.runCodeMapAnalysisAgent({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         code: {
           slug,
           name: String(code.name || '').trim(),
@@ -1445,14 +1809,16 @@ const CommentsModePage = () => {
         related_codes: relatedCodes,
       });
 
-      const nextSession = buildCodeMapAnalysisSession({ slug, code, linkedFragments, relatedCodes, analysis });
+      const nextSession = buildCodeMapAnalysisSession({ targetType: 'code', targetId: slug, subject: code, linkedFragments, relatedCodes, analysis });
       saveCodeMapAnalysisSession(nextSession);
       setCodeMapAiModal({
         open: true,
         loading: false,
         sending: false,
         error: '',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: analysis,
         sessionId: String(nextSession.analysis_session_id || ''),
       });
@@ -1462,18 +1828,167 @@ const CommentsModePage = () => {
         loading: false,
         sending: false,
         error: error?.message || 'No se pudo generar el análisis IA del código.',
-        codeSlug: slug,
+        targetType: 'code',
+        targetId: slug,
+        title: String(code.name || slug),
         result: null,
         sessionId: '',
       });
     }
   };
 
+  const openProfileMapAiAnalysis = async (profileId, options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
+    const normalizedProfileId = String(profileId || '').trim();
+    if (!normalizedProfileId) return;
+    const profile = codeMapProfileNodes.find((item) => String(item.id) === normalizedProfileId);
+    if (!profile) return;
+
+    const profileCodeSlugs = Object.entries(codeMapProfileAssignments)
+      .filter(([, pid]) => String(pid || '') === normalizedProfileId)
+      .map(([codeSlug]) => String(codeSlug || '').trim())
+      .filter(Boolean);
+
+    if (!profileCodeSlugs.length) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: 'Este perfil no tiene códigos vinculados para analizar.',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: null,
+        sessionId: '',
+      });
+      return;
+    }
+
+    const profileCodes = codes.filter((item) => profileCodeSlugs.includes(String(item.slug || '')));
+    const linkedFragments = fragments
+      .filter((fragment) => {
+        const slugs = Array.isArray(fragment.code_slugs) ? fragment.code_slugs.map((s) => String(s || '')) : [];
+        return slugs.some((slug) => profileCodeSlugs.includes(slug));
+      })
+      .slice(0, 240)
+      .map((fragment, index) => ({
+        fragment_id: String(fragment.id || `fragment_${index + 1}`),
+        excerpt: String(fragment.excerpt || fragment.selected_text || '').trim(),
+        source_comment_id: String(fragment.source_comment_id || fragment.comment_id || '').trim(),
+        code_slugs: Array.isArray(fragment.code_slugs) ? fragment.code_slugs.map((slug) => String(slug || '').trim()).filter((slug) => profileCodeSlugs.includes(slug)) : [],
+      }))
+      .filter((fragment) => fragment.excerpt && Array.isArray(fragment.code_slugs) && fragment.code_slugs.length);
+
+    if (!linkedFragments.length) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: 'Este perfil no tiene fragmentos asociados en sus códigos vinculados.',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: null,
+        sessionId: '',
+      });
+      return;
+    }
+
+    const relatedCodes = profileCodes.map((item) => ({
+      slug: String(item.slug || '').trim(),
+      name: String(item.name || '').trim(),
+      description: String(item.description || '').trim(),
+      parent_slug: String(item.parent_slug || '').trim(),
+      relation: String(item.parent_slug || '').trim() ? (profileCodeSlugs.includes(String(item.parent_slug || '').trim()) ? 'hierarchy_child_in_profile' : 'hierarchy_child') : 'profile_member',
+    })).filter((item) => item.slug && item.name);
+
+    const sessionKey = buildCodeMapAnalysisSessionKey('profile', normalizedProfileId);
+    const existingSession = codeMapAnalysisSessions[sessionKey];
+    if (!forceRefresh && existingSession?.initial_report) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: existingSession.initial_report,
+        sessionId: String(existingSession.analysis_session_id || ''),
+      });
+      return;
+    }
+
+    setCodeMapAiModal({ open: true, loading: true, sending: false, error: '', targetType: 'profile', targetId: normalizedProfileId, title: String(profile.name || 'Perfil estratégico'), result: null, sessionId: '' });
+
+    try {
+      const analysis = await commentsIngestionApi.runProfileCodeMapAnalysisAgent({
+        project_id: projectId,
+        campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
+        profile: {
+          id: normalizedProfileId,
+          name: String(profile.name || 'Perfil estratégico').trim(),
+          description: String(profile.description || '').trim(),
+        },
+        codes: relatedCodes,
+        fragments: linkedFragments,
+      });
+
+      const nextSession = buildCodeMapAnalysisSession({ targetType: 'profile', targetId: normalizedProfileId, subject: profile, linkedFragments, relatedCodes, analysis });
+      saveCodeMapAnalysisSession(nextSession);
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: '',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: analysis,
+        sessionId: String(nextSession.analysis_session_id || ''),
+      });
+    } catch (error) {
+      setCodeMapAiModal({
+        open: true,
+        loading: false,
+        sending: false,
+        error: error?.message || 'No se pudo generar el análisis IA del perfil.',
+        targetType: 'profile',
+        targetId: normalizedProfileId,
+        title: String(profile.name || 'Perfil estratégico'),
+        result: null,
+        sessionId: '',
+      });
+    }
+  };
+
+  const refreshCodeMapAiChat = async () => {
+    const targetType = String(codeMapAiModal.targetType || 'code').trim();
+    const targetId = String(codeMapAiModal.targetId || '').trim();
+    if (!targetId || codeMapAiModal.loading || codeMapAiModal.sending) return;
+
+    const nextSessions = { ...codeMapAnalysisSessions };
+    delete nextSessions[buildCodeMapAnalysisSessionKey(targetType, targetId)];
+    persist({
+      ...store,
+      codeMapAnalysisSessions: nextSessions,
+    });
+
+    setCodeMapAiInput('');
+    if (targetType === 'profile') {
+      await openProfileMapAiAnalysis(targetId, { forceRefresh: true });
+      return;
+    }
+    await openCodeMapAiAnalysis(targetId, { forceRefresh: true });
+  };
+
   const sendCodeMapAiMessage = async () => {
-    const slug = String(codeMapAiModal.codeSlug || '').trim();
+    const targetType = String(codeMapAiModal.targetType || 'code').trim();
+    const targetId = String(codeMapAiModal.targetId || '').trim();
     const question = String(codeMapAiInput || '').trim();
-    if (!slug || !question || codeMapAiModal.sending) return;
-    const session = codeMapAnalysisSessions[slug];
+    if (!targetId || !question || codeMapAiModal.sending) return;
+    const session = codeMapAnalysisSessions[buildCodeMapAnalysisSessionKey(targetType, targetId)] || codeMapAnalysisSessions[targetId];
     if (!session?.initial_report) return;
 
     const userMessage = {
@@ -1487,6 +2002,8 @@ const CommentsModePage = () => {
     const nextHistory = [...(Array.isArray(session.conversation_history) ? session.conversation_history : []), userMessage];
     const draftSession = {
       ...session,
+      target_type: targetType,
+      target_id: targetId,
       conversation_history: nextHistory,
       updated_at: new Date().toISOString(),
     };
@@ -1498,6 +2015,7 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.runCodeMapAnalysisChatTurn({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         question,
         analysis_session: draftSession,
       });
@@ -1519,13 +2037,91 @@ const CommentsModePage = () => {
       saveCodeMapAnalysisSession(persisted);
       setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: '' }));
     } catch (error) {
-      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: error?.message || 'No se pudo responder en el chat de este código.' }));
+      setCodeMapAiModal((prev) => ({ ...prev, sending: false, error: error?.message || 'No se pudo responder en el chat de este análisis.' }));
     }
   };
 
   const closeCodeMapAiModal = () => {
     setCodeMapAiInput('');
-    setCodeMapAiModal({ open: false, loading: false, sending: false, error: '', codeSlug: '', result: null, sessionId: '' });
+    setCodeMapAiModal({ open: false, loading: false, sending: false, error: '', targetType: 'code', targetId: '', title: '', result: null, sessionId: '' });
+  };
+
+  const createCodeMapProfile = () => {
+    setCodeMapProfileEditor({ open: true, mode: 'create', id: '', name: '', description: '' });
+    setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+  };
+
+  const saveCodeMapProfileEditor = () => {
+    const name = String(codeMapProfileEditor.name || '').trim();
+    if (!name) return;
+    const profileId = String(codeMapProfileEditor.id || '').trim() || `profile_${Date.now()}`;
+    const existing = codeMapProfileNodes.find((profile) => String(profile.id) === profileId);
+    upsertCodeMapProfile({
+      id: profileId,
+      name,
+      description: String(codeMapProfileEditor.description || '').trim(),
+      x: Number(existing?.x) || 120,
+      y: Number(existing?.y) || 56,
+    });
+    setCodeMapProfileEditor({ open: false, mode: 'create', id: '', name: '', description: '' });
+  };
+
+  const assignCodeToProfile = (codeSlug, profileId) => {
+    const normalizedCodeSlug = String(codeSlug || '').trim();
+    if (!normalizedCodeSlug) return;
+    const normalizedProfileId = String(profileId || '').trim();
+    const nextAssignments = { ...codeMapProfileAssignments };
+    if (normalizedProfileId) nextAssignments[normalizedCodeSlug] = normalizedProfileId;
+    else delete nextAssignments[normalizedCodeSlug];
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: codeMapProfiles,
+      assignments: nextAssignments,
+      collapsed: codeMapProfileCollapsed,
+    });
+  };
+
+  const toggleCodeMapProfileCollapsed = (profileId) => {
+    const normalizedProfileId = String(profileId || '').trim();
+    if (!normalizedProfileId) return;
+    persistCodeMapVisualScope(codeMapScopeKey, {
+      profiles: codeMapProfiles,
+      assignments: codeMapProfileAssignments,
+      collapsed: {
+        ...codeMapProfileCollapsed,
+        [normalizedProfileId]: !codeMapProfileCollapsed[normalizedProfileId],
+      },
+    });
+  };
+
+  const handleCodeMapProfileMouseDown = (event, profileId) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const id = String(profileId || '').trim();
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startProfile = codeMapProfileNodes.find((profile) => String(profile.id) === id) || { x: 0, y: 0 };
+    const startNodeX = Number(startProfile.x) || 0;
+    const startNodeY = Number(startProfile.y) || 0;
+
+    const onMove = (moveEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / (codeMapZoom || 1);
+      const deltaY = (moveEvent.clientY - startY) / (codeMapZoom || 1);
+      upsertCodeMapProfile({
+        ...startProfile,
+        id,
+        x: Math.max(12, Math.round(startNodeX + deltaX)),
+        y: Math.max(12, Math.round(startNodeY + deltaY)),
+      });
+    };
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
   };
 
   const handleCodeMapNodeMouseDown = (event, slug) => {
@@ -1553,9 +2149,13 @@ const CommentsModePage = () => {
       }));
     };
 
-    const onUp = () => {
+    const onUp = (upEvent) => {
       setDraggingCodeMapNode('');
       persistCodeMapLayoutForScope(codeMapScopeKey, codeMapLayoutRef.current);
+      const profileElement = upEvent?.target?.closest?.('[data-code-map-profile-id]');
+      if (profileElement) {
+        assignCodeToProfile(slug, profileElement.getAttribute('data-code-map-profile-id'));
+      }
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -1566,10 +2166,11 @@ const CommentsModePage = () => {
 
   const handleCodeMapCanvasMouseDown = (event) => {
     if (event.button !== 0) return;
-    if (event.target.closest('[data-code-map-node="true"]')) return;
+    if (event.target.closest('[data-code-map-node="true"]') || event.target.closest('[data-code-map-profile="true"]')) return;
     setSelectedCodeMapNode('');
     setSelectedCodeMapEdge('');
     setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+    setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
     setIsCodeMapPanning(true);
     const startX = event.clientX;
     const startY = event.clientY;
@@ -1599,7 +2200,11 @@ const CommentsModePage = () => {
       if (event.key !== 'Delete' && event.key !== 'Backspace') return;
       const edge = codeMapEdges.find((item) => item.id === selectedCodeMapEdge);
       if (!edge) return;
-      setCodeParent(edge.target, '');
+      if (String(edge.type || '') === 'profile_link') {
+        assignCodeToProfile(edge.target, '');
+      } else {
+        setCodeParent(edge.target, '');
+      }
       setSelectedCodeMapEdge('');
     };
     window.addEventListener('keydown', onKeyDown);
@@ -1656,8 +2261,8 @@ const CommentsModePage = () => {
   const saveFragmentEditor = async () => {
     const title = String(fragmentEditor.title || '').trim();
     const excerpt = String(fragmentEditor.excerpt || '').trim();
-    const linkedCode = COMMENT_CODE_EVOLUTION_DISABLED ? '' : String(fragmentEditor.linkedCode || '').trim();
-    const codeSlugs = linkedCode ? [linkedCode] : [];
+    const linkedCode = String(fragmentEditor.linkedCode || '').trim();
+    const codeSlugs = linkedCode && codes.some((code) => String(code.slug) === linkedCode) ? [linkedCode] : [];
 
     if (!excerpt) return;
 
@@ -1670,8 +2275,13 @@ const CommentsModePage = () => {
         source_type: 'manual',
         created_at: new Date().toISOString(),
       };
-      const [enrichedFragment] = await enrichFragmentsForIaSelection([nextFragment]);
-      const fragmentToStore = enrichedFragment || nextFragment;
+      let fragmentToStore = nextFragment;
+      try {
+        const [enrichedFragment] = await enrichFragmentsForIaSelection([nextFragment]);
+        fragmentToStore = enrichedFragment || nextFragment;
+      } catch {
+        fragmentToStore = nextFragment;
+      }
       persist({ ...store, fragments: [fragmentToStore, ...fragments] });
       setSelectedFragmentId(String(nextFragment.id));
       closeFragmentEditor();
@@ -1905,6 +2515,7 @@ const CommentsModePage = () => {
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
+        workspaceId: workspaceContext.workspaceId,
         limit: commentsTable.limit,
         offset: 0,
         q: '',
@@ -1943,20 +2554,42 @@ const CommentsModePage = () => {
       const response = await commentsIngestionApi.runCodeGenerationAgent({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         comments: [],
       });
 
       const proposals = Array.isArray(response?.proposals) ? response.proposals : [];
-      setGeneratedCodeProposals(proposals.map((proposal, index) => ({
-        id: `generated_code_proposal_${Date.now()}_${index + 1}`,
-        cluster_name: String(proposal.cluster_name || `Cluster ${index + 1}`),
-        suggested_code_name: String(proposal.suggested_code_name || `Código ${index + 1}`),
-        description: String(proposal.description || 'Propuesta conceptual generada sin trazabilidad inicial.'),
-        confidence: Number(proposal.confidence || 0),
-        size_estimate: Number(proposal.size_estimate || 0),
-        subclusters: Array.isArray(proposal.subclusters) ? proposal.subclusters : [],
-        generated_without_traceability: true,
-      })));
+      const normalizedProposals = proposals.map((proposal, index) => {
+        const suggestedName = normalizeGeneratedProposalName(
+          proposal.suggested_code_name || proposal.cluster_name,
+          'Dinámica emocional recurrente',
+        );
+        const clusterName = normalizeGeneratedProposalName(
+          proposal.cluster_name || proposal.suggested_code_name,
+          'Patrón semántico dominante',
+        );
+
+        return {
+          id: `generated_code_proposal_${Date.now()}_${index + 1}`,
+          cluster_name: clusterName,
+          suggested_code_name: suggestedName,
+          description: normalizeGeneratedProposalDescription(proposal.description, suggestedName),
+          confidence: Number(proposal.confidence || 0),
+          size_estimate: Number(proposal.size_estimate || 0),
+          subclusters: Array.isArray(proposal.subclusters) ? proposal.subclusters : [],
+          generated_without_traceability: true,
+        };
+      });
+
+      setGeneratedCodeProposals(normalizedProposals);
+      if (!normalizedProposals.length) {
+        const stopReason = String(response?.metrics?.stop_reason || '').trim();
+        setCodeGenerationError(
+          stopReason
+            ? `La IA no devolvió propuestas utilizables (stop_reason: ${stopReason}). Intenta nuevamente con más comentarios o ajusta la integración IA.`
+            : 'La IA no devolvió propuestas utilizables. Intenta nuevamente con más comentarios o ajusta la integración IA.',
+        );
+      }
       setCodeGenerationMetrics({
         ...(response?.metrics || {}),
         comments_fetched_for_generation: Number(response?.metrics?.comments_analyzed || 0),
@@ -2083,6 +2716,7 @@ const CommentsModePage = () => {
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
+        workspaceId: workspaceContext.workspaceId,
         limit,
         offset,
         q: '',
@@ -2422,7 +3056,7 @@ const CommentsModePage = () => {
 
   const loadInputs = async () => {
     try {
-      const data = await commentsIngestionApi.listInputs({ projectId, campaignId });
+      const data = await commentsIngestionApi.listInputs({ projectId, campaignId, workspaceId: workspaceContext.workspaceId });
       setIngestionInputs(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
       setIngestionError(error.message || 'No se pudieron cargar inputs guardados.');
@@ -2451,6 +3085,7 @@ const CommentsModePage = () => {
       const saved = await commentsIngestionApi.saveInput({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         name: ingestionDraft.videoUrl?.trim() || ingestionDraft.videoId?.trim() || ingestionDraft.channelId?.trim() || ingestionDraft.videoSearchQuery?.trim() || `input_${ingestionInputs.length + 1}`,
         video_url: ingestionDraft.videoUrl,
         video_id: sourceVideoId,
@@ -2475,6 +3110,7 @@ const CommentsModePage = () => {
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
+        workspaceId: workspaceContext.workspaceId,
         limit: commentsTable.limit,
         offset,
         q,
@@ -2494,7 +3130,7 @@ const CommentsModePage = () => {
 
   const loadRuns = async () => {
     try {
-      const data = await commentsIngestionApi.listRuns({ projectId, campaignId });
+      const data = await commentsIngestionApi.listRuns({ projectId, campaignId, workspaceId: workspaceContext.workspaceId });
       setIngestionRuns(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
       setIngestionError(error.message || 'No se pudo cargar historial de runs.');
@@ -2507,7 +3143,7 @@ const CommentsModePage = () => {
       return;
     }
     try {
-      const data = await commentsIngestionApi.listCodeProposalReviews({ projectId, campaignId, limit: 2000 });
+      const data = await commentsIngestionApi.listCodeProposalReviews({ projectId, campaignId, workspaceId: workspaceContext.workspaceId, limit: 2000 });
       setProposalFeedbackSummary(data?.summaryByCode && typeof data.summaryByCode === 'object' ? data.summaryByCode : {});
     } catch {
       setProposalFeedbackSummary({});
@@ -2518,7 +3154,7 @@ const CommentsModePage = () => {
     if (!runId) return;
     if (!window.confirm('¿Eliminar este run? También se eliminarán su input asociado y sus comentarios de la base total.')) return;
     try {
-      await commentsIngestionApi.deleteRun({ runId, projectId, campaignId });
+      await commentsIngestionApi.deleteRun({ runId, projectId, campaignId, workspaceId: workspaceContext.workspaceId });
       await Promise.all([loadRuns(), loadInputs(), loadCommentsTable({ offset: 0, q: commentsTable.q })]);
     } catch (error) {
       setIngestionError(error.message || 'No se pudo eliminar el run.');
@@ -2526,6 +3162,7 @@ const CommentsModePage = () => {
   };
 
   useEffect(() => {
+    if (!workspaceContext.workspaceId) return;
     if (tab !== 'comments' && tab !== 'reader') return;
     loadCommentsTable({ offset: commentsTable.offset, q: commentsTable.q });
     if (commentsSubtab === 'table') loadCommentsTable({ offset: 0, q: commentsTable.q });
@@ -2533,12 +3170,13 @@ const CommentsModePage = () => {
       loadRuns();
       loadInputs();
     }
-  }, [tab, commentsSubtab]);
+  }, [tab, commentsSubtab, workspaceContext.workspaceId]);
 
   useEffect(() => {
+    if (!workspaceContext.workspaceId) return;
     if (tab !== 'codes') return;
     loadProposalReviews();
-  }, [tab, projectId, campaignId]);
+  }, [tab, projectId, campaignId, workspaceContext.workspaceId]);
 
   useEffect(() => {
     if (!selectedReaderCommentId && readerComments.length) {
@@ -2607,6 +3245,7 @@ const CommentsModePage = () => {
       await commentsIngestionApi.runIngestion({
         project_id: projectId,
         campaign_id: campaignId,
+        workspace_id: workspaceContext.workspaceId,
         video_url: ingestionDraft.videoUrl,
         video_id: sourceVideoId,
         channel_id: sourceChannelId,
@@ -2844,9 +3483,22 @@ const CommentsModePage = () => {
               <h1 className="text-2xl font-bold text-slate-900">Modo comentarios</h1>
               <p className="text-xs text-slate-500">Proyecto {projectId} · Campaña {campaignId}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button className="bg-indigo-600 text-white" onClick={() => setTab('reader')}>Abrir lector</Button>
-              <Button className="bg-white border text-indigo-700" onClick={() => setTab('codes')}>Crear código</Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-2.5 py-1 text-xs ${activeWorkspace ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>
+                Workspace: {activeWorkspace?.name || 'Sin seleccionar'}
+              </span>
+              <div className="relative">
+                <Button className="bg-white border text-slate-700" onClick={() => setWorkspaceMenuOpen((prev) => !prev)}>
+                  <MoreHorizontal className="mr-1 h-4 w-4" /> Opciones
+                </Button>
+                {workspaceMenuOpen ? (
+                  <div className="absolute right-0 top-11 z-40 min-w-[180px] rounded-lg border bg-white p-1.5 shadow-lg">
+                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-sm hover:bg-slate-100" onClick={() => { setWorkspaceModalOpen(true); setWorkspaceMenuOpen(false); }}>Ver Workspaces</button>
+                  </div>
+                ) : null}
+              </div>
+              <Button className="bg-indigo-600 text-white" onClick={() => setTab('reader')} disabled={!workspaceContext.workspaceId}>Abrir lector</Button>
+              <Button className="bg-white border text-indigo-700" onClick={() => setTab('codes')} disabled={!workspaceContext.workspaceId}>Crear código</Button>
             </div>
           </div>
 
@@ -3723,6 +4375,7 @@ const CommentsModePage = () => {
                         </select>
                         <label className="text-xs text-slate-600">Zoom</label>
                         <input type="range" min={0.6} max={1.8} step={0.1} value={codeMapZoom} onChange={(e) => setCodeMapZoom(Number(e.target.value) || 1)} />
+                        <Button className="bg-white border text-slate-700" onClick={createCodeMapProfile}><PanelsTopLeft className="mr-1 h-4 w-4" />Crear Perfil</Button>
                         <Button className="bg-white border text-slate-700" onClick={() => { setCodeMapPan({ x: 0, y: 0 }); setCodeMapZoom(1); }}>Reset</Button>
                         <Button className="bg-white border text-slate-700" onClick={() => setCodeMapOpen(false)}>Cerrar</Button>
                       </div>
@@ -3745,8 +4398,8 @@ const CommentsModePage = () => {
                       >
                         <svg className="absolute inset-0 h-full w-full">
                           {codeMapEdges.map((edge) => {
-                            const source = codeMapNodes.find((node) => String(node.slug) === String(edge.source));
-                            const target = codeMapNodes.find((node) => String(node.slug) === String(edge.target));
+                            const source = codeMapRenderableNodesById.get(String(edge.source));
+                            const target = codeMapRenderableNodesById.get(String(edge.target));
                             if (!source || !target) return null;
                             const selected = selectedCodeMapEdge === edge.id;
                             return (
@@ -3756,7 +4409,7 @@ const CommentsModePage = () => {
                                 y1={source.y + 26}
                                 x2={target.x + 90}
                                 y2={target.y + 26}
-                                stroke={selected ? '#4f46e5' : '#9CA3AF'}
+                                stroke={selected ? '#4f46e5' : edge.type === 'profile_link' ? '#0f766e' : '#9CA3AF'}
                                 strokeWidth={selected ? 2 : 1.5}
                                 className="cursor-pointer"
                                 onClick={(event) => {
@@ -3769,7 +4422,42 @@ const CommentsModePage = () => {
                           })}
                         </svg>
 
-                        {codeMapNodes.map((code) => {
+                        {codeMapProfileNodes.map((profile) => {
+                          const isCollapsed = Boolean(codeMapProfileCollapsed[String(profile.id)]);
+                          return (
+                            <div
+                              key={profile.id}
+                              data-code-map-profile="true"
+                              data-code-map-profile-id={profile.id}
+                              className="absolute min-w-[160px] rounded-lg border-2 border-teal-300 bg-teal-50/90 px-3 py-2 text-[12px] text-teal-900 shadow-sm"
+                              style={{ left: profile.x, top: profile.y, width: '220px' }}
+                              onMouseDown={(event) => handleCodeMapProfileMouseDown(event, profile.id)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (profileConnectSource) {
+                                  assignCodeToProfile(profileConnectSource, profile.id);
+                                  setProfileConnectSource('');
+                                }
+                              }}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                const canvasRect = codeMapCanvasRef.current?.getBoundingClientRect();
+                                const relativeX = canvasRect ? event.clientX - canvasRect.left : event.clientX;
+                                const relativeY = canvasRect ? event.clientY - canvasRect.top : event.clientY;
+                                setCodeMapProfileContextMenu({ open: true, x: relativeX, y: relativeY, profileId: profile.id });
+                              }}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="font-semibold">{profile.name}</p>
+                                <button type="button" className="rounded border border-teal-300 bg-white px-1.5 text-[10px]" onClick={(event) => { event.stopPropagation(); toggleCodeMapProfileCollapsed(profile.id); }}>{isCollapsed ? 'Expandir' : 'Colapsar'}</button>
+                              </div>
+                              <p className="mt-1 text-[11px] text-teal-800">{profile.description || 'Perfil estratégico para agrupar códigos visualmente.'}</p>
+                            </div>
+                          );
+                        })}
+
+                        {visibleCodeMapNodes.map((code) => {
                           const isNodeSelected = selectedCodeMapNode === code.slug;
                           const nodeWidth = Math.max(100, Math.min(220, 100 + (Number(code.scoreTotal || 0) * 1.1)));
                           return (
@@ -3813,6 +4501,46 @@ const CommentsModePage = () => {
                         })}
                       </div>
 
+                      {codeMapProfileContextMenu.open ? (
+                        <div
+                          style={{ left: codeMapProfileContextMenu.x, top: codeMapProfileContextMenu.y }}
+                          className="absolute z-30 min-w-[220px] rounded-md border border-teal-200 bg-white p-1 shadow-lg"
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            const target = codeMapProfileNodes.find((item) => String(item.id) === String(codeMapProfileContextMenu.profileId));
+                            setCodeMapProfileEditor({
+                              open: true,
+                              mode: 'edit',
+                              id: String(target?.id || ''),
+                              name: String(target?.name || ''),
+                              description: String(target?.description || ''),
+                            });
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                          }}>Editar perfil</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            toggleCodeMapProfileCollapsed(codeMapProfileContextMenu.profileId);
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                          }}>{codeMapProfileCollapsed[String(codeMapProfileContextMenu.profileId)] ? 'Expandir códigos' : 'Colapsar códigos'}</button>
+                          <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            const targetProfileId = codeMapProfileContextMenu.profileId;
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                            openProfileMapAiAnalysis(targetProfileId);
+                          }}>
+                            <BrainCircuit size={14} />
+                            Análisis IA
+                          </button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => {
+                            removeCodeMapProfile(codeMapProfileContextMenu.profileId);
+                            setCodeMapProfileContextMenu({ open: false, x: 0, y: 0, profileId: '' });
+                          }}>Eliminar perfil</button>
+                        </div>
+                      ) : null}
+
                       {codeMapContextMenu.open ? (
                         <div
                           style={{ left: codeMapContextMenu.x, top: codeMapContextMenu.y }}
@@ -3840,6 +4568,14 @@ const CommentsModePage = () => {
                             setCodeParent(codeMapContextMenu.slug, '');
                             setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
                           }}>Quitar padre</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            setProfileConnectSource(codeMapContextMenu.slug);
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Conectar con perfil</button>
+                          <button type="button" className="w-full rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
+                            assignCodeToProfile(codeMapContextMenu.slug, '');
+                            setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
+                          }}>Desvincular de perfil</button>
                           <button type="button" className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-slate-50" onClick={() => {
                             const targetSlug = codeMapContextMenu.slug;
                             setCodeMapContextMenu({ open: false, x: 0, y: 0, slug: '' });
@@ -3860,16 +4596,44 @@ const CommentsModePage = () => {
                 </div>
               ) : null}
 
+              {codeMapProfileEditor.open ? (
+                <div className="fixed inset-0 z-[72] flex items-center justify-center bg-slate-900/45 p-4">
+                  <div className="w-full max-w-lg rounded-xl border bg-white shadow-2xl">
+                    <div className="border-b px-4 py-3">
+                      <h3 className="text-sm font-semibold text-slate-900">{codeMapProfileEditor.mode === 'create' ? 'Crear Perfil' : 'Editar Perfil'}</h3>
+                      <p className="text-xs text-slate-500">Entidad visual estratégica para agrupar códigos sin afectar su semántica.</p>
+                    </div>
+                    <div className="space-y-3 px-4 py-4">
+                      <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Nombre del perfil" value={codeMapProfileEditor.name} onChange={(event) => setCodeMapProfileEditor((prev) => ({ ...prev, name: event.target.value }))} />
+                      <textarea className="h-24 w-full rounded-lg border px-3 py-2 text-sm" placeholder="Descripción breve (opcional)" value={codeMapProfileEditor.description} onChange={(event) => setCodeMapProfileEditor((prev) => ({ ...prev, description: event.target.value }))} />
+                    </div>
+                    <div className="flex items-center justify-end gap-2 border-t px-4 py-3">
+                      <Button className="bg-white border text-slate-700" onClick={() => setCodeMapProfileEditor({ open: false, mode: 'create', id: '', name: '', description: '' })}>Cancelar</Button>
+                      <Button className="bg-teal-600 text-white" onClick={saveCodeMapProfileEditor}>Guardar Perfil</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               {codeMapAiModal.open ? (
                 <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/55 p-4">
                   <div className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
                     <div className="flex items-start justify-between gap-3 border-b bg-gradient-to-r from-slate-900 to-indigo-900 px-5 py-4 text-white">
                       <div>
                         <p className="text-[11px] uppercase tracking-[0.2em] text-indigo-200">Chat analítico por código</p>
-                        <h3 className="text-lg font-semibold">{codes.find((item) => String(item.slug) === String(codeMapAiModal.codeSlug || ''))?.name || codeMapAiModal.codeSlug}</h3>
+                        <h3 className="text-lg font-semibold">{codeMapAiModal.title || 'Análisis IA'}</h3>
                         <p className="text-xs text-indigo-100">Memoria persistente: informe base + agentes + conversación especializada del código.</p>
                       </div>
-                      <Button className="border border-white/40 bg-white/10 text-white hover:bg-white/20" onClick={closeCodeMapAiModal}>Cerrar</Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          className="border border-indigo-200/70 bg-indigo-500/20 text-white hover:bg-indigo-500/30"
+                          onClick={refreshCodeMapAiChat}
+                          disabled={codeMapAiModal.loading || codeMapAiModal.sending}
+                        >
+                          <RotateCcw className="mr-1 h-4 w-4" /> Refresh
+                        </Button>
+                        <Button className="border border-white/40 bg-white/10 text-white hover:bg-white/20" onClick={closeCodeMapAiModal}>Cerrar</Button>
+                      </div>
                     </div>
                     <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-[340px_minmax(0,1fr)]">
                       <aside className="overflow-y-auto border-r bg-slate-50 p-4">
@@ -3902,7 +4666,7 @@ const CommentsModePage = () => {
                           {codeMapAiModal.error ? (
                             <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{codeMapAiModal.error}</div>
                           ) : null}
-                          {(codeMapAnalysisSessions[codeMapAiModal.codeSlug]?.conversation_history || []).map((message) => (
+                          {(codeMapAnalysisSessions[buildCodeMapAnalysisSessionKey(codeMapAiModal.targetType, codeMapAiModal.targetId)]?.conversation_history || []).map((message) => (
                             <div key={message.id} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                               <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${message.role === 'user' ? 'bg-indigo-600 text-white' : 'border border-slate-200 bg-slate-50 text-slate-800'}`}>
                                 <p className="whitespace-pre-wrap">{message.content}</p>
@@ -3922,7 +4686,7 @@ const CommentsModePage = () => {
                           <div className="flex items-end gap-2">
                             <textarea
                               className="h-20 flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm outline-none focus:border-indigo-500"
-                              placeholder="Pregunta sobre este código. El chat mantiene memoria del informe base y evidencia del código."
+                              placeholder={codeMapAiModal.targetType === 'profile' ? 'Pregunta sobre este perfil. El chat mantiene memoria del informe base, jerarquía y evidencia conjunta del perfil.' : 'Pregunta sobre este código. El chat mantiene memoria del informe base y evidencia del código.'}
                               value={codeMapAiInput}
                               onChange={(event) => setCodeMapAiInput(event.target.value)}
                             />
@@ -3938,6 +4702,64 @@ const CommentsModePage = () => {
               ) : null}
             </div>
           )}
+
+
+
+          {workspaceModalOpen ? (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/55 p-4">
+              <div className="w-full max-w-3xl rounded-2xl border border-slate-200 bg-white shadow-2xl">
+                <div className="flex items-center justify-between border-b px-5 py-4">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-900">Workspaces de campaña</h3>
+                    <p className="text-xs text-slate-500">Selecciona un workspace o crea uno nuevo. Máximo {WORKSPACE_ACTIVE_LIMIT} activos.</p>
+                  </div>
+                  <Button className="bg-white border" onClick={() => setWorkspaceEditor({ open: true, mode: 'create', id: '', name: '', description: '', status: 'active' })}>Nuevo workspace</Button>
+                </div>
+                <div className="max-h-[60vh] overflow-auto p-4">
+                  {workspaceError ? <p className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{workspaceError}</p> : null}
+                  {workspaceBusy ? <p className="text-sm text-slate-600">Cargando workspaces...</p> : null}
+                  <div className="space-y-2">
+                    {workspaces.length === 0 ? <p className="text-sm text-slate-500">No hay workspaces todavía para esta campaña.</p> : workspaces.map((workspace) => (
+                      <div key={workspace.id} className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-3">
+                        <div>
+                          <p className="text-sm font-semibold text-slate-900">{workspace.name}</p>
+                          <p className="text-xs text-slate-500">{workspace.description || 'Sin descripción'}</p>
+                          <p className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-[11px] ${workspace.status === 'active' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{workspace.status === 'active' ? 'Activo' : 'Inactivo'}</p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button className="bg-white border" onClick={() => setWorkspaceEditor({ open: true, mode: 'edit', id: workspace.id, name: workspace.name, description: workspace.description, status: workspace.status })}>Editar</Button>
+                          <Button className="bg-indigo-600 text-white" disabled={workspace.status !== 'active'} onClick={() => selectWorkspace(workspace.id)}>Entrar</Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {workspaceEditor.open ? (
+            <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-950/50 p-4">
+              <div className="w-full max-w-lg rounded-xl border bg-white shadow-xl">
+                <div className="border-b px-4 py-3">
+                  <h3 className="text-sm font-semibold text-slate-900">{workspaceEditor.mode === 'create' ? 'Crear Workspace' : 'Editar Workspace'}</h3>
+                </div>
+                <div className="space-y-3 px-4 py-4">
+                  <input className="w-full rounded-lg border px-3 py-2 text-sm" placeholder="Nombre" value={workspaceEditor.name} onChange={(event) => setWorkspaceEditor((prev) => ({ ...prev, name: event.target.value }))} />
+                  <textarea className="h-24 w-full rounded-lg border px-3 py-2 text-sm" placeholder="Descripción" value={workspaceEditor.description} onChange={(event) => setWorkspaceEditor((prev) => ({ ...prev, description: event.target.value }))} />
+                  <select className="w-full rounded-lg border px-3 py-2 text-sm" value={workspaceEditor.status} onChange={(event) => setWorkspaceEditor((prev) => ({ ...prev, status: event.target.value }))}>
+                    <option value="active">Activo</option>
+                    <option value="inactive">Inactivo</option>
+                  </select>
+                </div>
+                <div className="flex items-center justify-end gap-2 border-t px-4 py-3">
+                  <Button className="bg-white border" onClick={() => setWorkspaceEditor({ open: false, mode: 'create', id: '', name: '', description: '', status: 'active' })}>Cancelar</Button>
+                  <Button className="bg-indigo-600 text-white" onClick={saveWorkspaceEditor} disabled={workspaceBusy}>Guardar</Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
 
 
 
