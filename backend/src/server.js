@@ -4700,6 +4700,8 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       || /agrupa comentarios que comparten el patron de/i.test(rawLower)
       || /agrupa comentarios que expresan/i.test(rawLower)
       || /suficiente densidad semantica|suficiente densidad semántica/i.test(rawLower)
+      || /describe un patron donde|describe un patrón donde/i.test(rawLower)
+      || /organiza el significado dominante/i.test(rawLower)
       || /visible en una narrativa recurrente/i.test(rawLower);
 
     if (looksPlaceholder || raw.length < 50) return '';
@@ -4807,7 +4809,9 @@ function validateGeneratedCodeProposal(proposal = {}) {
     || /describe de forma precisa cómo se manifiesta/i.test(descNormalized)
     || /codigo\s*"?.*"?\s*:/i.test(descNormalized)
     || /agrupa comentarios que expresan/i.test(descNormalized)
-    || /suficiente densidad semantica|suficiente densidad semántica/i.test(descNormalized);
+    || /suficiente densidad semantica|suficiente densidad semántica/i.test(descNormalized)
+    || /describe un patron donde|describe un patrón donde/i.test(descNormalized)
+    || /organiza el significado dominante/i.test(descNormalized);
 
   return {
     valid: !titleInvalid && !descriptionInvalid,

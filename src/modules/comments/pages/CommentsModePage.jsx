@@ -185,10 +185,9 @@ const normalizeGeneratedProposalName = (value = '', fallback = 'Dinámica emocio
 
 const normalizeGeneratedProposalDescription = (description = '', name = '') => {
   const value = String(description || '').replace(/\s+/g, ' ').trim();
-  const bannedTemplate = /agrupa comentarios que expresan|suficiente densidad sem[aá]ntica|describe de forma precisa cómo se manifiesta/i;
+  const bannedTemplate = /agrupa comentarios que expresan|suficiente densidad sem[aá]ntica|describe de forma precisa cómo se manifiesta|describe un patr[oó]n donde|organiza el significado dominante/i;
   if (value.length >= 30 && !bannedTemplate.test(value)) return value;
-  const safeName = String(name || 'un patrón semántico dominante').trim().toLowerCase();
-  return `Describe un patrón donde ${safeName} organiza el significado dominante de los comentarios y define un fenómeno reconocible dentro del corpus.`;
+  return '';
 };
 
 const CommentsModePage = () => {
