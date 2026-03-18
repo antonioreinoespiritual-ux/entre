@@ -187,7 +187,22 @@ const normalizeGeneratedProposalDescription = (description = '', name = '') => {
   const value = String(description || '').replace(/\s+/g, ' ').trim();
   const bannedTemplate = /agrupa comentarios que expresan|suficiente densidad sem[aá]ntica|describe de forma precisa cómo se manifiesta|describe un patr[oó]n donde|organiza el significado dominante/i;
   if (value.length >= 30 && !bannedTemplate.test(value)) return value;
-  return '';
+
+  const safeName = String(name || '').trim();
+  const safeLower = safeName.toLowerCase();
+  const parts = safeLower.split(/\s+/).filter(Boolean);
+  const first = parts[0] || '';
+  const rest = parts.slice(1).join(' ');
+
+  if (/^proteccion|^protección/.test(first)) return `Invocación de ${rest || safeLower} como figura de resguardo frente a amenazas o fuerzas percibidas como dañinas.`;
+  if (/^cobertura/.test(first)) return `Solicitud de resguardo sobre ${rest || 'un ámbito específico'} para evitar daño, bloqueo o interferencia.`;
+  if (/^declaracion|^declaración/.test(first)) return `Afirmación de ${rest || 'un resultado esperado'} como certeza que fortalece convicción y desplaza escenarios adversos.`;
+  if (/^fortaleza/.test(first)) return `Petición de fuerza interior para sostenerse ante ${rest || 'pruebas o conflictos'} sin ceder al desgaste.`;
+  if (/^ruptura/.test(first)) return `Acción simbólica de romper ${rest || 'una carga persistente'} para cortar su efecto y abrir una sensación de liberación.`;
+  if (/^reconocer/.test(first)) return `Reconocimiento consciente de ${rest || 'un impulso interno'} como punto de partida para comprenderlo o transformarlo.`;
+  if (/^evitar/.test(first)) return `Decisión de evitar ${rest || 'una exposición concreta'} para prevenir consecuencias negativas o afectación percibida.`;
+  if (/^identificacion|^identificación/.test(first)) return `Identificación de ${rest || 'señales relevantes'} como indicios que permiten interpretar el fenómeno dominante.`;
+  return safeLower ? `Describe ${safeLower} como un fenómeno reconocible que explica por qué estos comentarios comparten un mismo patrón.` : '';
 };
 
 const CommentsModePage = () => {

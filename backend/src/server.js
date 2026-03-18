@@ -4684,6 +4684,40 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     return formatAsTitle(compact);
   };
 
+  const buildRequiredDescriptionFromTitle = (normalizedName = '') => {
+    const name = String(normalizedName || '').trim();
+    const nameLower = name.toLowerCase();
+    const parts = nameLower.split(/\s+/).filter(Boolean);
+    const first = parts[0] || '';
+    const rest = parts.slice(1).join(' ');
+
+    if (/^proteccion|^protección/.test(first)) {
+      return `Invocación de ${rest || nameLower} como figura de resguardo frente a amenazas, interferencias o fuerzas percibidas como dañinas.`;
+    }
+    if (/^cobertura/.test(first)) {
+      return `Solicitud de resguardo sobre ${rest || 'un ámbito específico'} para evitar daño, bloqueo o interferencia sobre ese frente de vida.`;
+    }
+    if (/^declaracion|^declaración/.test(first)) {
+      return `Afirmación de ${rest || 'un resultado esperado'} como certeza espiritual o emocional para reforzar convicción y desplazar escenarios adversos.`;
+    }
+    if (/^fortaleza/.test(first)) {
+      return `Petición de fuerza interior para sostenerse ante ${rest || 'pruebas o conflictos'} sin ceder al miedo, desgaste o desánimo.`;
+    }
+    if (/^ruptura/.test(first)) {
+      return `Acción simbólica de romper ${rest || 'una carga persistente'} para cortar su efecto y abrir una sensación de liberación o cambio.`;
+    }
+    if (/^reconocer/.test(first)) {
+      return `Reconocimiento consciente de ${rest || 'un impulso interno'} como punto de partida para comprenderlo, regularlo o transformarlo.`;
+    }
+    if (/^evitar/.test(first)) {
+      return `Decisión de evitar ${rest || 'una exposición concreta'} para prevenir consecuencias negativas, conflicto o afectación percibida.`;
+    }
+    if (/^identificacion|^identificación/.test(first)) {
+      return `Identificación de ${rest || 'señales relevantes'} como indicios que permiten interpretar el fenómeno dominante del conjunto.`;
+    }
+    return `Describe ${nameLower} como un fenómeno reconocible que organiza el sentido dominante de los comentarios y explica por qué se agrupan bajo ese mismo código.`;
+  };
+
   const normalizeDescription = (rawDescription, normalizedName) => {
     const raw = String(rawDescription || '').replace(/\s+/g, ' ').trim();
     const name = String(normalizedName || '').replace(/\s+/g, ' ').trim();
@@ -4704,10 +4738,12 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       || /organiza el significado dominante/i.test(rawLower)
       || /visible en una narrativa recurrente/i.test(rawLower);
 
-    if (looksPlaceholder || raw.length < 50) return '';
-
     const maxLen = 240;
     let candidate = raw;
+    if (looksPlaceholder || raw.length < 50) {
+      candidate = buildRequiredDescriptionFromTitle(name);
+    }
+
     if (candidate.length > maxLen) {
       candidate = `${candidate.slice(0, maxLen - 1).trimEnd()}.`;
     }
@@ -4715,7 +4751,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     const titleTokens = nameLower.split(/\s+/).filter((token) => token.length >= 4);
     const hasSemanticAlignment = !titleTokens.length || titleTokens.some((token) => candidate.toLowerCase().includes(token));
     if (name && !hasSemanticAlignment) {
-      return '';
+      candidate = buildRequiredDescriptionFromTitle(name);
     }
 
     return candidate;
