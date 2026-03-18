@@ -4458,7 +4458,7 @@ Objetivo: detectar patrones semánticos de alta cobertura con mínimo ruido.
 Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar excesos; descartar ruido. ${stageConfig.target}
 Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
 Regla: los subclusters deben ser conceptuales y no redundantes.
-Cada description debe ser concisa pero profunda (50-220 caracteres), explicando con precisión: señal semántica central, emoción/conducta dominante y contexto típico en el corpus.
+Cada description debe ser una explicación conceptual precisa del código: debe explicar por qué ese patrón merece ese nombre, qué tipo de comentarios agrupa y cuál es el insight dominante. No repetir el título ni usar plantillas fijas; variar la redacción según el fenómeno detectado.
 Formato de salida: JSON válido, sin texto adicional.
 {
   "proposals": [
@@ -4533,7 +4533,7 @@ Objetivo: generar códigos adicionales no redundantes y de alta utilidad analít
 Debes proponer entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS.
 Prohibido repetir o parafrasear códigos existentes.
 Naming obligatorio: título claro, completo, conciso y descriptivo (3-7 palabras), sin números ni placeholders.
-Descripción obligatoria: profunda y específica, derivada del corpus completo, explicando señal semántica, emoción/conducta dominante y alcance del patrón.
+Descripción obligatoria: explicación conceptual precisa del código, derivada del corpus completo, aclarando por qué ese nombre resume el patrón y qué insight dominante encapsula. La redacción debe variar según el fenómeno.
 No uses reglas heurísticas externas ni clustering auxiliar: solo análisis LLM del contenido.
 Salida: JSON válido con forma {"proposals":[...]} usando campos del flujo principal.
 
@@ -4688,6 +4688,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     const raw = String(rawDescription || '').replace(/\s+/g, ' ').trim();
     const name = String(normalizedName || '').replace(/\s+/g, ' ').trim();
     const rawLower = raw.toLowerCase();
+    const nameLower = name.toLowerCase();
 
     const looksPlaceholder = !raw
       || /^(null|undefined|n\/a|na|sin descripcion|sin descripción|descripcion pendiente|descripción pendiente)$/i.test(rawLower)
@@ -4695,7 +4696,9 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       || /codigo\s+conceptual\s*\d+/i.test(rawLower)
       || /cluster\s*\d+/i.test(rawLower)
       || /describe de forma precisa cómo se manifiesta/i.test(rawLower)
-      || /codigo\s*"?.*"?\s*:/i.test(rawLower);
+      || /codigo\s*"?.*"?\s*:/i.test(rawLower)
+      || /agrupa comentarios que comparten el patron de/i.test(rawLower)
+      || /visible en una narrativa recurrente/i.test(rawLower);
 
     if (looksPlaceholder || raw.length < 50) return '';
 
@@ -4705,7 +4708,9 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       candidate = `${candidate.slice(0, maxLen - 1).trimEnd()}.`;
     }
 
-    if (name && !candidate.toLowerCase().includes(name.toLowerCase())) {
+    const titleTokens = nameLower.split(/\s+/).filter((token) => token.length >= 4);
+    const hasSemanticAlignment = !titleTokens.length || titleTokens.some((token) => candidate.toLowerCase().includes(token));
+    if (name && !hasSemanticAlignment) {
       return '';
     }
 
@@ -4824,9 +4829,9 @@ function buildCodeGenerationRepairPrompt({ proposals = [] }) {
     'Reglas obligatorias:',
     '1) suggested_code_name: etiqueta conceptual profesional (3-7 palabras), semántica, sin placeholders ni residuos léxicos.',
     '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
-    '3) description: explicación clara, específica e intuitiva del patrón semántico del código (no plantilla), mínimo 50 caracteres.',
-    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frases plantilla tipo "Describe de forma precisa cómo se manifiesta...".',
-    '5) El título y la descripción deben referirse al MISMO fenómeno; si no hay coherencia, reescribe ambos.',
+    '3) description: explicación conceptual precisa del código, indicando por qué ese nombre resume el patrón y qué tipo de comentarios agrupa, mínimo 50 caracteres.',
+    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frases plantilla. Debe sonar como insight profesional, no como relleno.',
+    '5) El título y la descripción deben referirse al MISMO fenómeno; la descripción debe justificar conceptualmente por qué ese código fue escogido para ese patrón.',
     '6) confidence y size_estimate deben quedar exactamente en 0 (no calcular, no inferir).',
     'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
     'INPUT:',
