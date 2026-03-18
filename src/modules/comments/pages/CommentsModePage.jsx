@@ -185,9 +185,10 @@ const normalizeGeneratedProposalName = (value = '', fallback = 'Dinámica emocio
 
 const normalizeGeneratedProposalDescription = (description = '', name = '') => {
   const value = String(description || '').replace(/\s+/g, ' ').trim();
-  if (value.length >= 30) return value;
+  const bannedTemplate = /agrupa comentarios que expresan|suficiente densidad sem[aá]ntica|describe de forma precisa cómo se manifiesta/i;
+  if (value.length >= 30 && !bannedTemplate.test(value)) return value;
   const safeName = String(name || 'un patrón semántico dominante').trim().toLowerCase();
-  return `Agrupa comentarios que expresan ${safeName} de forma repetida y con suficiente densidad semántica para tratarlo como código reutilizable.`;
+  return `Describe un patrón donde ${safeName} organiza el significado dominante de los comentarios y define un fenómeno reconocible dentro del corpus.`;
 };
 
 const CommentsModePage = () => {

@@ -4698,6 +4698,8 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       || /describe de forma precisa cómo se manifiesta/i.test(rawLower)
       || /codigo\s*"?.*"?\s*:/i.test(rawLower)
       || /agrupa comentarios que comparten el patron de/i.test(rawLower)
+      || /agrupa comentarios que expresan/i.test(rawLower)
+      || /suficiente densidad semantica|suficiente densidad semántica/i.test(rawLower)
       || /visible en una narrativa recurrente/i.test(rawLower);
 
     if (looksPlaceholder || raw.length < 50) return '';
@@ -4803,7 +4805,9 @@ function validateGeneratedCodeProposal(proposal = {}) {
     || description.length < 35
     || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized)
     || /describe de forma precisa cómo se manifiesta/i.test(descNormalized)
-    || /codigo\s*"?.*"?\s*:/i.test(descNormalized);
+    || /codigo\s*"?.*"?\s*:/i.test(descNormalized)
+    || /agrupa comentarios que expresan/i.test(descNormalized)
+    || /suficiente densidad semantica|suficiente densidad semántica/i.test(descNormalized);
 
   return {
     valid: !titleInvalid && !descriptionInvalid,
@@ -4831,8 +4835,8 @@ function buildCodeGenerationRepairPrompt({ proposals = [] }) {
     '1) suggested_code_name: etiqueta conceptual profesional de 2-4 palabras preferiblemente, limpia, compacta y semántica, sin placeholders ni residuos léxicos.',
     '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
     '3) description: explicación breve, profesional y precisa del fenómeno que representa el código, comparable en calidad a una definición útil de codebook, mínimo 35 caracteres.',
-    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frase genérica. Debe sonar como definición breve y profesional del fenómeno.',
-    '5) El título y la descripción deben referirse al MISMO fenómeno y parecerse en calidad a ejemplos como: Identificación Miradas Actitudes / Evitar Mencionar Adquisiciones / Reconocer Envidia Propia.',
+    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frase genérica. Está prohibido usar fórmulas como "Agrupa comentarios que expresan..." o "con suficiente densidad semántica...".',
+    '5) El título y la descripción deben referirse al MISMO fenómeno y parecerse en calidad a ejemplos como: Ruptura Maldiciones → representa la ruptura de ataduras espirituales o maldiciones heredadas; Fortaleza Interior → petición que solicita fuerza interior; Protección Arcángel Miguel → invocación protectora clara y profesional.',
     '6) confidence y size_estimate deben quedar exactamente en 0 (no calcular, no inferir).',
     'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
     'INPUT:',
