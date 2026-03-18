@@ -4641,46 +4641,16 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     const tokens = normalized.split(/\s+/).filter(Boolean);
     if (tokens.length < 3 || tokens.length > 7) return true;
     const useful = tokens.filter((token) => !bannedTitleTokens.has(token));
-    return useful.length < 2;
+    if (useful.length < 2) return true;
+    if (/^comentarios?\s+\w+(\s+\w+){0,2}$/i.test(normalized)) return true;
+    if (/^(palabra|termino|sustantivo|reiteracion|reiteración)\b/i.test(normalized)) return true;
+    return false;
   };
 
-  const inferConceptualFallbackName = (description, fallback = 'dinámica emocional emergente') => {
-    const source = String(description || '').toLowerCase();
-    if (!source) return formatAsTitle(fallback);
-
-    const matched = conceptualRules.find((rule) => rule.test.test(source));
-    if (matched) return formatAsTitle(matched.label);
-
-    const tokens = source
-      .normalize('NFD')
-      .replace(/\p{Diacritic}/gu, '')
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .split(/\s+/)
-      .filter(Boolean)
-      .filter((token) => token.length >= 4 && !bannedTitleTokens.has(token));
-    const unique = Array.from(new Set(tokens));
-    const compressed = unique.slice(0, 3).join(' ').trim();
-    if (!compressed || compressed.split(/\s+/).length < 2) return formatAsTitle(fallback);
-    return formatAsTitle(compressed);
-  };
-
-
-
-  const nonGenericFallbacks = [
-    'tensión afectiva persistente',
-    'frustración relacional recurrente',
-    'necesidad de validación emocional',
-    'ambivalencia vincular sostenida',
-    'desgaste comunicacional crónico',
-  ];
-
-  const ensureNonGenericName = (candidate, description, fallbackSeed = '') => {
+  const ensureNonGenericName = (candidate) => {
     const trimmed = String(candidate || '').trim();
-    if (!looksGeneric(trimmed)) return trimmed;
-    const inferred = inferConceptualFallbackName(description, fallbackSeed || 'tensión afectiva persistente');
-    if (!looksGeneric(inferred)) return inferred;
-    const byHash = Math.abs(String(description || fallbackSeed || '').split('').reduce((acc, ch) => acc + ch.charCodeAt(0), 0));
-    return formatAsTitle(nonGenericFallbacks[byHash % nonGenericFallbacks.length]);
+    if (!trimmed) return '';
+    return looksGeneric(trimmed) ? '' : trimmed;
   };
   const normalizeConceptualName = (raw, description, fallback = 'dinámica emocional emergente') => {
     let value = String(raw || '').toLowerCase().trim();
@@ -4710,7 +4680,7 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       .join(' ')
       .trim();
 
-    if (looksGeneric(compact)) return inferConceptualFallbackName(description, fallback);
+    if (looksGeneric(compact)) return '';
     return formatAsTitle(compact);
   };
 
@@ -4718,53 +4688,25 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     const raw = String(rawDescription || '').replace(/\s+/g, ' ').trim();
     const name = String(normalizedName || '').replace(/\s+/g, ' ').trim();
     const rawLower = raw.toLowerCase();
-    const nameLower = name.toLowerCase();
 
     const looksPlaceholder = !raw
       || /^(null|undefined|n\/a|na|sin descripcion|sin descripción|descripcion pendiente|descripción pendiente)$/i.test(rawLower)
       || /patron\s+conceptual\s*\d+/i.test(rawLower)
       || /codigo\s+conceptual\s*\d+/i.test(rawLower)
       || /cluster\s*\d+/i.test(rawLower)
-      || rawLower === nameLower
-      || /describe de forma precisa cómo se manifiesta/i.test(rawLower);
+      || /describe de forma precisa cómo se manifiesta/i.test(rawLower)
+      || /codigo\s*"?.*"?\s*:/i.test(rawLower);
 
-    const minLen = 50;
-    const maxLen = 220;
+    if (looksPlaceholder || raw.length < 50) return '';
 
-    const buildAlignedDescription = () => {
-      const n = nameLower;
-      if (/desinteres|distancia|alejamiento/.test(n)) {
-        return 'Agrupa comentarios donde se interpreta menor contacto, frialdad o distancia como señal de pérdida de interés afectivo y desconexión emocional.';
-      }
-      if (/ansiedad|inseguridad|temor/.test(n)) {
-        return 'Reúne expresiones de inquietud emocional sostenida, anticipación de rechazo y dificultad para sostener seguridad afectiva en el vínculo.';
-      }
-      if (/reconcili|volver|retomar/.test(n)) {
-        return 'Incluye comentarios que sostienen expectativa activa de retomar el vínculo, reabrir contacto y reconstruir la relación tras una ruptura o distancia.';
-      }
-      if (/validacion|apoyo|afectiv/.test(n)) {
-        return 'Agrupa mensajes donde se busca reconocimiento emocional explícito, contención afectiva y señales claras de importancia dentro del vínculo.';
-      }
-      if (/control|manipul|exigencia/.test(n)) {
-        return 'Describe dinámicas de presión relacional, control emocional o exigencias que restringen la autonomía y deterioran la calidad del vínculo.';
-      }
-      if (/culpa|reproche|arrepent/.test(n)) {
-        return 'Reúne narrativas centradas en reproche, autoacusación o arrepentimiento que organizan el conflicto relacional desde la culpa emocional.';
-      }
-      return `Agrupa comentarios que comparten el patrón de ${nameLower || 'una dinámica relacional dominante'}, expresado de forma recurrente en emociones, interpretaciones y conductas consistentes.`;
-    };
-
+    const maxLen = 240;
     let candidate = raw;
-    if (looksPlaceholder || raw.length < minLen) {
-      candidate = buildAlignedDescription();
-    }
-
     if (candidate.length > maxLen) {
       candidate = `${candidate.slice(0, maxLen - 1).trimEnd()}.`;
     }
 
-    if (name && !String(candidate || '').toLowerCase().includes(String(nameLower))) {
-      candidate = `Agrupa comentarios que comparten el patrón de ${nameLower}, visible en una narrativa recurrente y semánticamente consistente dentro del corpus.`;
+    if (name && !candidate.toLowerCase().includes(name.toLowerCase())) {
+      return '';
     }
 
     return candidate;
@@ -4797,8 +4739,8 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       proposal.description,
       'tensión afectiva persistente',
     );
-    const finalName = ensureNonGenericName(normalizedName, proposal.description, 'tensión afectiva persistente');
-    const finalClusterName = ensureNonGenericName(normalizedClusterName, proposal.description, 'frustración relacional recurrente');
+    const finalName = ensureNonGenericName(normalizedName);
+    const finalClusterName = ensureNonGenericName(normalizedClusterName);
     const normalizedDescription = normalizeDescription(proposal.description, finalName);
 
     return {
@@ -4809,16 +4751,14 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
     pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
     recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
+    confidence: 0,
+    size_estimate: 0,
     subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub) => {
       const normalizedSubClusterName = ensureNonGenericName(
-        normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, 'matiz emocional específico'),
-        sub.description,
-        'matiz emocional específico',
+        normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, 'matiz emocional específico')
       );
       const normalizedSubName = ensureNonGenericName(
-        normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, 'variación semántica relevante'),
-        sub.description,
-        'variación semántica relevante',
+        normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, 'variación semántica relevante')
       );
       const normalizedSubDescription = normalizeDescription(sub.description, normalizedSubName);
       return {
@@ -4847,12 +4787,14 @@ function validateGeneratedCodeProposal(proposal = {}) {
     || /^(null|undefined)$/i.test(titleNormalized)
     || /^(patron|patron conceptual|codigo|codigo conceptual|cluster|tema|grupo)\s*\d*$/i.test(titleNormalized)
     || /(patron\s+conceptual\s*\d+|codigo\s+conceptual\s*\d+|cluster\s*\d+)/i.test(titleNormalized)
-    || title.split(/\s+/).filter(Boolean).length < 2;
+    || title.split(/\s+/).filter(Boolean).length < 3
+    || /^comentarios?\s+\w+(\s+\w+){0,2}$/i.test(titleNormalized)
+    || /(palabra|termino|sustantivo|reiteracion|reiteración)/i.test(titleNormalized);
 
   const descriptionInvalid = !description
     || /^(null|undefined)$/i.test(descNormalized)
     || descNormalized === titleNormalized
-    || description.length < 30
+    || description.length < 50
     || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized)
     || /describe de forma precisa cómo se manifiesta/i.test(descNormalized)
     || /codigo\s*"?.*"?\s*:/i.test(descNormalized);
@@ -4880,11 +4822,12 @@ function buildCodeGenerationRepairPrompt({ proposals = [] }) {
   return [
     'Corrige la lista de códigos para que cada item tenga título y descripción de calidad analítica.',
     'Reglas obligatorias:',
-    '1) suggested_code_name: concepto compacto, 2-5 palabras, semántico, sin placeholders ni números secuenciales.',
+    '1) suggested_code_name: etiqueta conceptual profesional (3-7 palabras), semántica, sin placeholders ni residuos léxicos.',
     '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
     '3) description: explicación clara, específica e intuitiva del patrón semántico del código (no plantilla), mínimo 50 caracteres.',
     '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frases plantilla tipo "Describe de forma precisa cómo se manifiesta...".',
     '5) El título y la descripción deben referirse al MISMO fenómeno; si no hay coherencia, reescribe ambos.',
+    '6) confidence y size_estimate deben quedar exactamente en 0 (no calcular, no inferir).',
     'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
     'INPUT:',
     JSON.stringify({ proposals: items }),
