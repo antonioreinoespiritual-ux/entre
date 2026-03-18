@@ -4448,30 +4448,29 @@ function buildCodeGenerationAgentPrompt({ comments = [], minCodes = 20, maxCodes
       target: 'Taxonomía final: 20-40 códigos usando saturación semántica.',
     };
 
-  return `Tarea: generar códigos cualitativos interpretativos desde comentarios reales de clientes.
-NO hacer: etiquetas temáticas, clasificación superficial, nombrar eventos literalmente, reciclar palabras clave del corpus.
-Naturaleza del código: cada código es una hipótesis interpretativa condensada sobre cómo el cliente vive, explica y actúa frente a su problema.
+  return `Lee este corpus de comentarios como conjunto semántico completo. Identifica fenómenos conceptuales dominantes y genera códigos cualitativos con insight real.
 
-MARCOS INTERPRETATIVOS ORIENTADORES — considera estos lentes para enriquecer tu análisis:
-1. INTERPRETACIÓN DEL PROBLEMA: cómo el cliente entiende lo que le ocurre (no el evento, sino el significado que le atribuye).
-2. ESTADO EMOCIONAL DOMINANTE: la emoción estructural que organiza el discurso (no palabras emocionales aisladas).
-3. INTENCIÓN CONDUCTUAL: qué acción desea realizar el cliente o qué comportamiento está evaluando.
-4. CREENCIA EXPLICATIVA: la narrativa causal del cliente sobre por qué ocurre el problema.
-5. RELACIÓN TEMPORAL: fase psicológica del cliente — impacto reciente / desesperación activa / intento de recuperación / resignación / racionalización / aprendizaje / reconstrucción.
-6. PERCEPCIÓN DE PODER O CONTROL: si el cliente se percibe en desventaja / con pérdida de control / buscando recuperar poder / manipulando la situación / resignado / empoderado.
+TÍTULO (suggested_code_name): etiqueta analítica corta, compacta y conceptual. Preferiblemente 2-4 palabras. Limpia, legible, útil como código en un codebook. No debe ser una oración larga ni un dump de palabras clave.
+Ejemplos de títulos correctos: "Reconocer Envidia Propia", "Evitar Mencionar Adquisiciones", "Identificación Miradas Actitudes", "Miedo a Ser Reemplazado", "Comparación con Nueva Pareja".
+No uses: números, prefijos vacíos, nombres de evento literal, frases genéricas o palabras sin valor analítico.
 
-Estos marcos NO son una checklist. Son lentes para profundizar la interpretación. Algunos códigos pueden enfatizar ciertos marcos más que otros. La creatividad en cómo integras estas dimensiones es bienvenida.
+DESCRIPCIÓN (description): breve pero con insight específico. Debe explicar el fenómeno, distinguir el patrón y dar claridad conceptual o comercial. No debe sonar igual a todas las demás.
+Ejemplos de descripciones correctas: "Reconocer la envidia propia como motor de mejora personal.", "Evitar mencionar adquisiciones para no generar envidia.", "Identificación de miradas o actitudes no verbales que delatan envidia."
+Prohibido: "Agrupa comentarios que comparten...", "patrón semánticamente consistente", fórmulas circulares o boilerplate.
 
-FORMA DEL CÓDIGO — el suggested_code_name debe ser una interpretación semántica completa, NO una etiqueta corta.
-Ejemplos que funcionan bien: "infidelidad vivida como humillación social que genera urgencia por recuperar control", "pérdida económica interpretada como fracaso personal que paraliza", "traición percibida como incompetencia propia que activa búsqueda de validación".
-El código debe responder implícitamente: ¿Qué está viviendo realmente este cliente y qué tipo de acción comercial permitiría intervenir sobre esa vivencia?
+MARCOS INTERPRETATIVOS (orientadores, no checklist):
+- ¿Cómo interpreta el cliente su problema? (significado subjetivo, no el evento)
+- ¿Qué emoción estructural domina su discurso?
+- ¿Qué intención conductual emerge?
+- ¿Qué creencia causal sostiene?
+- ¿En qué fase temporal/psicológica está?
+- ¿Cómo percibe su poder o control sobre la situación?
 
-PRINCIPIO DE ANÁLISIS EMERGENTE: los códigos deben emerger desde los datos. Interpretar patrones de sentido, no contar palabras. Priorizar profundidad interpretativa sobre cantidad. Un código es válido si revela una estructura de sentido psicológica y conductual relevante para la acción comercial.
+No apliques estos marcos mecánicamente. Úsalos para profundizar la interpretación y producir códigos que tengan insight real.
 
 Límites: mínimo ${stageConfig.min} y máximo ${stageConfig.max} códigos; fusionar redundancias; descartar ruido. ${stageConfig.target}
 Campos por código: suggested_code_name, description, naming_rationale, coherence_level(alta|media|baja), pattern_size(bajo|medio|alto), recommendation(crear|fusionar|descartar), subclusters.
-Regla subclusters: solo si existe heterogeneidad real dentro del patrón interpretativo; cada subcluster también debe ser una interpretación completa, no una etiqueta.
-Cada description debe explicar el valor comercial del código: qué acción de marketing, producto o segmentación habilita. No usar plantillas genéricas.
+Subclusters: incluir solo si hay heterogeneidad real; mismo nivel de calidad en título y descripción.
 Formato de salida: JSON válido, sin texto adicional.
 {
   "proposals": [
@@ -4511,25 +4510,21 @@ function buildCodeGenerationSynthesisPrompt({ candidates = [], minCodes = 20, ma
     .map((item, index) => `${index + 1}) ${compactText(item.suggested_code_name, 90)} :: ${compactText(item.description, 140)}`)
     .join('\n');
 
-  return `Consolida esta lista de candidatos en taxonomía final de códigos cualitativos interpretativos.
-Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, priorizando profundidad interpretativa sobre cantidad.
+  return `Consolida esta lista de candidatos en taxonomía final de códigos cualitativos con insight real.
+Objetivo: entre ${Math.max(12, Number(minCodes) || 20)} y ${Math.max(Math.max(12, Number(minCodes) || 20), Number(maxCodes) || 40)} códigos finales, priorizando calidad sobre cantidad.
 
-SEÑALES DE UN BUEN CÓDIGO (guía, no checklist obligatorio):
-- Revela cómo el cliente INTERPRETA su problema (no solo lo nombra)
-- Captura una EMOCIÓN ESTRUCTURAL dominante o dinámica relacional interesante
-- Sugiere una INTENCIÓN CONDUCTUAL o impulso de acción del cliente
-- Toca en la CREENCIA CAUSAL del cliente sobre su situación
-- Ubica al cliente en una FASE TEMPORAL/PSICOLÓGICA reconocible
-- Refleja algo sobre su PERCEPCIÓN DE PODER O CONTROL
+ESTÁNDAR DE CALIDAD:
+- Título: compacto (2-4 palabras preferiblemente), conceptual, limpio, legible. Ejemplos: "Reconocer Envidia Propia", "Evitar Mencionar Adquisiciones", "Miedo a Ser Reemplazado".
+- Descripción: breve pero con insight específico que distinga claramente ese patrón. Ejemplos: "Reconocer la envidia propia como motor de mejora personal.", "Evitar mencionar adquisiciones para no generar envidia."
+- Sin boilerplate, sin fórmulas genéricas, sin repetición del título.
 
-Los candidatos fuertes presentarán varias de estas dimensiones, pero no necesariamente todas. La calidad está en la profundidad, no en la exhaustividad.
+CONSOLIDACIÓN:
+- Fusiona candidatos que representen el mismo fenómeno en una sola formulación que conserve el mejor insight de ambos.
+- Descarta solo si es ruido evidente o etiqueta sin valor analítico real.
+- Ajusta títulos y descripciones para que cumplan el estándar de calidad, especialmente si el candidato viene con boilerplate.
 
-REGLA DE NAMING — el nombre debe ser una interpretación semántica que capture la vivencia:
-Ejemplos: "traición del proveedor vivida como pérdida de control que activa búsqueda desesperada", "frustración percibida como injusticia sistémica que energiza la resistencia".
-Fusiona candidatos redundantes generando una sola formulación interpretativa que integre la riqueza de ambos. Descarta solo si es ruido claro o etiqueta sin profundidad.
-
-Incluye subcódigos si representan variantes interpretativas reales dentro del patrón (no si son solo refinamientos de la misma idea).
-Marca recommendation: crear si tiene valor comercial, fusionar si hay solapamiento, descartar si es ruido claro.
+Incluye subcódigos solo si hay heterogeneidad real dentro del patrón.
+Marca recommendation: crear / fusionar / descartar.
 Devuelve solo JSON con forma {"proposals":[...]} usando los mismos campos del flujo principal.
 
 CANDIDATOS A CONSOLIDAR:
@@ -4555,25 +4550,19 @@ function buildCodeGenerationExpansionPrompt({ comments = [], existing = [], minA
     .map((item, index) => `${index + 1}) ${compactText(item?.suggested_code_name || item?.cluster_name, 90)} :: ${compactText(item?.description, 140)}`)
     .join('\n');
 
-  return `Expande la taxonomía generando códigos cualitativos interpretativos adicionales SOLO mediante interpretación LLM desde el corpus.
-Objetivo: proponer entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS con profundidad interpretativa.
+  return `Expande la taxonomía con nuevos códigos cualitativos de alta calidad. Solo interpretación LLM del corpus, sin clustering auxiliar.
+Objetivo: entre ${Math.max(4, Number(minAdditional) || 8)} y ${Math.max(Math.max(4, Number(minAdditional) || 8), Number(maxAdditional) || 18)} códigos NUEVOS.
 Prohibido repetir, parafrasear o reformular los códigos existentes.
-Enfoque: solo análisis creativo del discurso real del cliente, sin clustering auxiliar.
 
-MARCOS INTERPRETATIVOS ORIENTADORES — considera estos ángulos para encontrar nuevos patrones:
-1. Cómo el cliente INTERPRETA su problema (significado subjetivo, no evento literal)
-2. La EMOCIÓN ESTRUCTURAL que organiza su discurso
-3. La INTENCIÓN CONDUCTUAL que emerge (qué desea, qué evalúa)
-4. La CREENCIA CAUSAL del cliente
-5. La FASE PSICOLÓGICA/TEMPORAL en que se encuentra
-6. Su PERCEPCIÓN DE PODER O CONTROL sobre la situación
+ESTÁNDAR DE CALIDAD (igual al flujo principal):
+- Título: compacto (2-4 palabras), conceptual, limpio, legible como etiqueta de codebook. Ejemplos: "Comparación con Nueva Pareja", "Esperanza Unilateral", "Dinámica de Control Afectivo".
+- Descripción: breve, con insight específico que distinga claramente ese patrón de los demás. Sin boilerplate, sin fórmulas genéricas.
 
-Estos marcos son brújulas interpretativas, no cajas de contenido. Úsalos creativamente para identificar patrones nuevos.
+MARCOS ORIENTADORES para encontrar nuevos patrones:
+- ¿Cómo interpreta el cliente su problema? ¿Qué emoción estructural domina? ¿Qué intención conductual emerge?
+- ¿Qué creencia causal sostiene? ¿En qué fase psicológica está? ¿Cómo percibe su poder?
+Úsalos creativamente, no mecánicamente.
 
-FORMA DEL NOMBRE — debe ser una interpretación semántica que capture la vivencia:
-Ejemplos: "dependencia económica vivida como trampa que genera parálisis decisional", "frustración con el sistema percibida como injusticia que activa búsqueda de aliados".
-
-Descripción: explicar el valor comercial — qué acción de marketing, segmentación, diseño de oferta o comunicación habilita este código. Sin plantillas.
 Salida: JSON válido con forma {"proposals":[...]} usando campos del flujo principal.
 
 CODIGOS EXISTENTES (NO REPETIR):
@@ -4648,219 +4637,79 @@ function chunkCommentsForGeneration(comments = [], chunkSize = 120) {
 }
 
 function normalizeCodeGenerationAgentOutput(parsed) {
-  const bannedTitleTokens = new Set([
-    'codigo', 'cluster', 'conceptual', 'tema', 'grupo', 'placeholder',
-    'patron', 'relacional', 'subcluster', 'subcodigo', 'generic', 'generico',
-  ]);
-
-  const conceptualRules = [
-    { test: /(abandono|reemplaz|dejar|dejo|dejó|perderlo|perderla|perder)/, label: 'miedo a ser reemplazado' },
-    { test: /(ignora|ignorado|indiferenc|desinteres|distancia|alejam)/, label: 'percepción de desinterés' },
-    { test: /(culpa|culpable|reproche|arrepent)/, label: 'culpa por ruptura' },
-    { test: /(ansiedad|angustia|temor|miedo|inseguridad)/, label: 'ansiedad vincular persistente' },
-    { test: /(validac|atencion|atención|escucha|apoyo|afecto)/, label: 'búsqueda de validación afectiva' },
-    { test: /(reconcili|volver|retomar|recuperar)/, label: 'deseo de reconciliación' },
-    { test: /(celos|compar|nueva pareja|tercera persona)/, label: 'comparación con nueva pareja' },
-    { test: /(intermitente|aparece|desaparece|inconsistente)/, label: 'apego intermitente' },
-    { test: /(espera|esperanza|aun puede|aún puede|todavia|todavía)/, label: 'esperanza unilateral' },
-    { test: /(control|manipul|presion|presión|exigencia)/, label: 'dinámica de control afectivo' },
-  ];
-
-  const formatAsTitle = (value) => String(value || '')
-    .split(/\s+/)
-    .filter(Boolean)
-    .map((token) => token.charAt(0).toUpperCase() + token.slice(1).toLowerCase())
-    .join(' ');
-
-  const looksGeneric = (value) => {
-    const normalized = String(value || '').toLowerCase().trim();
-    if (!normalized) return true;
-    if (/\b\d+\b/.test(normalized)) return true;
-    if (/(^|\s)(generic|generico|placeholder)(\s|$)/.test(normalized)) return true;
-    const tokens = normalized.split(/\s+/).filter(Boolean);
-    if (tokens.length < 2 || tokens.length > 4) return true;
-    const useful = tokens.filter((token) => !bannedTitleTokens.has(token));
-    if (useful.length < 2) return true;
-    if (/^comentarios?\s+\w+(\s+\w+){0,2}$/i.test(normalized)) return true;
-    if (/^(palabra|termino|sustantivo|reiteracion|reiteración)\b/i.test(normalized)) return true;
-    return false;
-  };
-
-  const ensureNonGenericName = (candidate) => {
-    const trimmed = String(candidate || '').trim();
-    if (!trimmed) return '';
-    return looksGeneric(trimmed) ? '' : trimmed;
-  };
-  const normalizeConceptualName = (raw, description, fallback = 'dinámica emocional emergente') => {
-    let value = String(raw || '').toLowerCase().trim();
-    value = value
-      .normalize('NFD')
-      .replace(/\p{Diacritic}/gu, '')
-      .replace(/[_-]+/g, ' ')
+  // Clean LLM name: only strip placeholder prefixes and normalize whitespace.
+  // Do NOT truncate, do NOT strip accents, do NOT rewrite semantically.
+  const cleanLlmName = (raw) => {
+    const value = String(raw || '').trim();
+    if (!value) return '';
+    const cleaned = value
+      .replace(/^(c[oó]digo|cluster|subcluster|tema|grupo|patr[oó]n|subpatr[oó]n)\s*\d*\s*:?\s*/gi, '')
+      .replace(/^\d+[\.\)]\s*/, '')
       .replace(/\s+/g, ' ')
-      .replace(/[^a-z0-9\s]/g, '')
       .trim();
-
-    value = value
-      .replace(/^patron\s+relacional\s*/g, '')
-      .replace(/^patron\s+conceptual\s*/g, '')
-      .replace(/^cluster\s+conceptual\s*/g, '')
-      .replace(/^subcluster\s+conceptual\s*/g, '')
-      .replace(/^codigo\s+conceptual\s*/g, '')
-      .replace(/^subcodigo\s+conceptual\s*/g, '')
-      .replace(/^patron\s*/g, '')
-      .trim();
-
-    const compact = value
-      .split(/\s+/)
-      .filter(Boolean)
-      .filter((token) => !bannedTitleTokens.has(token))
-      .slice(0, 5)
-      .join(' ')
-      .trim();
-
-    if (looksGeneric(compact)) return '';
-    return formatAsTitle(compact);
+    if (!cleaned) return '';
+    // Reject bare placeholder labels
+    if (/^(null|undefined|n\/a|na|placeholder|gen[eé]rico|generico)$/i.test(cleaned)) return '';
+    if (/^(c[oó]digo|cluster|tema|grupo|patr[oó]n)\s*\d+$/i.test(cleaned)) return '';
+    // Title-case preserving accents
+    return cleaned.split(/\s+/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
   };
 
-  const buildRequiredDescriptionFromTitle = (normalizedName = '') => {
-    const name = String(normalizedName || '').trim();
-    const nameLower = name.toLowerCase();
-    const parts = nameLower.split(/\s+/).filter(Boolean);
-    const first = parts[0] || '';
-    const rest = parts.slice(1).join(' ');
-
-    if (/^proteccion|^protección/.test(first)) {
-      return `Invocación de ${rest || nameLower} como figura de resguardo frente a amenazas, interferencias o fuerzas percibidas como dañinas.`;
-    }
-    if (/^cobertura/.test(first)) {
-      return `Solicitud de resguardo sobre ${rest || 'un ámbito específico'} para evitar daño, bloqueo o interferencia sobre ese frente de vida.`;
-    }
-    if (/^declaracion|^declaración/.test(first)) {
-      return `Afirmación de ${rest || 'un resultado esperado'} como certeza espiritual o emocional para reforzar convicción y desplazar escenarios adversos.`;
-    }
-    if (/^fortaleza/.test(first)) {
-      return `Petición de fuerza interior para sostenerse ante ${rest || 'pruebas o conflictos'} sin ceder al miedo, desgaste o desánimo.`;
-    }
-    if (/^ruptura/.test(first)) {
-      return `Acción simbólica de romper ${rest || 'una carga persistente'} para cortar su efecto y abrir una sensación de liberación o cambio.`;
-    }
-    if (/^reconocer/.test(first)) {
-      return `Reconocimiento consciente de ${rest || 'un impulso interno'} como punto de partida para comprenderlo, regularlo o transformarlo.`;
-    }
-    if (/^evitar/.test(first)) {
-      return `Decisión de evitar ${rest || 'una exposición concreta'} para prevenir consecuencias negativas, conflicto o afectación percibida.`;
-    }
-    if (/^identificacion|^identificación/.test(first)) {
-      return `Identificación de ${rest || 'señales relevantes'} como indicios que permiten interpretar el fenómeno dominante del conjunto.`;
-    }
-    const capName = name.charAt(0).toUpperCase() + name.slice(1);
-    return `${capName}: tensión psicológica o conductual identificada en el discurso del cliente. Habilita segmentación por estado emocional dominante, diseño de mensajes que intervengan sobre esa vivencia específica y construcción de hipótesis de oferta.`;
-  };
-
-  const normalizeDescription = (rawDescription, normalizedName) => {
-    const raw = String(rawDescription || '').replace(/\s+/g, ' ').trim();
-    const name = String(normalizedName || '').replace(/\s+/g, ' ').trim();
-    const rawLower = raw.toLowerCase();
-    const nameLower = name.toLowerCase();
-
-    const looksPlaceholder = !raw
-      || /^(null|undefined|n\/a|na|sin descripcion|sin descripción|descripcion pendiente|descripción pendiente)$/i.test(rawLower)
-      || /patron\s+conceptual\s*\d+/i.test(rawLower)
-      || /codigo\s+conceptual\s*\d+/i.test(rawLower)
-      || /cluster\s*\d+/i.test(rawLower)
-      || /describe de forma precisa cómo se manifiesta/i.test(rawLower)
-      || /codigo\s*"?.*"?\s*:/i.test(rawLower)
-      || /agrupa comentarios que comparten el patron de/i.test(rawLower)
-      || /agrupa comentarios que expresan/i.test(rawLower)
-      || /suficiente densidad semantica|suficiente densidad semántica/i.test(rawLower)
-      || /describe un patron donde|describe un patrón donde/i.test(rawLower)
-      || /organiza el significado dominante/i.test(rawLower)
-      || /visible en una narrativa recurrente/i.test(rawLower)
-      || /como un fen[oó]meno reconocible que organiza el sentido dominante/i.test(rawLower)
-      || /explica por qu[eé] se agrupan bajo ese mismo c[oó]digo/i.test(rawLower);
-
-    const maxLen = 240;
-    let candidate = raw;
-    if (looksPlaceholder || raw.length < 50) {
-      candidate = buildRequiredDescriptionFromTitle(name);
-    }
-
-    if (candidate.length > maxLen) {
-      candidate = `${candidate.slice(0, maxLen - 1).trimEnd()}.`;
-    }
-
-    const titleTokens = nameLower.split(/\s+/).filter((token) => token.length >= 4);
-    const hasSemanticAlignment = !titleTokens.length || titleTokens.some((token) => candidate.toLowerCase().includes(token));
-    if (name && !hasSemanticAlignment) {
-      candidate = buildRequiredDescriptionFromTitle(name);
-    }
-
-    return candidate;
-  };
-
-  const inferNameRationale = (name, description) => {
-    const n = String(name || '').toLowerCase();
-    const d = String(description || '').toLowerCase();
-    if (/miedo|ansiedad|abandono|inseguridad/.test(n + d)) {
-      return 'El nombre resume un patrón emocional dominante y reutilizable del cluster.';
-    }
-    if (/desinteres|indiferencia|alejamiento|distancia/.test(n + d)) {
-      return 'El nombre abstrae la interpretación recurrente de pérdida o distancia en el vínculo.';
-    }
-    if (/validacion|apoyo|seguridad|reconex/.test(n + d)) {
-      return 'El nombre representa una necesidad psicológica compartida entre múltiples comentarios.';
-    }
-    return 'El nombre condensa el significado dominante del cluster en una etiqueta conceptual reutilizable.';
+  // Clean LLM description: only strip boilerplate templates.
+  // Do NOT replace with backend-generated content. Return '' if invalid so repair handles it.
+  const cleanLlmDescription = (raw) => {
+    const value = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!value) return '';
+    if (/^(null|undefined|n\/a|na)$/i.test(value)) return '';
+    if (/^(sin descripci[oó]n|descripci[oó]n pendiente|placeholder)$/i.test(value)) return '';
+    if (/patr[oó]n\s+conceptual\s*\d+|c[oó]digo\s+conceptual\s*\d+|cluster\s*\d+/i.test(value)) return '';
+    if (/agrupa comentarios que comparten/i.test(value)) return '';
+    if (/agrupa comentarios que expresan/i.test(value)) return '';
+    if (/describe de forma precisa c[oó]mo se manifiesta/i.test(value)) return '';
+    if (/suficiente densidad sem[aá]ntica/i.test(value)) return '';
+    if (/describe un patr[oó]n donde/i.test(value)) return '';
+    if (/organiza el significado dominante/i.test(value)) return '';
+    if (/visible en una narrativa recurrente/i.test(value)) return '';
+    if (/como un fen[oó]meno reconocible que organiza el sentido dominante/i.test(value)) return '';
+    if (/explica por qu[eé] se agrupan bajo ese mismo c[oó]digo/i.test(value)) return '';
+    if (/patr[oó]n sem[aá]nticamente consistente/i.test(value)) return '';
+    const maxLen = 280;
+    return value.length > maxLen ? `${value.slice(0, maxLen - 1).trimEnd()}.` : value;
   };
 
   const proposals = Array.isArray(parsed?.proposals) ? parsed.proposals : [];
-  return proposals.slice(0, 40).map((proposal, index) => {
-    const normalizedName = normalizeConceptualName(
-      proposal.suggested_code_name || proposal.cluster_name,
-      proposal.description,
-      'tensión afectiva persistente',
-    );
-    const normalizedClusterName = normalizeConceptualName(
-      proposal.cluster_name || proposal.suggested_code_name,
-      proposal.description,
-      'tensión afectiva persistente',
-    );
-    const finalName = ensureNonGenericName(normalizedName);
-    const finalClusterName = ensureNonGenericName(normalizedClusterName);
-    const normalizedDescription = normalizeDescription(proposal.description, finalName);
+  return proposals.slice(0, 40).map((proposal) => {
+    const finalName = cleanLlmName(proposal.suggested_code_name || proposal.cluster_name);
+    const finalClusterName = cleanLlmName(proposal.cluster_name || proposal.suggested_code_name);
+    const finalDescription = cleanLlmDescription(proposal.description);
 
     return {
-    cluster_name: finalClusterName,
-    suggested_code_name: finalName,
-    description: normalizedDescription,
-    naming_rationale: inferNameRationale(finalName, normalizedDescription),
-    coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
-    pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
-    recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
-    confidence: 0,
-    size_estimate: 0,
-    subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub) => {
-      const normalizedSubClusterName = ensureNonGenericName(
-        normalizeConceptualName(sub.cluster_name || sub.suggested_subcode_name, sub.description, 'matiz emocional específico')
-      );
-      const normalizedSubName = ensureNonGenericName(
-        normalizeConceptualName(sub.suggested_subcode_name || sub.cluster_name, sub.description, 'variación semántica relevante')
-      );
-      const normalizedSubDescription = normalizeDescription(sub.description, normalizedSubName);
-      return {
-        cluster_name: normalizedSubClusterName,
-        suggested_subcode_name: normalizedSubName,
-        description: normalizedSubDescription,
-        naming_rationale: inferNameRationale(normalizedSubName, normalizedSubDescription),
-        coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
-        pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
-        recommendation: ['crear', 'fusionar', 'descartar'].includes(String(sub.recommendation || '').toLowerCase()) ? String(sub.recommendation).toLowerCase() : 'crear',
-      };
-    }),
-    generated_without_traceability: true,
-    conceptual_taxonomy_stage: 'discovery',
-  };
+      cluster_name: finalClusterName,
+      suggested_code_name: finalName,
+      description: finalDescription,
+      naming_rationale: String(proposal.naming_rationale || '').trim() || '',
+      coherence_level: ['alta', 'media', 'baja'].includes(String(proposal.coherence_level || '').toLowerCase()) ? String(proposal.coherence_level).toLowerCase() : 'media',
+      pattern_size: ['bajo', 'medio', 'alto'].includes(String(proposal.pattern_size || '').toLowerCase()) ? String(proposal.pattern_size).toLowerCase() : 'medio',
+      recommendation: ['crear', 'fusionar', 'descartar'].includes(String(proposal.recommendation || '').toLowerCase()) ? String(proposal.recommendation).toLowerCase() : 'crear',
+      confidence: 0,
+      size_estimate: 0,
+      subclusters: (Array.isArray(proposal.subclusters) ? proposal.subclusters : []).slice(0, 12).map((sub) => {
+        const subName = cleanLlmName(sub.suggested_subcode_name || sub.cluster_name);
+        const subClusterName = cleanLlmName(sub.cluster_name || sub.suggested_subcode_name);
+        const subDescription = cleanLlmDescription(sub.description);
+        return {
+          cluster_name: subClusterName,
+          suggested_subcode_name: subName,
+          description: subDescription,
+          naming_rationale: String(sub.naming_rationale || '').trim() || '',
+          coherence_level: ['alta', 'media', 'baja'].includes(String(sub.coherence_level || '').toLowerCase()) ? String(sub.coherence_level).toLowerCase() : 'media',
+          pattern_size: ['bajo', 'medio', 'alto'].includes(String(sub.pattern_size || '').toLowerCase()) ? String(sub.pattern_size).toLowerCase() : 'medio',
+          recommendation: ['crear', 'fusionar', 'descartar'].includes(String(sub.recommendation || '').toLowerCase()) ? String(sub.recommendation).toLowerCase() : 'crear',
+        };
+      }),
+      generated_without_traceability: true,
+      conceptual_taxonomy_stage: 'discovery',
+    };
   });
 }
 
@@ -4875,14 +4724,13 @@ function validateGeneratedCodeProposal(proposal = {}) {
     || /^(patron|patron conceptual|codigo|codigo conceptual|cluster|tema|grupo)\s*\d*$/i.test(titleNormalized)
     || /(patron\s+conceptual\s*\d+|codigo\s+conceptual\s*\d+|cluster\s*\d+)/i.test(titleNormalized)
     || title.split(/\s+/).filter(Boolean).length < 2
-    || title.split(/\s+/).filter(Boolean).length > 4
     || /^comentarios?\s+\w+(\s+\w+){0,2}$/i.test(titleNormalized)
     || /(palabra|termino|sustantivo|reiteracion|reiteración)/i.test(titleNormalized);
 
   const descriptionInvalid = !description
     || /^(null|undefined)$/i.test(descNormalized)
     || descNormalized === titleNormalized
-    || description.length < 35
+    || description.length < 20
     || /(sin descripcion|sin descripción|descripcion pendiente|descripción pendiente|placeholder)/i.test(descNormalized)
     || /describe de forma precisa cómo se manifiesta/i.test(descNormalized)
     || /codigo\s*"?.*"?\s*:/i.test(descNormalized)
@@ -4914,15 +4762,12 @@ function buildCodeGenerationRepairPrompt({ proposals = [] }) {
     }));
 
   return [
-    'Mejora la lista de códigos para que cada item tenga título y descripción de alta calidad interpretativa.',
-    'Directrices de reparación:',
-    '1) suggested_code_name: mantén el nombre tal como viene en el input si es válido. Solo modifica si es un placeholder vacío o claramente inválido.',
-    '2) Evita nombres como: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
-    '3) description: debe explicar el valor comercial/estratégico del código — qué tipo de acción (marketing, segmentación, diseño de oferta, comunicación) se habilita con esta interpretación. Mínimo 60 caracteres. Basado en el significado del código, no en fórmulas genéricas.',
-    '4) Evita estas fórmulas en la descripción: "fenómeno reconocible que organiza el sentido dominante", "explica por qué se agrupan bajo ese mismo código", "Agrupa comentarios que expresan", "con suficiente densidad semántica", "Describe de forma precisa cómo se manifiesta", "describe un patrón donde".',
-    '5) description no puede ser vacía, null, undefined, placeholder, ni copia literal del título.',
-    '6) La descripción debe responder implícitamente: ¿qué tipo de acción comercial (qué mensaje, qué segmento, qué tipo de oferta) permite diseñar este código?',
-    '7) coherence_level y pattern_size: mantén los valores recibidos o ajusta si es necesario (alta|media|baja, bajo|medio|alto).',
+    'Repara la lista de códigos para que cada item tenga título y descripción de alta calidad analítica.',
+    'ESTÁNDAR ESPERADO:',
+    '- Título (suggested_code_name): compacto (2-4 palabras), conceptual, limpio. Ejemplos correctos: "Reconocer Envidia Propia", "Evitar Mencionar Adquisiciones", "Miedo a Ser Reemplazado". Si el título existente ya es bueno, conservarlo exactamente.',
+    '- Descripción: breve pero con insight específico. Debe explicar el fenómeno y distinguir el patrón. Ejemplos correctos: "Reconocer la envidia propia como motor de mejora personal.", "Evitar mencionar adquisiciones para no generar envidia."',
+    'PROHIBIDO en la descripción: "Agrupa comentarios que comparten...", "agrupa comentarios que expresan...", "fenómeno reconocible que organiza el sentido dominante", "explica por qué se agrupan bajo ese mismo código", "patrón semánticamente consistente", "describe un patrón donde", "describe de forma precisa cómo se manifiesta".',
+    'La descripción no puede ser vacía, null, placeholder ni copia literal del título.',
     'Devuelve JSON válido con forma: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
     'INPUT:',
     JSON.stringify({ proposals: items }),
