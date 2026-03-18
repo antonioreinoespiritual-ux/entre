@@ -4756,7 +4756,8 @@ function normalizeCodeGenerationAgentOutput(parsed) {
     if (/^identificacion|^identificación/.test(first)) {
       return `Identificación de ${rest || 'señales relevantes'} como indicios que permiten interpretar el fenómeno dominante del conjunto.`;
     }
-    return `Describe ${nameLower} como un fenómeno reconocible que organiza el sentido dominante de los comentarios y explica por qué se agrupan bajo ese mismo código.`;
+    const capName = name.charAt(0).toUpperCase() + name.slice(1);
+    return `${capName}: tensión psicológica o conductual identificada en el discurso del cliente. Habilita segmentación por estado emocional dominante, diseño de mensajes que intervengan sobre esa vivencia específica y construcción de hipótesis de oferta.`;
   };
 
   const normalizeDescription = (rawDescription, normalizedName) => {
@@ -4777,7 +4778,9 @@ function normalizeCodeGenerationAgentOutput(parsed) {
       || /suficiente densidad semantica|suficiente densidad semántica/i.test(rawLower)
       || /describe un patron donde|describe un patrón donde/i.test(rawLower)
       || /organiza el significado dominante/i.test(rawLower)
-      || /visible en una narrativa recurrente/i.test(rawLower);
+      || /visible en una narrativa recurrente/i.test(rawLower)
+      || /como un fen[oó]meno reconocible que organiza el sentido dominante/i.test(rawLower)
+      || /explica por qu[eé] se agrupan bajo ese mismo c[oó]digo/i.test(rawLower);
 
     const maxLen = 240;
     let candidate = raw;
@@ -4888,7 +4891,9 @@ function validateGeneratedCodeProposal(proposal = {}) {
     || /agrupa comentarios que expresan/i.test(descNormalized)
     || /suficiente densidad semantica|suficiente densidad semántica/i.test(descNormalized)
     || /describe un patron donde|describe un patrón donde/i.test(descNormalized)
-    || /organiza el significado dominante/i.test(descNormalized);
+    || /organiza el significado dominante/i.test(descNormalized)
+    || /como un fenomeno reconocible que organiza el sentido dominante/i.test(descNormalized)
+    || /explica por que se agrupan bajo ese mismo codigo/i.test(descNormalized);
 
   return {
     valid: !titleInvalid && !descriptionInvalid,
@@ -4911,14 +4916,15 @@ function buildCodeGenerationRepairPrompt({ proposals = [] }) {
     }));
 
   return [
-    'Corrige la lista de códigos para que cada item tenga título y descripción de calidad analítica.',
+    'Corrige la lista de códigos para que cada item tenga título y descripción de alta calidad interpretativa.',
     'Reglas obligatorias:',
-    '1) suggested_code_name: etiqueta conceptual profesional de 2-4 palabras preferiblemente, limpia, compacta y semántica, sin placeholders ni residuos léxicos.',
+    '1) suggested_code_name: nombre del código tal como viene en el input. No modificar el título salvo que sea un placeholder vacío o inválido.',
     '2) Prohibido suggested_code_name con: patrón conceptual X, código conceptual X, cluster X, código X, tema X.',
-    '3) description: explicación breve, profesional y precisa del fenómeno que representa el código, comparable en calidad a una definición útil de codebook, mínimo 35 caracteres.',
-    '4) description NO puede ser vacía, null, undefined, placeholder, repetición literal del título ni frase genérica. Está prohibido usar fórmulas como "Agrupa comentarios que expresan..." o "con suficiente densidad semántica...".',
-    '5) El título y la descripción deben referirse al MISMO fenómeno y parecerse en calidad a ejemplos como: Ruptura Maldiciones → representa la ruptura de ataduras espirituales o maldiciones heredadas; Fortaleza Interior → petición que solicita fuerza interior; Protección Arcángel Miguel → invocación protectora clara y profesional.',
-    '6) confidence y size_estimate deben quedar exactamente en 0 (no calcular, no inferir).',
+    '3) description: debe explicar el valor comercial del código — qué acción de marketing, segmentación o diseño de oferta habilita esta interpretación psicológica. Mínimo 60 caracteres. Debe basarse en el significado del código, no en fórmulas genéricas.',
+    '4) description PROHIBIDA si contiene cualquiera de estas fórmulas: "como un fenómeno reconocible que organiza el sentido dominante", "explica por qué se agrupan bajo ese mismo código", "Agrupa comentarios que expresan", "con suficiente densidad semántica", "Describe de forma precisa cómo se manifiesta", "describe un patrón donde".',
+    '5) description NO puede ser vacía, null, undefined, placeholder, ni repetición literal del título.',
+    '6) La descripción debe responder implícitamente: ¿qué tipo de acción comercial (mensaje, segmento, oferta) permite diseñar este código?',
+    '7) confidence y size_estimate deben quedar exactamente en 0 (no calcular, no inferir).',
     'Devuelve JSON válido con forma EXACTA: {"proposals":[{"suggested_code_name":"","description":"","coherence_level":"alta|media|baja","pattern_size":"bajo|medio|alto","recommendation":"crear|fusionar|descartar"}]}',
     'INPUT:',
     JSON.stringify({ proposals: items }),
