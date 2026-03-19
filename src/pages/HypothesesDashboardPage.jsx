@@ -1,9 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Brain, Edit, Lightbulb, Plus, Save, X } from 'lucide-react';
+import { ArrowLeft, Brain, Edit, Lightbulb, MoreHorizontal, Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
+import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 
 const initialForm = {
   type: 'problema',
@@ -181,7 +182,7 @@ const HypothesisFormFields = ({ form, setForm, projectId, availableParents = [],
 const HypothesesDashboardPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
-  const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis } = useHypotheses();
+  const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis, deleteHypothesis } = useHypotheses();
   const [showForm, setShowForm] = useState(false);
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
@@ -189,6 +190,9 @@ const HypothesesDashboardPage = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [validationFilter, setValidationFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
+  const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
 
   useEffect(() => {
     fetchHypotheses(campaignId);
@@ -209,6 +213,87 @@ const HypothesesDashboardPage = () => {
     acc.set(parentId, current);
     return acc;
   }, new Map()), [sortedHypotheses]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadEvolutionLinks = async () => {
+      const links = await listActiveEvolutionLinksForDestinationMode({ projectId, campaignId, destinationMode: 'video' });
+      if (cancelled) return;
+      const next = links.reduce((acc, entry) => {
+        const destinationId = String(entry?.link?.destination_hypothesis_id || '').trim();
+        if (!destinationId) return acc;
+        acc.set(destinationId, entry.link);
+        return acc;
+      }, new Map());
+      setActiveEvolutionLinksByDestinationId(next);
+    };
+    loadEvolutionLinks();
+    return () => { cancelled = true; };
+  }, [projectId, campaignId, sortedHypotheses]);
+
+  const collectVideoEvolutionBranchIds = (rootHypothesisId = '') => {
+    const pending = [String(rootHypothesisId || '').trim()].filter(Boolean);
+    const collected = new Set();
+    while (pending.length) {
+      const currentId = pending.shift();
+      if (!currentId || collected.has(currentId)) continue;
+      collected.add(currentId);
+      const children = childHypothesesByParentId.get(currentId) || [];
+      children.forEach((child) => pending.push(String(child.id || '').trim()));
+    }
+    return [...collected];
+  };
+
+  const openDeleteEvolutionModal = (hypothesis) => {
+    const hypothesisId = String(hypothesis?.id || '').trim();
+    if (!hypothesisId) return;
+    const link = activeEvolutionLinksByDestinationId.get(hypothesisId) || null;
+    setHypothesisMenuId('');
+    setDeleteEvolutionModal({
+      open: true,
+      hypothesisId,
+      deleting: false,
+      error: '',
+      link,
+      branchIds: collectVideoEvolutionBranchIds(hypothesisId),
+    });
+  };
+
+  const closeDeleteEvolutionModal = () => setDeleteEvolutionModal({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
+
+  const confirmDeleteEvolution = async () => {
+    const rootHypothesisId = String(deleteEvolutionModal.hypothesisId || '').trim();
+    const link = deleteEvolutionModal.link;
+    const branchIds = deleteEvolutionModal.branchIds || [];
+    if (!rootHypothesisId || !link || !branchIds.length) return;
+    setDeleteEvolutionModal((prev) => ({ ...prev, deleting: true, error: '' }));
+    try {
+      for (const hypothesisId of [...branchIds].reverse()) {
+        const ok = await deleteHypothesis(hypothesisId, campaignId);
+        if (!ok) throw new Error('No se pudo eliminar una hipótesis de la rama evolucionada.');
+      }
+      await markHypothesisEvolutionLinksDeleted({
+        projectId,
+        campaignId,
+        destinationMode: 'video',
+        destinationHypothesisIds: branchIds,
+        deletionContext: {
+          source_mode: 'comments',
+          destination_mode: 'video',
+          deleted_root_hypothesis_id: rootHypothesisId,
+          deleted_branch_ids: branchIds,
+        },
+      });
+      setActiveEvolutionLinksByDestinationId((prev) => {
+        const next = new Map(prev);
+        branchIds.forEach((hypothesisId) => next.delete(String(hypothesisId)));
+        return next;
+      });
+      closeDeleteEvolutionModal();
+    } catch (error) {
+      setDeleteEvolutionModal((prev) => ({ ...prev, deleting: false, error: error?.message || 'No se pudo eliminar la evolución.' }));
+    }
+  };
 
   const availableStatuses = useMemo(() => {
     const values = new Set();
@@ -416,6 +501,20 @@ const HypothesesDashboardPage = () => {
                       </div>
                       <div className="flex gap-1">
                         <Button className="bg-blue-100 text-blue-700 px-3" onClick={() => startEdit(hypothesis)}><Edit className="w-4 h-4" /></Button>
+                        <div className="relative">
+                          <Button className="bg-white border text-slate-700 px-3" onClick={() => setHypothesisMenuId((prev) => (prev === String(hypothesis.id) ? '' : String(hypothesis.id)))}><MoreHorizontal className="w-4 h-4" /></Button>
+                          {hypothesisMenuId === String(hypothesis.id) ? (
+                            <div className="absolute right-0 top-11 z-20 w-48 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg">
+                              {activeEvolutionLinksByDestinationId.has(String(hypothesis.id)) ? (
+                                <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50" onClick={() => openDeleteEvolutionModal(hypothesis)}>
+                                  <Trash2 className="w-4 h-4" />
+                                  Eliminar evolución
+                                </button>
+                              ) : null}
+                              <button type="button" className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50" onClick={async () => { setHypothesisMenuId(''); await deleteHypothesis(hypothesis.id, campaignId); }}>Borrar hipótesis</button>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
 
@@ -435,6 +534,25 @@ const HypothesesDashboardPage = () => {
           )}
         </div>
       </div>
+        <div className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 ${deleteEvolutionModal.open ? '' : 'pointer-events-none hidden'}`}>
+          <div className="w-full max-w-lg rounded-2xl border bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-semibold text-slate-900">Eliminar evolución</h3>
+            <p className="mt-2 text-sm text-slate-600">Se eliminará la hipótesis evolucionada en Modo Video y la rama derivada creada con esa evolución. La hipótesis original del Modo Comentarios permanecerá intacta.</p>
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              <p><span className="font-semibold text-slate-900">Hipótesis origen:</span> {deleteEvolutionModal.link?.source_hypothesis_title || 'Hipótesis de comentarios'}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-900">Hipótesis evolucionada:</span> {hypothesisById.get(String(deleteEvolutionModal.hypothesisId || ''))?.hypothesis_statement || deleteEvolutionModal.hypothesisId || '—'}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-900">Rama a limpiar:</span> {deleteEvolutionModal.branchIds.length} hipótesis.</p>
+              <p className="mt-1 text-xs text-slate-500">No se eliminarán códigos, perfiles ni fragmentos. Solo se limpiará la hipótesis destino y el vínculo activo de evolución.</p>
+            </div>
+            {deleteEvolutionModal.error ? <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{deleteEvolutionModal.error}</div> : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button className="bg-white border text-slate-700" onClick={closeDeleteEvolutionModal} disabled={deleteEvolutionModal.deleting}>Cancelar</Button>
+              <Button className="bg-red-600 text-white hover:bg-red-700" onClick={confirmDeleteEvolution} disabled={deleteEvolutionModal.deleting}>
+                {deleteEvolutionModal.deleting ? 'Eliminando evolución…' : 'Eliminar evolución'}
+              </Button>
+            </div>
+          </div>
+        </div>
     </div>
   );
 };

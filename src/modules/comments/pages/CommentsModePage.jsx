@@ -3467,6 +3467,7 @@ const CommentsModePage = () => {
   }, [hypotheses, hypothesisEditor.id, hypothesisEditor.type]);
 
   const evolutionLinksBySourceId = useMemo(() => hypothesisEvolutionLinks.reduce((acc, link) => {
+    if (link?.deleted_at) return acc;
     const sourceId = String(link?.source_hypothesis_id || '').trim();
     if (!sourceId) return acc;
     const current = acc.get(sourceId) || [];
