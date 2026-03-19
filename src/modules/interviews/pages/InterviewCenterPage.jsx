@@ -120,10 +120,63 @@ const evaluateMetricComparison = (actual, threshold, operator) => {
 };
 
 const blankClient = { name: '', contact: '', notes: '', audience_id: '', status: 'active', profile: emptyClientProfile };
+const interviewHypothesisTypeOptions = [
+  { value: 'problema', label: 'Problema' },
+  { value: 'segmento', label: 'Segmento' },
+  { value: 'mensajes', label: 'Mensajes' },
+  { value: 'solucion', label: 'Solución' },
+  { value: 'producto', label: 'Producto' },
+];
+
+const interviewParentTypeByChild = {
+  problema: '',
+  segmento: 'problema',
+  mensajes: 'segmento',
+  solucion: 'mensajes',
+  producto: 'solucion',
+};
+
+const interviewChildTypeByParent = {
+  problema: 'segmento',
+  segmento: 'mensajes',
+  mensajes: 'solucion',
+  solucion: 'producto',
+  producto: '',
+};
+
+const normalizeInterviewHypothesisType = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return interviewHypothesisTypeOptions.some((option) => option.value === normalized) ? normalized : '';
+};
+
+const interviewHypothesisTypeLabel = (value = '') => interviewHypothesisTypeOptions.find((option) => option.value === normalizeInterviewHypothesisType(value))?.label || 'Sin tipo';
+
+const stripInterviewHierarchyMetadata = (value = '') => String(value || '').replace(/\s*\[interview_hierarchy\][\s\S]*?\[\/interview_hierarchy\]\s*/g, '').trim();
+
+const extractInterviewHierarchyMetadata = (value = '') => {
+  const match = String(value || '').match(/\[interview_hierarchy\]([\s\S]*?)\[\/interview_hierarchy\]/);
+  if (!match) return {};
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return {};
+  }
+};
+
+const buildInterviewHierarchyObservations = (observations = '', parentHypothesisId = '') => {
+  const clean = stripInterviewHierarchyMetadata(observations);
+  const normalizedParentId = String(parentHypothesisId || '').trim();
+  if (!normalizedParentId) return clean;
+  return [clean, `[interview_hierarchy]${JSON.stringify({ parent_hypothesis_id: normalizedParentId })}[/interview_hierarchy]`].filter(Boolean).join('\n\n');
+};
+
+const getInterviewParentHypothesisId = (hypothesis = {}) => String(extractInterviewHierarchyMetadata(hypothesis?.observations || '').parent_hypothesis_id || '').trim();
+
 const blankHypothesis = {
   title: '',
   description: '',
   type: 'problema',
+  parent_hypothesis_id: '',
   status: 'exploracion',
   audience_id: '',
   segment: '',
@@ -163,6 +216,20 @@ const InterviewCenterPage = () => {
   const { toast } = useToast();
   const center = useInterviewCenterData({ projectId, campaignId, toast });
   const { reload } = center;
+
+  const interviewHypothesisById = useMemo(
+    () => new Map((center.hypotheses || []).map((hypothesis) => [String(hypothesis.id), hypothesis])),
+    [center.hypotheses],
+  );
+
+  const interviewChildHypothesesByParentId = useMemo(() => (center.hypotheses || []).reduce((acc, hypothesis) => {
+    const parentId = getInterviewParentHypothesisId(hypothesis);
+    if (!parentId) return acc;
+    const current = acc.get(parentId) || [];
+    current.push(hypothesis);
+    acc.set(parentId, current);
+    return acc;
+  }, new Map()), [center.hypotheses]);
 
   const [tab, setTab] = useState('dashboard');
   const [clientModalOpen, setClientModalOpen] = useState(false);
@@ -315,9 +382,29 @@ const InterviewCenterPage = () => {
     return created;
   };
 
-  const buildHypothesisPayload = useCallback((draft = {}) => {
+  const buildInterviewAllowedParents = useCallback((currentType, editingId = '') => {
+    const requiredParentType = interviewParentTypeByChild[normalizeInterviewHypothesisType(currentType)] || '';
+    if (!requiredParentType) return [];
+    return (center.hypotheses || []).filter((hypothesis) => String(hypothesis.id) !== String(editingId || '') && normalizeInterviewHypothesisType(hypothesis.type) === requiredParentType);
+  }, [center.hypotheses]);
+
+  const buildHypothesisPayload = useCallback((draft = {}, options = {}) => {
     const payload = { ...draft };
+    const editingId = String(options.editingId || '');
+    const normalizedType = normalizeInterviewHypothesisType(payload.type);
+    if (!normalizedType) return null;
+    const parentHypothesisId = String(payload.parent_hypothesis_id || '').trim();
+    const parentHypothesis = parentHypothesisId ? interviewHypothesisById.get(parentHypothesisId) : null;
+    const requiredParentType = interviewParentTypeByChild[normalizedType] || '';
+    if (normalizedType === 'problema' && parentHypothesisId) return null;
+    if (parentHypothesis && normalizeInterviewHypothesisType(parentHypothesis.type) !== requiredParentType) return null;
+    const currentChildren = interviewChildHypothesesByParentId.get(editingId) || [];
+    const allowedChildType = interviewChildTypeByParent[normalizedType] || '';
+    const invalidChildren = currentChildren.some((child) => normalizeInterviewHypothesisType(child.type) !== allowedChildType);
+    if ((!allowedChildType && currentChildren.length) || invalidChildren) return null;
+
     const minInterviews = Number(payload.min_interviews);
+    payload.type = normalizedType;
     payload.min_interviews = Number.isFinite(minInterviews) && minInterviews > 0 ? minInterviews : null;
 
     const currentConfig = payload.validation_metric_config || defaultValidationMetricConfig;
@@ -335,18 +422,24 @@ const InterviewCenterPage = () => {
       evaluation_type: 'average_selected_metrics',
     };
 
+    payload.observations = buildInterviewHierarchyObservations(payload.observations, parentHypothesisId);
+
     ['audience_id', 'related_client_id', 'interview_form_id'].forEach((key) => {
       if (!String(payload[key] || '').trim()) payload[key] = null;
     });
 
+    delete payload.parent_hypothesis_id;
     return payload;
-  }, []);
+  }, [interviewChildHypothesesByParentId, interviewHypothesisById]);
 
   const normalizeHypothesisForDraft = useCallback((hypothesis = {}) => {
     const config = hypothesis.validation_metric_config || {};
     return {
       ...blankHypothesis,
       ...hypothesis,
+      type: normalizeInterviewHypothesisType(hypothesis.type) || 'problema',
+      parent_hypothesis_id: getInterviewParentHypothesisId(hypothesis),
+      observations: stripInterviewHierarchyMetadata(hypothesis.observations),
       min_interviews: hypothesis.min_interviews ?? '',
       validation_metric_config: {
         ...defaultValidationMetricConfig,
@@ -1405,12 +1498,16 @@ const InterviewCenterPage = () => {
 
               <div className="grid gap-2 md:grid-cols-4">
                 <input className="border rounded p-2 md:col-span-2" placeholder="Nombre de hipótesis" value={hypDraft.title} onChange={(e) => setHypDraft((prev) => ({ ...prev, title: e.target.value }))} />
-                <select className="border rounded p-2" value={hypDraft.type} onChange={(e) => setHypDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="problema">problema</option><option value="solucion">solución</option><option value="mercado">mercado</option><option value="pricing">pricing</option><option value="comportamiento">comportamiento</option></select>
+                <select className="border rounded p-2" value={hypDraft.type} onChange={(e) => setHypDraft((prev) => ({ ...prev, type: e.target.value, parent_hypothesis_id: '' }))}>{interviewHypothesisTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
                 <select className="border rounded p-2" value={hypDraft.status} onChange={(e) => setHypDraft((prev) => ({ ...prev, status: e.target.value }))}><option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option></select>
                 <textarea className="border rounded p-2 md:col-span-4" rows={2} placeholder="Descripción" value={hypDraft.description} onChange={(e) => setHypDraft((prev) => ({ ...prev, description: e.target.value }))} />
               </div>
 
               <div className="grid gap-2 md:grid-cols-4">
+                <select className="border rounded p-2" value={hypDraft.parent_hypothesis_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, parent_hypothesis_id: e.target.value }))} disabled={!interviewParentTypeByChild[normalizeInterviewHypothesisType(hypDraft.type)]}>
+                  <option value="">{interviewParentTypeByChild[normalizeInterviewHypothesisType(hypDraft.type)] ? 'Sin padre' : 'Este tipo no admite padre'}</option>
+                  {buildInterviewAllowedParents(hypDraft.type).map((hypothesis) => <option key={hypothesis.id} value={hypothesis.id}>{hypothesis.title} · {interviewHypothesisTypeLabel(hypothesis.type)}</option>)}
+                </select>
                 <select className="border rounded p-2" value={hypDraft.audience_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia objetivo</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
                 <input className="border rounded p-2" placeholder="Segmento" value={hypDraft.segment} onChange={(e) => setHypDraft((prev) => ({ ...prev, segment: e.target.value }))} />
                 <select className="border rounded p-2" value={hypDraft.related_client_id} onChange={(e) => setHypDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}><option value="">Cliente relacionado</option>{center.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}</select>
@@ -1516,7 +1613,9 @@ const InterviewCenterPage = () => {
                 <Button
                   className="bg-indigo-600 text-white"
                   onClick={() => center.runMutation(async () => {
-                    const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, buildHypothesisPayload(hypDraft));
+                    const payload = buildHypothesisPayload(hypDraft);
+                    if (!payload) throw new Error('La hipótesis debe respetar la cadena problema → segmento → mensajes → solucion → producto.');
+                    const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, payload);
                     setHypDraft(createBlankHypothesisDraft());
                     return created;
                   }, 'Hipótesis creada')}
@@ -1525,12 +1624,16 @@ const InterviewCenterPage = () => {
                 </Button>
               </div>
             </div>
-            {center.hypotheses.map((hypothesis) => (
+            {center.hypotheses.map((hypothesis) => {
+              const parentHypothesis = interviewHypothesisById.get(getInterviewParentHypothesisId(hypothesis)) || null;
+              const childHypotheses = interviewChildHypothesesByParentId.get(String(hypothesis.id)) || [];
+              return (
               <div key={hypothesis.id} className="bg-white border rounded-xl p-4 space-y-3">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="font-semibold">{hypothesis.title}</p>
-                    <p className="text-sm text-slate-500">{hypothesis.type} · {hypothesis.status || 'exploracion'} · {hypothesis.audience_name || 'Sin audiencia'}</p>
+                    <p className="text-sm text-slate-500">{interviewHypothesisTypeLabel(hypothesis.type)} · {hypothesis.status || 'exploracion'} · {hypothesis.audience_name || 'Sin audiencia'}</p>
+                    <p className="mt-1 text-xs text-slate-500">Padre: {parentHypothesis ? parentHypothesis.title : 'Sin padre'} · Hijas: {childHypotheses.length} · Capa hija permitida: {interviewChildTypeByParent[normalizeInterviewHypothesisType(hypothesis.type)] ? interviewHypothesisTypeLabel(interviewChildTypeByParent[normalizeInterviewHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
                   </div>
                   <div className="flex items-center gap-2">
                     <Button
@@ -1543,6 +1646,8 @@ const InterviewCenterPage = () => {
                     <Button className="bg-red-50 border text-red-700" onClick={() => center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada')}>Borrar</Button>
                   </div>
                 </div>
+
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">Relación jerárquica: {parentHypothesis ? `${parentHypothesis.title} → ${hypothesis.title}` : 'Hipótesis raíz de la cadena'} · Hijas: {childHypotheses.length ? childHypotheses.map((child) => child.title).join(' · ') : 'Sin hijas'}.</div>
 
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="rounded-lg border border-slate-200 p-3">
@@ -1591,7 +1696,8 @@ const InterviewCenterPage = () => {
                   })()}
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
@@ -1957,8 +2063,9 @@ const InterviewCenterPage = () => {
       >
         <div className="grid gap-2 md:grid-cols-3">
           <input className="border rounded p-2 md:col-span-2" placeholder="Nombre de hipótesis" value={hypothesisEditDraft.title} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, title: e.target.value }))} />
-          <select className="border rounded p-2" value={hypothesisEditDraft.type} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, type: e.target.value }))}><option value="problema">problema</option><option value="solucion">solución</option><option value="mercado">mercado</option><option value="pricing">pricing</option><option value="comportamiento">comportamiento</option></select>
+          <select className="border rounded p-2" value={hypothesisEditDraft.type} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, type: e.target.value, parent_hypothesis_id: '' }))}>{interviewHypothesisTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
           <textarea className="border rounded p-2 md:col-span-3" rows={2} placeholder="Descripción" value={hypothesisEditDraft.description} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, description: e.target.value }))} />
+          <select className="border rounded p-2" value={hypothesisEditDraft.parent_hypothesis_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, parent_hypothesis_id: e.target.value }))} disabled={!interviewParentTypeByChild[normalizeInterviewHypothesisType(hypothesisEditDraft.type)]}><option value="">{interviewParentTypeByChild[normalizeInterviewHypothesisType(hypothesisEditDraft.type)] ? 'Sin padre' : 'Este tipo no admite padre'}</option>{buildInterviewAllowedParents(hypothesisEditDraft.type, activeHypothesisId).map((hypothesis) => <option key={hypothesis.id} value={hypothesis.id}>{hypothesis.title} · {interviewHypothesisTypeLabel(hypothesis.type)}</option>)}</select>
           <select className="border rounded p-2" value={hypothesisEditDraft.status} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, status: e.target.value }))}><option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option></select>
           <select className="border rounded p-2" value={hypothesisEditDraft.audience_id || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, audience_id: e.target.value }))}><option value="">Audiencia objetivo</option>{center.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}</select>
           <input className="border rounded p-2" placeholder="Segmento" value={hypothesisEditDraft.segment || ''} onChange={(e) => setHypothesisEditDraft((prev) => ({ ...prev, segment: e.target.value }))} />
@@ -2004,7 +2111,9 @@ const InterviewCenterPage = () => {
           <Button
             className="bg-indigo-600 text-white"
             onClick={() => center.runMutation(async () => {
-              const updated = await interviewsModuleApi.updateHypothesis(activeHypothesisId, buildHypothesisPayload(hypothesisEditDraft));
+              const payload = buildHypothesisPayload(hypothesisEditDraft, { editingId: activeHypothesisId });
+              if (!payload) throw new Error('La hipótesis debe respetar la cadena problema → segmento → mensajes → solucion → producto.');
+              const updated = await interviewsModuleApi.updateHypothesis(activeHypothesisId, payload);
               setHypothesisEditModalOpen(false);
               setActiveHypothesisId('');
               return updated;
