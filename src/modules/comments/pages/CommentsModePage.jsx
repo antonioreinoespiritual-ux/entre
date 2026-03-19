@@ -293,7 +293,6 @@ const CommentsModePage = () => {
     title: '',
     description: '',
     context_note: '',
-    linkedCodeSlugs: [],
     linkedProfileIds: [],
     profileQuery: '',
   });
@@ -3347,7 +3346,6 @@ const CommentsModePage = () => {
         title: '',
         description: '',
         context_note: '',
-        linkedCodeSlugs: [],
         linkedProfileIds: [],
         profileQuery: '',
       });
@@ -3360,7 +3358,6 @@ const CommentsModePage = () => {
       title: String(hypothesis.title || ''),
       description: String(hypothesis.description || ''),
       context_note: String(hypothesis.context_note || ''),
-      linkedCodeSlugs: Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs.map((slug) => String(slug)) : [],
       linkedProfileIds: Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids.map((profileId) => String(profileId)) : [],
       profileQuery: '',
     });
@@ -3374,9 +3371,6 @@ const CommentsModePage = () => {
     const title = String(hypothesisEditor.title || '').trim();
     const description = String(hypothesisEditor.description || '').trim();
     const contextNote = String(hypothesisEditor.context_note || '').trim();
-    const linkedCodeSlugs = Array.from(new Set((Array.isArray(hypothesisEditor.linkedCodeSlugs) ? hypothesisEditor.linkedCodeSlugs : [])
-      .map((slug) => String(slug).trim())
-      .filter((slug) => codes.some((code) => String(code.slug) === slug))));
     const linkedProfileIds = Array.from(new Set((Array.isArray(hypothesisEditor.linkedProfileIds) ? hypothesisEditor.linkedProfileIds : [])
       .map((profileId) => String(profileId).trim())
       .filter((profileId) => profileById.has(profileId))));
@@ -3392,7 +3386,6 @@ const CommentsModePage = () => {
         title,
         description,
         context_note: contextNote,
-        linked_code_slugs: linkedCodeSlugs,
         linked_profile_ids: linkedProfileIds,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -3404,12 +3397,12 @@ const CommentsModePage = () => {
 
     const nextHypotheses = hypotheses.map((item) => {
       if (String(item.id) !== String(hypothesisEditor.id)) return item;
+      const { linked_code_slugs, ...rest } = item || {};
       return {
-        ...item,
+        ...rest,
         title,
         description,
         context_note: contextNote,
-        linked_code_slugs: linkedCodeSlugs,
         linked_profile_ids: linkedProfileIds,
         updated_at: new Date().toISOString(),
       };
@@ -5015,7 +5008,7 @@ const CommentsModePage = () => {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="font-semibold text-slate-900">Hipótesis</h2>
-                  <p className="text-xs text-slate-500">Entidad conceptual puente nacida desde códigos del Modo Comentarios.</p>
+                  <p className="text-xs text-slate-500">Entidad conceptual del Modo Comentarios estructurada únicamente por perfiles vinculados.</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <label className="relative block">
@@ -5031,11 +5024,7 @@ const CommentsModePage = () => {
               {!filteredHypotheses.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay hipótesis creadas.</p> : (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {filteredHypotheses.map((hypothesis) => {
-                    const linkedCodeSlugs = Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs : [];
                     const linkedProfileIds = Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids : [];
-                    const linkedCodes = linkedCodeSlugs
-                      .map((slug) => codes.find((code) => String(code.slug) === String(slug)))
-                      .filter(Boolean);
                     const linkedProfiles = linkedProfileIds
                       .map((profileId) => profileById.get(String(profileId)))
                       .filter(Boolean);
@@ -5061,29 +5050,16 @@ const CommentsModePage = () => {
 
                         {hypothesis.context_note ? <p className="mt-2 rounded border bg-slate-50 px-2 py-1 text-xs text-slate-600">{hypothesis.context_note}</p> : null}
                         <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
-                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Códigos: {linkedCodes.length}</span>
                           <span className="rounded-full border border-teal-200 bg-teal-50 px-2 py-1 text-teal-700">Perfiles: {linkedProfiles.length}</span>
                         </div>
-                        <div className="mt-3 space-y-2">
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
-                            <div className="mt-1.5 flex flex-wrap gap-1.5">
-                              {!linkedCodes.length ? <span className="text-xs text-slate-400">Sin códigos vinculados</span> : linkedCodes.slice(0, 6).map((code) => (
-                                <button key={`${hypothesis.id}_${code.slug}`} type="button" className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100" onClick={() => { setTab('codes'); setSelectedCodeSlug(String(code.slug)); }}>
-                                  {code.name}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Perfiles vinculados</p>
-                            <div className="mt-1.5 flex flex-wrap gap-1.5">
-                              {!linkedProfiles.length ? <span className="text-xs text-slate-400">Sin perfiles vinculados</span> : linkedProfiles.slice(0, 6).map((profile) => (
-                                <span key={`${hypothesis.id}_${profile.id}`} className="rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] text-teal-700">
-                                  {profile.name}
-                                </span>
-                              ))}
-                            </div>
+                        <div className="mt-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Perfiles vinculados</p>
+                          <div className="mt-1.5 flex flex-wrap gap-1.5">
+                            {!linkedProfiles.length ? <span className="text-xs text-slate-400">Sin perfiles vinculados</span> : linkedProfiles.slice(0, 6).map((profile) => (
+                              <span key={`${hypothesis.id}_${profile.id}`} className="rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] text-teal-700">
+                                {profile.name}
+                              </span>
+                            ))}
                           </div>
                         </div>
                       </article>
@@ -5107,30 +5083,6 @@ const CommentsModePage = () => {
                   <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
                   <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
                   <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
-
-                  <div className="rounded-lg border bg-slate-50 p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
-                    <div className="mt-2 max-h-56 space-y-1 overflow-auto">
-                      {!codes.length ? <p className="text-xs text-slate-500">No hay códigos disponibles aún.</p> : codes.map((code) => {
-                        const checked = hypothesisEditor.linkedCodeSlugs.includes(String(code.slug));
-                        return (
-                          <label key={`hyp-code-${code.slug}`} className="flex items-start gap-2 rounded border bg-white px-2 py-1.5 text-xs text-slate-700">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => setHypothesisEditor((prev) => ({
-                                ...prev,
-                                linkedCodeSlugs: e.target.checked
-                                  ? [...prev.linkedCodeSlugs, String(code.slug)]
-                                  : prev.linkedCodeSlugs.filter((slug) => String(slug) !== String(code.slug)),
-                              }))}
-                            />
-                            <span>{code.name}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  </div>
 
                   <div className="rounded-lg border border-teal-100 bg-teal-50/60 p-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
