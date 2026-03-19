@@ -294,6 +294,8 @@ const CommentsModePage = () => {
     description: '',
     context_note: '',
     linkedCodeSlugs: [],
+    linkedProfileIds: [],
+    profileQuery: '',
   });
   const [codeMapOpen, setCodeMapOpen] = useState(false);
   const [codeMapZoom, setCodeMapZoom] = useState(1);
@@ -3278,6 +3280,49 @@ const CommentsModePage = () => {
   ];
 
 
+  const availableHypothesisProfiles = useMemo(() => {
+    const aggregated = new Map();
+    Object.values(codeMapVisualProfilesByScope || {}).forEach((scopeData) => {
+      const profiles = Array.isArray(scopeData?.profiles) ? scopeData.profiles : [];
+      const assignments = scopeData?.assignments && typeof scopeData.assignments === 'object' ? scopeData.assignments : {};
+      const assignmentCountByProfile = Object.values(assignments).reduce((acc, profileId) => {
+        const normalizedProfileId = String(profileId || '').trim();
+        if (!normalizedProfileId) return acc;
+        acc.set(normalizedProfileId, (acc.get(normalizedProfileId) || 0) + 1);
+        return acc;
+      }, new Map());
+
+      profiles.forEach((profile) => {
+        const id = String(profile?.id || '').trim();
+        if (!id) return;
+        const previous = aggregated.get(id);
+        const nextAssignmentCount = Number(assignmentCountByProfile.get(id) || 0);
+        if (!previous) {
+          aggregated.set(id, {
+            id,
+            name: String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
+            description: String(profile?.description || '').trim(),
+            assignmentCount: nextAssignmentCount,
+          });
+          return;
+        }
+        aggregated.set(id, {
+          ...previous,
+          name: previous.name || String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
+          description: previous.description || String(profile?.description || '').trim(),
+          assignmentCount: Number(previous.assignmentCount || 0) + nextAssignmentCount,
+        });
+      });
+    });
+
+    return Array.from(aggregated.values()).sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  }, [codeMapVisualProfilesByScope]);
+
+  const profileById = useMemo(
+    () => new Map(availableHypothesisProfiles.map((profile) => [String(profile.id), profile])),
+    [availableHypothesisProfiles],
+  );
+
   const filteredHypotheses = useMemo(() => {
     const q = String(hypothesisQuery || '').trim().toLowerCase();
     if (!q) return hypotheses;
@@ -3285,9 +3330,13 @@ const CommentsModePage = () => {
       const title = String(item.title || '').toLowerCase();
       const description = String(item.description || '').toLowerCase();
       const contextNote = String(item.context_note || '').toLowerCase();
-      return title.includes(q) || description.includes(q) || contextNote.includes(q);
+      const linkedProfilesText = (Array.isArray(item.linked_profile_ids) ? item.linked_profile_ids : [])
+        .map((profileId) => profileById.get(String(profileId))?.name || '')
+        .join(' ')
+        .toLowerCase();
+      return title.includes(q) || description.includes(q) || contextNote.includes(q) || linkedProfilesText.includes(q);
     });
-  }, [hypotheses, hypothesisQuery]);
+  }, [hypotheses, hypothesisQuery, profileById]);
 
   const openHypothesisEditor = (hypothesis = null) => {
     if (!hypothesis) {
@@ -3299,6 +3348,8 @@ const CommentsModePage = () => {
         description: '',
         context_note: '',
         linkedCodeSlugs: [],
+        linkedProfileIds: [],
+        profileQuery: '',
       });
       return;
     }
@@ -3310,6 +3361,8 @@ const CommentsModePage = () => {
       description: String(hypothesis.description || ''),
       context_note: String(hypothesis.context_note || ''),
       linkedCodeSlugs: Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs.map((slug) => String(slug)) : [],
+      linkedProfileIds: Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids.map((profileId) => String(profileId)) : [],
+      profileQuery: '',
     });
   };
 
@@ -3324,6 +3377,9 @@ const CommentsModePage = () => {
     const linkedCodeSlugs = Array.from(new Set((Array.isArray(hypothesisEditor.linkedCodeSlugs) ? hypothesisEditor.linkedCodeSlugs : [])
       .map((slug) => String(slug).trim())
       .filter((slug) => codes.some((code) => String(code.slug) === slug))));
+    const linkedProfileIds = Array.from(new Set((Array.isArray(hypothesisEditor.linkedProfileIds) ? hypothesisEditor.linkedProfileIds : [])
+      .map((profileId) => String(profileId).trim())
+      .filter((profileId) => profileById.has(profileId))));
 
     if (!title || !description) {
       window.alert('Título y descripción son obligatorios para crear/editar hipótesis.');
@@ -3337,6 +3393,7 @@ const CommentsModePage = () => {
         description,
         context_note: contextNote,
         linked_code_slugs: linkedCodeSlugs,
+        linked_profile_ids: linkedProfileIds,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -3353,6 +3410,7 @@ const CommentsModePage = () => {
         description,
         context_note: contextNote,
         linked_code_slugs: linkedCodeSlugs,
+        linked_profile_ids: linkedProfileIds,
         updated_at: new Date().toISOString(),
       };
     });
@@ -4974,8 +5032,12 @@ const CommentsModePage = () => {
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {filteredHypotheses.map((hypothesis) => {
                     const linkedCodeSlugs = Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs : [];
+                    const linkedProfileIds = Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids : [];
                     const linkedCodes = linkedCodeSlugs
                       .map((slug) => codes.find((code) => String(code.slug) === String(slug)))
+                      .filter(Boolean);
+                    const linkedProfiles = linkedProfileIds
+                      .map((profileId) => profileById.get(String(profileId)))
                       .filter(Boolean);
                     return (
                       <article key={hypothesis.id} className="relative rounded-xl border bg-white p-4 shadow-sm">
@@ -4998,13 +5060,31 @@ const CommentsModePage = () => {
                         </div>
 
                         {hypothesis.context_note ? <p className="mt-2 rounded border bg-slate-50 px-2 py-1 text-xs text-slate-600">{hypothesis.context_note}</p> : null}
-                        <p className="mt-3 text-xs text-slate-500">Códigos vinculados: {linkedCodes.length}</p>
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {!linkedCodes.length ? <span className="text-xs text-slate-400">Sin códigos vinculados</span> : linkedCodes.slice(0, 6).map((code) => (
-                            <button key={`${hypothesis.id}_${code.slug}`} type="button" className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100" onClick={() => { setTab('codes'); setSelectedCodeSlug(String(code.slug)); }}>
-                              {code.name}
-                            </button>
-                          ))}
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Códigos: {linkedCodes.length}</span>
+                          <span className="rounded-full border border-teal-200 bg-teal-50 px-2 py-1 text-teal-700">Perfiles: {linkedProfiles.length}</span>
+                        </div>
+                        <div className="mt-3 space-y-2">
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {!linkedCodes.length ? <span className="text-xs text-slate-400">Sin códigos vinculados</span> : linkedCodes.slice(0, 6).map((code) => (
+                                <button key={`${hypothesis.id}_${code.slug}`} type="button" className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100" onClick={() => { setTab('codes'); setSelectedCodeSlug(String(code.slug)); }}>
+                                  {code.name}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Perfiles vinculados</p>
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {!linkedProfiles.length ? <span className="text-xs text-slate-400">Sin perfiles vinculados</span> : linkedProfiles.slice(0, 6).map((profile) => (
+                                <span key={`${hypothesis.id}_${profile.id}`} className="rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] text-teal-700">
+                                  {profile.name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
                         </div>
                       </article>
                     );
@@ -5049,6 +5129,74 @@ const CommentsModePage = () => {
                           </label>
                         );
                       })}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-teal-100 bg-teal-50/60 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-teal-700">Perfiles vinculados</p>
+                        <p className="text-[11px] text-teal-700/80">Agrupan y estructuran la hipótesis dentro del Modo Comentarios.</p>
+                      </div>
+                      <label className="relative block min-w-[220px] flex-1">
+                        <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-teal-500" />
+                        <input
+                          className="w-full rounded-lg border border-teal-200 bg-white py-2 pl-9 pr-3 text-sm"
+                          placeholder="Buscar perfiles existentes"
+                          value={hypothesisEditor.profileQuery}
+                          onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, profileQuery: e.target.value }))}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {!hypothesisEditor.linkedProfileIds.length ? <span className="text-xs text-slate-500">Sin perfiles vinculados todavía.</span> : hypothesisEditor.linkedProfileIds.map((profileId) => {
+                        const profile = profileById.get(String(profileId));
+                        if (!profile) return null;
+                        return (
+                          <button
+                            key={`hyp-profile-chip-${profile.id}`}
+                            type="button"
+                            className="rounded-full border border-teal-200 bg-white px-2 py-1 text-[11px] text-teal-700 hover:bg-teal-100"
+                            onClick={() => setHypothesisEditor((prev) => ({
+                              ...prev,
+                              linkedProfileIds: prev.linkedProfileIds.filter((item) => String(item) !== String(profile.id)),
+                            }))}
+                          >
+                            {profile.name} <span aria-hidden="true">×</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="mt-3 max-h-56 space-y-1 overflow-auto">
+                      {!availableHypothesisProfiles.length ? <p className="text-xs text-slate-500">No hay perfiles disponibles aún en este workspace del Modo Comentarios.</p> : availableHypothesisProfiles
+                        .filter((profile) => {
+                          const q = String(hypothesisEditor.profileQuery || '').trim().toLowerCase();
+                          if (!q) return true;
+                          return String(profile.name || '').toLowerCase().includes(q) || String(profile.description || '').toLowerCase().includes(q);
+                        })
+                        .map((profile) => {
+                          const checked = hypothesisEditor.linkedProfileIds.includes(String(profile.id));
+                          return (
+                            <label key={`hyp-profile-${profile.id}`} className="flex items-start gap-2 rounded border border-teal-100 bg-white px-2 py-1.5 text-xs text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => setHypothesisEditor((prev) => ({
+                                  ...prev,
+                                  linkedProfileIds: e.target.checked
+                                    ? [...prev.linkedProfileIds, String(profile.id)]
+                                    : prev.linkedProfileIds.filter((profileId) => String(profileId) !== String(profile.id)),
+                                }))}
+                              />
+                              <span>
+                                <span className="font-medium text-slate-800">{profile.name}</span>
+                                <span className="mt-0.5 block text-[11px] text-slate-500">{profile.description || 'Perfil conceptual disponible para agrupar códigos.'}{profile.assignmentCount ? ` · ${profile.assignmentCount} códigos asignados` : ''}</span>
+                              </span>
+                            </label>
+                          );
+                        })}
                     </div>
                   </div>
                 </div>
