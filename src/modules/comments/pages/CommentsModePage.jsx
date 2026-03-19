@@ -87,6 +87,38 @@ const buildCommentHypothesisTraceBlock = ({ sourceHypothesis = {}, destinationMo
   ].join('\n');
 };
 
+
+const COMMENT_HYPOTHESIS_TYPE_OPTIONS = [
+  { value: 'problema', label: 'Problema' },
+  { value: 'segmento', label: 'Segmento' },
+  { value: 'mensajes', label: 'Mensajes' },
+  { value: 'solucion', label: 'Solución' },
+  { value: 'producto', label: 'Producto' },
+];
+
+const COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD = {
+  problema: '',
+  segmento: 'problema',
+  mensajes: 'segmento',
+  solucion: 'mensajes',
+  producto: 'solucion',
+};
+
+const COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT = {
+  problema: 'segmento',
+  segmento: 'mensajes',
+  mensajes: 'solucion',
+  solucion: 'producto',
+  producto: '',
+};
+
+const normalizeCommentHypothesisType = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return COMMENT_HYPOTHESIS_TYPE_OPTIONS.some((option) => option.value === normalized) ? normalized : '';
+};
+
+const commentHypothesisTypeLabel = (value = '') => COMMENT_HYPOTHESIS_TYPE_OPTIONS.find((option) => option.value === normalizeCommentHypothesisType(value))?.label || 'Sin tipo';
+
 const parseYouTubeVideoId = (value = '') => {
   const input = String(value || '').trim();
   if (!input) return '';
@@ -363,6 +395,8 @@ const CommentsModePage = () => {
     id: '',
     title: '',
     description: '',
+    type: 'problema',
+    parentHypothesisId: '',
     context_note: '',
     linkedProfileIds: [],
     profileQuery: '',
@@ -3395,6 +3429,20 @@ const CommentsModePage = () => {
     [availableHypothesisProfiles],
   );
 
+  const hypothesisById = useMemo(
+    () => new Map(hypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
+    [hypotheses],
+  );
+
+  const childHypothesesByParentId = useMemo(() => hypotheses.reduce((acc, hypothesis) => {
+    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
+    if (!parentId) return acc;
+    const current = acc.get(parentId) || [];
+    current.push(hypothesis);
+    acc.set(parentId, current);
+    return acc;
+  }, new Map()), [hypotheses]);
+
   const filteredHypotheses = useMemo(() => {
     const q = String(hypothesisQuery || '').trim().toLowerCase();
     if (!q) return hypotheses;
@@ -3402,13 +3450,21 @@ const CommentsModePage = () => {
       const title = String(item.title || '').toLowerCase();
       const description = String(item.description || '').toLowerCase();
       const contextNote = String(item.context_note || '').toLowerCase();
+      const typeLabel = commentHypothesisTypeLabel(item.type).toLowerCase();
       const linkedProfilesText = (Array.isArray(item.linked_profile_ids) ? item.linked_profile_ids : [])
         .map((profileId) => profileById.get(String(profileId))?.name || '')
         .join(' ')
         .toLowerCase();
-      return title.includes(q) || description.includes(q) || contextNote.includes(q) || linkedProfilesText.includes(q);
+      return title.includes(q) || description.includes(q) || contextNote.includes(q) || linkedProfilesText.includes(q) || typeLabel.includes(q);
     });
   }, [hypotheses, hypothesisQuery, profileById]);
+
+  const allowedParentHypothesesForEditor = useMemo(() => {
+    const childType = normalizeCommentHypothesisType(hypothesisEditor.type);
+    const requiredParentType = COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[childType] || '';
+    if (!requiredParentType) return [];
+    return hypotheses.filter((hypothesis) => String(hypothesis.id) !== String(hypothesisEditor.id || '') && normalizeCommentHypothesisType(hypothesis.type) === requiredParentType);
+  }, [hypotheses, hypothesisEditor.id, hypothesisEditor.type]);
 
   const evolutionLinksBySourceId = useMemo(() => hypothesisEvolutionLinks.reduce((acc, link) => {
     const sourceId = String(link?.source_hypothesis_id || '').trim();
@@ -3586,6 +3642,8 @@ const CommentsModePage = () => {
         id: '',
         title: '',
         description: '',
+        type: 'problema',
+        parentHypothesisId: '',
         context_note: '',
         linkedProfileIds: [],
         profileQuery: '',
@@ -3598,6 +3656,8 @@ const CommentsModePage = () => {
       id: String(hypothesis.id || ''),
       title: String(hypothesis.title || ''),
       description: String(hypothesis.description || ''),
+      type: normalizeCommentHypothesisType(hypothesis.type) || 'problema',
+      parentHypothesisId: String(hypothesis.parent_hypothesis_id || ''),
       context_note: String(hypothesis.context_note || ''),
       linkedProfileIds: Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids.map((profileId) => String(profileId)) : [],
       profileQuery: '',
@@ -3611,13 +3671,38 @@ const CommentsModePage = () => {
   const saveHypothesisEditor = () => {
     const title = String(hypothesisEditor.title || '').trim();
     const description = String(hypothesisEditor.description || '').trim();
+    const hypothesisType = normalizeCommentHypothesisType(hypothesisEditor.type);
+    const parentHypothesisId = String(hypothesisEditor.parentHypothesisId || '').trim();
+    const parentHypothesis = parentHypothesisId ? hypothesisById.get(parentHypothesisId) : null;
     const contextNote = String(hypothesisEditor.context_note || '').trim();
     const linkedProfileIds = Array.from(new Set((Array.isArray(hypothesisEditor.linkedProfileIds) ? hypothesisEditor.linkedProfileIds : [])
       .map((profileId) => String(profileId).trim())
       .filter((profileId) => profileById.has(profileId))));
 
-    if (!title || !description) {
-      window.alert('Título y descripción son obligatorios para crear/editar hipótesis.');
+    if (!title || !description || !hypothesisType) {
+      window.alert('Título, descripción y tipo son obligatorios para crear/editar hipótesis.');
+      return;
+    }
+
+    const requiredParentType = COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[hypothesisType] || '';
+    if (hypothesisType === 'problema' && parentHypothesisId) {
+      window.alert('Una hipótesis de tipo problema no puede tener hipótesis padre.');
+      return;
+    }
+    if (parentHypothesis && normalizeCommentHypothesisType(parentHypothesis.type) !== requiredParentType) {
+      window.alert(`La relación es inválida: una hipótesis ${commentHypothesisTypeLabel(hypothesisType).toLowerCase()} solo puede depender de una hipótesis ${commentHypothesisTypeLabel(requiredParentType).toLowerCase()}.`);
+      return;
+    }
+
+    const currentChildren = childHypothesesByParentId.get(String(hypothesisEditor.id || '')) || [];
+    const allowedChildType = COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[hypothesisType] || '';
+    const hasInvalidChildren = currentChildren.some((child) => normalizeCommentHypothesisType(child.type) !== allowedChildType);
+    if (hasInvalidChildren) {
+      window.alert(`No puedes guardar esta hipótesis como ${commentHypothesisTypeLabel(hypothesisType).toLowerCase()} porque rompería la jerarquía de sus hipótesis hijas.`);
+      return;
+    }
+    if (!allowedChildType && currentChildren.length) {
+      window.alert('Una hipótesis de tipo producto no puede tener hipótesis hijas.');
       return;
     }
 
@@ -3626,6 +3711,8 @@ const CommentsModePage = () => {
         id: `comment_hypothesis_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
         title,
         description,
+        type: hypothesisType,
+        parent_hypothesis_id: parentHypothesisId || '',
         context_note: contextNote,
         linked_profile_ids: linkedProfileIds,
         created_at: new Date().toISOString(),
@@ -3643,6 +3730,8 @@ const CommentsModePage = () => {
         ...rest,
         title,
         description,
+        type: hypothesisType,
+        parent_hypothesis_id: parentHypothesisId || '',
         context_note: contextNote,
         linked_profile_ids: linkedProfileIds,
         updated_at: new Date().toISOString(),
@@ -5269,6 +5358,8 @@ const CommentsModePage = () => {
                     const linkedProfiles = linkedProfileIds
                       .map((profileId) => profileById.get(String(profileId)))
                       .filter(Boolean);
+                    const parentHypothesis = hypothesisById.get(String(hypothesis.parent_hypothesis_id || '')) || null;
+                    const childHypotheses = childHypothesesByParentId.get(String(hypothesis.id)) || [];
                     const evolutions = evolutionLinksBySourceId.get(String(hypothesis.id)) || [];
                     return (
                       <article key={hypothesis.id} className="relative rounded-xl border bg-white p-4 shadow-sm">
@@ -5293,9 +5384,17 @@ const CommentsModePage = () => {
 
                         {hypothesis.context_note ? <p className="mt-2 rounded border bg-slate-50 px-2 py-1 text-xs text-slate-600">{hypothesis.context_note}</p> : null}
                         <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+                          <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-700">Tipo: {commentHypothesisTypeLabel(hypothesis.type)}</span>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Padre: {parentHypothesis ? parentHypothesis.title : 'Sin padre'}</span>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Hijas: {childHypotheses.length}</span>
                           <span className="rounded-full border border-teal-200 bg-teal-50 px-2 py-1 text-teal-700">Perfiles: {linkedProfiles.length}</span>
                         </div>
                         <div className="mt-3 space-y-3">
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                            <p><span className="font-semibold text-slate-700">Padre jerárquico:</span> {parentHypothesis ? `${parentHypothesis.title} · ${commentHypothesisTypeLabel(parentHypothesis.type)}` : 'Sin padre asignado'}</p>
+                            <p className="mt-1"><span className="font-semibold text-slate-700">Capa hija permitida:</span> {COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[normalizeCommentHypothesisType(hypothesis.type)] ? commentHypothesisTypeLabel(COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[normalizeCommentHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
+                            <p className="mt-1"><span className="font-semibold text-slate-700">Hipótesis hijas:</span> {childHypotheses.length ? childHypotheses.map((child) => child.title).join(' · ') : 'Sin hijas'}</p>
+                          </div>
                           <div>
                             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Perfiles vinculados</p>
                             <div className="mt-1.5 flex flex-wrap gap-1.5">
@@ -5539,6 +5638,23 @@ const CommentsModePage = () => {
                 <div className="grid max-h-[calc(100vh-13rem)] gap-3 overflow-y-auto p-5">
                   <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
                   <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tipo de hipótesis</p>
+                      <select className="mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm" value={hypothesisEditor.type} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, type: e.target.value, parentHypothesisId: '' }))}>
+                        {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
+                      <p className="mt-2 text-[11px] text-slate-500">Cadena válida: problema → segmento → mensajes → solución → producto.</p>
+                    </div>
+                    <div className="rounded-lg border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hipótesis padre</p>
+                      <select className="mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm" value={hypothesisEditor.parentHypothesisId} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, parentHypothesisId: e.target.value }))} disabled={!COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[normalizeCommentHypothesisType(hypothesisEditor.type)]}>
+                        <option value="">{COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[normalizeCommentHypothesisType(hypothesisEditor.type)] ? 'Sin padre' : 'Este tipo no admite padre'}</option>
+                        {allowedParentHypothesesForEditor.map((hypothesis) => <option key={hypothesis.id} value={hypothesis.id}>{hypothesis.title} · {commentHypothesisTypeLabel(hypothesis.type)}</option>)}
+                      </select>
+                      <p className="mt-2 text-[11px] text-slate-500">Solo puedes vincular esta hipótesis con padres del tipo inmediatamente anterior en la jerarquía.</p>
+                    </div>
+                  </div>
                   <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
 
                   <div className="rounded-lg border border-teal-100 bg-teal-50/60 p-3">
