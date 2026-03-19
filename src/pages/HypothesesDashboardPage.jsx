@@ -7,6 +7,7 @@ import { useHypotheses } from '@/contexts/HypothesisContext';
 import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 
 const initialForm = {
+  title: '',
   type: 'problema',
   parent_hypothesis_id: '',
   hypothesis_statement: '',
@@ -166,6 +167,7 @@ const parseThresholdValue = (hypothesis) => {
 const HypothesisFormFields = ({ form, setForm, projectId, availableParents = [], requiredParentType = '', allowedChildType = '' }) => (
   <>
     <div><label className="block text-sm font-medium mb-1">Project ID</label><input disabled className="w-full rounded-lg border p-2 bg-gray-100" value={projectId} /></div>
+    <div><label className="block text-sm font-medium mb-1">Título</label><input required className="w-full rounded-lg border p-2" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
     <div><label className="block text-sm font-medium mb-1">Tipo de hipótesis</label><select required className="w-full rounded-lg border p-2" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value, parent_hypothesis_id: '' })}>{hypothesisTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
     <div><label className="block text-sm font-medium mb-1">Hipótesis padre</label><select className="w-full rounded-lg border p-2" value={form.parent_hypothesis_id || ''} onChange={(e) => setForm({ ...form, parent_hypothesis_id: e.target.value })} disabled={!requiredParentType}><option value="">{requiredParentType ? 'Sin padre' : 'Este tipo no admite padre'}</option>{availableParents.map((hypothesis) => <option key={hypothesis.id} value={hypothesis.id}>{hypothesis.hypothesis_statement || hypothesis.condition || hypothesis.id} · {hypothesisTypeLabel(hypothesis.type)}</option>)}</select><p className="mt-1 text-xs text-gray-500">{requiredParentType ? `Solo puede depender de hipótesis tipo ${hypothesisTypeLabel(requiredParentType).toLowerCase()}.` : 'Las hipótesis de tipo problema no tienen padre.'}</p></div>
     <div className="md:col-span-2 rounded-lg border bg-gray-50 p-3 text-xs text-gray-600">Siguiente capa válida: <span className="font-semibold text-gray-700">{allowedChildType ? hypothesisTypeLabel(allowedChildType) : 'No admite hijas'}</span>.</div>
@@ -335,7 +337,7 @@ const HypothesesDashboardPage = () => {
   const buildPayload = (currentForm, options = {}) => {
     const currentType = normalizeHypothesisType(currentForm.type);
     const editingId = String(options.editingId || '');
-    if (!currentType || !currentForm.metrica_objetivo_y || !currentForm.volumen_unidad || !currentForm.umbral_operador || !currentForm.umbral_tipo) {
+    if (!currentType || !String(currentForm.title || '').trim() || !currentForm.metrica_objetivo_y || !currentForm.volumen_unidad || !currentForm.umbral_operador || !currentForm.umbral_tipo) {
       return null;
     }
     const parentHypothesisId = String(currentForm.parent_hypothesis_id || '').trim();
@@ -350,6 +352,7 @@ const HypothesesDashboardPage = () => {
 
     const thresholdSuffix = currentForm.umbral_tipo === '%' ? '%' : '';
     const payload = {
+      title: String(currentForm.title || '').trim(),
       type: currentType,
       hypothesis_statement: currentForm.hypothesis_statement,
       variable_x: currentForm.variable_x,
@@ -480,14 +483,17 @@ const HypothesesDashboardPage = () => {
 
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="font-semibold">{hypothesisTypeLabel(hypothesis.type)}</h3>
+                        <h3 className="text-base font-semibold text-slate-900">{hypothesis.title || 'Hipótesis sin título'}</h3>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Tipo: {hypothesisTypeLabel(hypothesis.type)}</span>
                           <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">Padre: {parentHypothesis ? hypothesisTypeLabel(parentHypothesis.type) : 'Sin padre'}</span>
                           <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600">Hijas: {childHypotheses.length}</span>
+                          <span className={`rounded-full border px-2 py-0.5 text-[11px] ${activeEvolutionLinksByDestinationId.has(String(hypothesis.id)) ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{activeEvolutionLinksByDestinationId.has(String(hypothesis.id)) ? 'Evolucionada desde Comentarios' : 'Sin evolución trazada'}</span>
                         </div>
+                        <p className="mt-3 text-sm font-medium text-slate-700">Problema</p>
                         <p className="text-sm text-gray-700 mt-1">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
                         <p className="text-xs text-gray-500 mt-2">Métrica: {metricLabel}</p>
-                        <p className="text-xs text-gray-500 mt-1">Padre jerárquico: {parentHypothesis ? (parentHypothesis.hypothesis_statement || parentHypothesis.condition || parentHypothesis.id) : 'Sin padre'} · Capa hija permitida: {childTypeByParent[normalizeHypothesisType(hypothesis.type)] ? hypothesisTypeLabel(childTypeByParent[normalizeHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
+                        <p className="text-xs text-gray-500 mt-1">Padre jerárquico: {parentHypothesis ? (parentHypothesis.title || parentHypothesis.hypothesis_statement || parentHypothesis.condition || parentHypothesis.id) : 'Sin padre'} · Capa hija permitida: {childTypeByParent[normalizeHypothesisType(hypothesis.type)] ? hypothesisTypeLabel(childTypeByParent[normalizeHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
                         {(() => {
                           const rawStatus = getHypothesisRawStatus(hypothesis);
                           const validated = isValidatedStatus(rawStatus);
