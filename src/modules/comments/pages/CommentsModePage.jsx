@@ -386,6 +386,7 @@ const CommentsModePage = () => {
     error: '',
     destinationMode: '',
     sourceHypothesisId: '',
+    scope: 'single',
   });
   const [hypothesisEvolutionSupport, setHypothesisEvolutionSupport] = useState({ loading: false, error: '', audiences: [], clients: [], forms: [] });
   const [hypothesisEvolutionDeleteModal, setHypothesisEvolutionDeleteModal] = useState({
@@ -3653,16 +3654,62 @@ const CommentsModePage = () => {
       ...defaultEvolutionInterviewDraft,
       title: sourceTitle,
       description: [sourceDescription, sourceContext].filter(Boolean).join('\n\n'),
+      type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionInterviewDraft.type,
       experiment_notes: `Adaptar esta hipótesis al flujo de entrevistas para validar su señal cualitativa.` ,
       observations: sourceContext,
       next_actions: 'Diseñar entrevistas y ejecutar validación con muestra mínima.',
     });
     setHypothesisEvolutionVideoDraft({
       ...defaultEvolutionVideoDraft,
+      type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionVideoDraft.type,
       hypothesis_statement: sourceDescription || sourceTitle,
       variable_x: sourceTitle,
       contexto_cualitativo: sourceContext,
     });
+  };
+
+  const buildVideoEvolutionContext = (context = '', parentHypothesisId = '') => {
+    const clean = stripVideoHierarchyMetadata(context);
+    const normalizedParentId = String(parentHypothesisId || '').trim();
+    if (!normalizedParentId) return clean;
+    return [clean, `[hierarchy_meta]${JSON.stringify({ parent_hypothesis_id: normalizedParentId })}[/hierarchy_meta]`].filter(Boolean).join('\n\n');
+  };
+
+  const buildInterviewEvolutionObservations = (observations = '', parentHypothesisId = '') => {
+    const clean = stripInterviewHierarchyMetadata(observations);
+    const normalizedParentId = String(parentHypothesisId || '').trim();
+    if (!normalizedParentId) return clean;
+    return [clean, `[interview_hierarchy]${JSON.stringify({ parent_hypothesis_id: normalizedParentId })}[/interview_hierarchy]`].filter(Boolean).join('\n\n');
+  };
+
+  const buildEvolutionBranchHypotheses = (sourceHypothesis = null, scope = 'single') => {
+    if (!sourceHypothesis) return [];
+    if (scope !== 'branch') return [sourceHypothesis];
+
+    const lineage = [];
+    const seen = new Set();
+    let current = sourceHypothesis;
+    while (current) {
+      lineage.unshift(current);
+      seen.add(String(current.id || ''));
+      const parentId = String(current.parent_hypothesis_id || '').trim();
+      current = parentId ? hypothesisById.get(parentId) || null : null;
+    }
+
+    const queue = [sourceHypothesis];
+    while (queue.length) {
+      const item = queue.shift();
+      const itemId = String(item?.id || '').trim();
+      if (!itemId) continue;
+      if (!seen.has(itemId)) {
+        lineage.push(item);
+        seen.add(itemId);
+      }
+      const children = childHypothesesByParentId.get(itemId) || [];
+      children.forEach((child) => queue.push(child));
+    }
+
+    return lineage;
   };
 
   const openHypothesisEvolutionModal = async (hypothesis) => {
@@ -3675,6 +3722,7 @@ const CommentsModePage = () => {
       error: '',
       destinationMode: '',
       sourceHypothesisId: String(hypothesis.id || ''),
+      scope: 'single',
     });
     setHypothesisEvolutionSupport((prev) => ({ ...prev, loading: true, error: '' }));
     try {
@@ -3690,7 +3738,7 @@ const CommentsModePage = () => {
   };
 
   const closeHypothesisEvolutionModal = () => {
-    setHypothesisEvolutionModal({ open: false, saving: false, error: '', destinationMode: '', sourceHypothesisId: '' });
+    setHypothesisEvolutionModal({ open: false, saving: false, error: '', destinationMode: '', sourceHypothesisId: '', scope: 'single' });
   };
 
   const buildEvolutionLinkRecord = ({ sourceHypothesis, destinationMode, destinationHypothesis, destinationRoute, adapterSnapshot }) => ({
@@ -3708,16 +3756,18 @@ const CommentsModePage = () => {
     adapter_snapshot: adapterSnapshot,
   });
 
-  const persistHypothesisEvolutionLink = (record) => {
+  const persistHypothesisEvolutionLinks = (records = []) => {
+    if (!records.length) return;
     persist({
       ...store,
-      hypothesisEvolutionLinks: [record, ...hypothesisEvolutionLinks],
+      hypothesisEvolutionLinks: [...records, ...hypothesisEvolutionLinks],
     });
   };
 
   const saveHypothesisEvolution = async () => {
     const sourceHypothesis = activeEvolutionSourceHypothesis;
     const destinationMode = String(hypothesisEvolutionModal.destinationMode || '').trim();
+    const evolutionScope = String(hypothesisEvolutionModal.scope || 'single').trim() || 'single';
     if (!sourceHypothesis || !destinationMode) {
       setHypothesisEvolutionModal((prev) => ({ ...prev, error: 'Selecciona una hipótesis origen y un modo destino.' }));
       return;
@@ -3725,37 +3775,50 @@ const CommentsModePage = () => {
 
     setHypothesisEvolutionModal((prev) => ({ ...prev, saving: true, error: '' }));
     try {
+      const sourceBranch = buildEvolutionBranchHypotheses(sourceHypothesis, evolutionScope);
+      if (!sourceBranch.length) throw new Error('No se encontró la rama de hipótesis a evolucionar.');
+
       if (destinationMode === 'interviews') {
         const draft = hypothesisEvolutionInterviewDraft;
         if (!String(draft.title || '').trim()) throw new Error('La evolución a Entrevistas requiere un título.');
-        const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, {
-          title: String(draft.title || '').trim(),
-          description: String(draft.description || '').trim() || null,
-          type: String(draft.type || 'problema').trim() || 'problema',
-          status: String(draft.status || 'exploracion').trim() || 'exploracion',
-          audience_id: String(draft.audience_id || '').trim() || null,
-          segment: String(draft.segment || '').trim() || null,
-          related_client_id: String(draft.related_client_id || '').trim() || null,
-          interview_form_id: String(draft.interview_form_id || '').trim() || null,
-          min_interviews: Number(draft.min_interviews || 0) || null,
-          experiment_notes: [
-            String(draft.experiment_notes || '').trim(),
-            buildCommentHypothesisTraceBlock({ sourceHypothesis, destinationMode: 'interviews', workspaceId: workspaceContext.workspaceId }),
-          ].filter(Boolean).join('\n\n'),
-          observations: String(draft.observations || '').trim() || null,
-          next_actions: String(draft.next_actions || '').trim() || null,
-          validation_metric_config: draft.validation_metric_config,
-        });
-        const destinationRoute = `/projects/${projectId}/campaigns/${campaignId}/interviews`;
-        persistHypothesisEvolutionLink(buildEvolutionLinkRecord({
-          sourceHypothesis,
-          destinationMode: 'interviews',
-          destinationHypothesis: created,
-          destinationRoute,
-          adapterSnapshot: draft,
-        }));
+        const createdBySourceId = new Map();
+        const createdRecords = [];
+        for (const branchHypothesis of sourceBranch) {
+          const sourceId = String(branchHypothesis.id || '').trim();
+          const parentDestinationId = createdBySourceId.get(String(branchHypothesis.parent_hypothesis_id || '').trim()) || '';
+          const isRoot = sourceId === String(sourceHypothesis.id || '');
+          const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, {
+            title: isRoot ? String(draft.title || '').trim() : String(branchHypothesis.title || '').trim() || 'Hipótesis evolucionada',
+            description: isRoot
+              ? (String(draft.description || '').trim() || null)
+              : ([String(branchHypothesis.description || '').trim(), String(branchHypothesis.context_note || '').trim()].filter(Boolean).join('\n\n') || null),
+            type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || 'problema').trim() : 'problema'),
+            status: String(draft.status || 'exploracion').trim() || 'exploracion',
+            audience_id: String(draft.audience_id || '').trim() || null,
+            segment: String(draft.segment || '').trim() || null,
+            related_client_id: String(draft.related_client_id || '').trim() || null,
+            interview_form_id: String(draft.interview_form_id || '').trim() || null,
+            min_interviews: Number(draft.min_interviews || 0) || null,
+            experiment_notes: [
+              isRoot ? String(draft.experiment_notes || '').trim() : `Hipótesis de rama evolucionada desde Comentarios: ${String(branchHypothesis.title || '').trim() || 'Hipótesis'}.`,
+              buildCommentHypothesisTraceBlock({ sourceHypothesis: branchHypothesis, destinationMode: 'interviews', workspaceId: workspaceContext.workspaceId }),
+            ].filter(Boolean).join('\n\n'),
+            observations: buildInterviewEvolutionObservations(isRoot ? String(draft.observations || '').trim() : String(branchHypothesis.context_note || '').trim(), parentDestinationId) || null,
+            next_actions: isRoot ? (String(draft.next_actions || '').trim() || null) : null,
+            validation_metric_config: draft.validation_metric_config,
+          });
+          createdBySourceId.set(sourceId, String(created?.id || ''));
+          createdRecords.push(buildEvolutionLinkRecord({
+            sourceHypothesis: branchHypothesis,
+            destinationMode: 'interviews',
+            destinationHypothesis: created,
+            destinationRoute: `/projects/${projectId}/campaigns/${campaignId}/interviews`,
+            adapterSnapshot: { ...draft, scope: evolutionScope },
+          }));
+        }
+        persistHypothesisEvolutionLinks(createdRecords);
         closeHypothesisEvolutionModal();
-        window.alert('Hipótesis evolucionada a Modo Entrevistas con trazabilidad registrada.');
+        window.alert(evolutionScope === 'branch' ? 'Rama de hipótesis evolucionada a Modo Entrevistas con trazabilidad registrada.' : 'Hipótesis evolucionada a Modo Entrevistas con trazabilidad registrada.');
         return;
       }
 
@@ -3764,34 +3827,42 @@ const CommentsModePage = () => {
         throw new Error('Completa los campos clave para evolucionar la hipótesis a Modo Video.');
       }
       const thresholdSuffix = draft.umbral_tipo === '%' ? '%' : '';
-      const created = await createVideoHypothesis({
-        type: String(draft.type || '').trim(),
-        hypothesis_statement: String(draft.hypothesis_statement || '').trim(),
-        variable_x: String(draft.variable_x || '').trim(),
-        metrica_objetivo_y: String(draft.metrica_objetivo_y || '').trim(),
-        umbral_operador: String(draft.umbral_operador || '>=').trim() || '>=',
-        umbral_valor: Number(draft.umbral_valor || 0),
-        volumen_minimo: Number(draft.volumen_minimo || 0),
-        volumen_unidad: String(draft.volumen_unidad || '').trim(),
-        canal_principal: String(draft.canal_principal || 'organic').trim() || 'organic',
-        contexto_cualitativo: [
-          String(draft.contexto_cualitativo || '').trim(),
-          buildCommentHypothesisTraceBlock({ sourceHypothesis, destinationMode: 'video', workspaceId: workspaceContext.workspaceId }),
-        ].filter(Boolean).join('\n\n'),
-        campaign_id: campaignId,
-        condition: `${draft.metrica_objetivo_y} ${draft.umbral_operador} ${draft.umbral_valor}${thresholdSuffix}`,
-      });
-      if (!created) throw new Error('No se pudo crear la hipótesis en Modo Video.');
-      const destinationRoute = `/projects/${projectId}/campaigns/${campaignId}/hypotheses/${created.id}`;
-      persistHypothesisEvolutionLink(buildEvolutionLinkRecord({
-        sourceHypothesis,
-        destinationMode: 'video',
-        destinationHypothesis: created,
-        destinationRoute,
-        adapterSnapshot: draft,
-      }));
+      const createdBySourceId = new Map();
+      const createdRecords = [];
+      for (const branchHypothesis of sourceBranch) {
+        const sourceId = String(branchHypothesis.id || '').trim();
+        const parentDestinationId = createdBySourceId.get(String(branchHypothesis.parent_hypothesis_id || '').trim()) || '';
+        const isRoot = sourceId === String(sourceHypothesis.id || '');
+        const created = await createVideoHypothesis({
+          type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || '').trim() : 'problema'),
+          hypothesis_statement: isRoot ? String(draft.hypothesis_statement || '').trim() : (String(branchHypothesis.description || '').trim() || String(branchHypothesis.title || '').trim()),
+          variable_x: isRoot ? String(draft.variable_x || '').trim() : String(branchHypothesis.title || '').trim(),
+          metrica_objetivo_y: String(draft.metrica_objetivo_y || '').trim(),
+          umbral_operador: String(draft.umbral_operador || '>=').trim() || '>=',
+          umbral_valor: Number(draft.umbral_valor || 0),
+          volumen_minimo: Number(draft.volumen_minimo || 0),
+          volumen_unidad: String(draft.volumen_unidad || '').trim(),
+          canal_principal: String(draft.canal_principal || 'organic').trim() || 'organic',
+          contexto_cualitativo: [
+            buildVideoEvolutionContext(isRoot ? String(draft.contexto_cualitativo || '').trim() : String(branchHypothesis.context_note || '').trim(), parentDestinationId),
+            buildCommentHypothesisTraceBlock({ sourceHypothesis: branchHypothesis, destinationMode: 'video', workspaceId: workspaceContext.workspaceId }),
+          ].filter(Boolean).join('\n\n'),
+          campaign_id: campaignId,
+          condition: `${draft.metrica_objetivo_y} ${draft.umbral_operador} ${draft.umbral_valor}${thresholdSuffix}`,
+        });
+        if (!created) throw new Error('No se pudo crear una hipótesis de la rama en Modo Video.');
+        createdBySourceId.set(sourceId, String(created?.id || ''));
+        createdRecords.push(buildEvolutionLinkRecord({
+          sourceHypothesis: branchHypothesis,
+          destinationMode: 'video',
+          destinationHypothesis: created,
+          destinationRoute: `/projects/${projectId}/campaigns/${campaignId}/hypotheses/${created.id}`,
+          adapterSnapshot: { ...draft, scope: evolutionScope },
+        }));
+      }
+      persistHypothesisEvolutionLinks(createdRecords);
       closeHypothesisEvolutionModal();
-      window.alert('Hipótesis evolucionada a Modo Video con trazabilidad registrada.');
+      window.alert(evolutionScope === 'branch' ? 'Rama de hipótesis evolucionada a Modo Video con trazabilidad registrada.' : 'Hipótesis evolucionada a Modo Video con trazabilidad registrada.');
     } catch (error) {
       setHypothesisEvolutionModal((prev) => ({ ...prev, saving: false, error: error?.message || 'No se pudo evolucionar la hipótesis.' }));
       return;
@@ -5714,6 +5785,29 @@ const CommentsModePage = () => {
                       <p className="mt-2 text-sm text-slate-600">{activeEvolutionSourceHypothesis?.description || 'Sin descripción conceptual.'}</p>
                       {activeEvolutionSourceHypothesis?.context_note ? <p className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">{activeEvolutionSourceHypothesis.context_note}</p> : null}
                     </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Alcance de evolución</p>
+                      <div className="mt-3 grid gap-2">
+                        {[
+                          ['single', 'Evolucionar solo esta hipótesis', 'Crea una única hipótesis destino a partir de la hipótesis seleccionada.'],
+                          ['branch', 'Evolucionar toda la rama', 'Migra la cadena completa asociada a esta hipótesis: ancestros necesarios y descendientes de su rama hasta producto.'],
+                        ].map(([value, label, description]) => {
+                          const active = hypothesisEvolutionModal.scope === value;
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              className={`rounded-2xl border px-4 py-3 text-left transition ${active ? 'border-slate-900 bg-slate-900 text-white shadow-lg shadow-slate-200' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'}`}
+                              onClick={() => setHypothesisEvolutionModal((prev) => ({ ...prev, scope: value, error: '' }))}
+                            >
+                              <span className="block text-sm font-semibold">{label}</span>
+                              <span className={`mt-1 block text-xs ${active ? 'text-slate-200' : 'text-slate-500'}`}>{description}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
                     <div className="rounded-2xl border border-indigo-100 bg-white p-4">
                       <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">Modo destino</p>
                       <div className="mt-3 grid gap-2">
