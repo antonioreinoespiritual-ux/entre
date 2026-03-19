@@ -58,7 +58,7 @@ const defaultEvolutionInterviewDraft = {
 };
 
 const defaultEvolutionVideoDraft = {
-  type: 'Problema',
+  type: 'problema',
   hypothesis_statement: '',
   variable_x: '',
   metrica_objetivo_y: 'views',
@@ -5761,7 +5761,7 @@ const CommentsModePage = () => {
                         <div className="grid gap-3 md:grid-cols-2">
                           <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Título" value={hypothesisEvolutionInterviewDraft.title} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, title: e.target.value }))} />
                           <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.type} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, type: e.target.value }))}>
-                            <option value="problema">problema</option><option value="solucion">solución</option><option value="mercado">mercado</option><option value="pricing">pricing</option><option value="comportamiento">comportamiento</option>
+                            {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_interview_${option.value}`} value={option.value}>{option.label}</option>)}
                           </select>
                           <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Descripción" value={hypothesisEvolutionInterviewDraft.description} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, description: e.target.value }))} />
                           <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.status} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, status: e.target.value }))}>
@@ -5833,7 +5833,7 @@ const CommentsModePage = () => {
                         </div>
                         <div className="grid gap-3 md:grid-cols-2">
                           <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.type} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, type: e.target.value }))}>
-                            <option value="Problema">Problema</option><option value="Cliente / Segmento">Cliente / Segmento</option><option value="Solución">Solución</option><option value="Valor">Valor</option><option value="Message-Market Fit">Message-Market Fit</option><option value="Acquisition">Acquisition</option><option value="Retention">Retention</option>
+                            {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_video_${option.value}`} value={option.value}>{option.label}</option>)}
                           </select>
                           <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Variable X" value={hypothesisEvolutionVideoDraft.variable_x} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, variable_x: e.target.value }))} />
                           <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Hypothesis statement (Si X entonces Y)" value={hypothesisEvolutionVideoDraft.hypothesis_statement} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, hypothesis_statement: e.target.value }))} />
