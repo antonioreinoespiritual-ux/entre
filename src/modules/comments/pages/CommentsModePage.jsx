@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 import { loadCommentsModeStore, saveCommentsModeStore } from '@/modules/comments/services/commentsModeStore';
+import { markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
 
@@ -299,7 +300,7 @@ const normalizeGeneratedProposalDescription = (description = '', name = '') => {
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
-  const { createHypothesis: createVideoHypothesis } = useHypotheses();
+  const { createHypothesis: createVideoHypothesis, deleteHypothesis: deleteVideoHypothesis, updateHypothesis: updateVideoHypothesis, fetchHypotheses: fetchVideoHypotheses } = useHypotheses();
   const workspacePreferenceKey = `comments-mode:workspace-selection:${projectId}:${campaignId}`;
   const legacyStorageKey = `comments-mode:${projectId}:${campaignId}`;
 
@@ -387,6 +388,14 @@ const CommentsModePage = () => {
     sourceHypothesisId: '',
   });
   const [hypothesisEvolutionSupport, setHypothesisEvolutionSupport] = useState({ loading: false, error: '', audiences: [], clients: [], forms: [] });
+  const [hypothesisEvolutionDeleteModal, setHypothesisEvolutionDeleteModal] = useState({
+    open: false,
+    deleting: false,
+    error: '',
+    sourceHypothesisId: '',
+    selectedEvolutionId: '',
+    deleteMode: 'branch',
+  });
   const [hypothesisEvolutionInterviewDraft, setHypothesisEvolutionInterviewDraft] = useState(defaultEvolutionInterviewDraft);
   const [hypothesisEvolutionVideoDraft, setHypothesisEvolutionVideoDraft] = useState(defaultEvolutionVideoDraft);
   const [hypothesisEditor, setHypothesisEditor] = useState({
@@ -3481,6 +3490,161 @@ const CommentsModePage = () => {
     [hypotheses, hypothesisEvolutionModal.sourceHypothesisId],
   );
 
+  const activeEvolutionDeletionSourceHypothesis = useMemo(
+    () => hypotheses.find((item) => String(item.id) === String(hypothesisEvolutionDeleteModal.sourceHypothesisId || '')) || null,
+    [hypotheses, hypothesisEvolutionDeleteModal.sourceHypothesisId],
+  );
+
+  const activeSourceEvolutionOptions = useMemo(
+    () => (evolutionLinksBySourceId.get(String(hypothesisEvolutionDeleteModal.sourceHypothesisId || '')) || []).filter((link) => !link?.deleted_at),
+    [evolutionLinksBySourceId, hypothesisEvolutionDeleteModal.sourceHypothesisId],
+  );
+
+  const selectedEvolutionToDelete = useMemo(
+    () => activeSourceEvolutionOptions.find((link) => String(link.id) === String(hypothesisEvolutionDeleteModal.selectedEvolutionId || '')) || null,
+    [activeSourceEvolutionOptions, hypothesisEvolutionDeleteModal.selectedEvolutionId],
+  );
+
+  const stripVideoHierarchyMetadata = (value = '') => String(value || '').replace(/\s*\[hierarchy_meta\][\s\S]*?\[\/hierarchy_meta\]\s*/g, '').trim();
+  const extractVideoHierarchyMetadata = (value = '') => {
+    const match = String(value || '').match(/\[hierarchy_meta\]([\s\S]*?)\[\/hierarchy_meta\]/);
+    if (!match) return {};
+    try {
+      return JSON.parse(match[1]);
+    } catch {
+      return {};
+    }
+  };
+  const getVideoParentHypothesisId = (hypothesis = {}) => String(extractVideoHierarchyMetadata(hypothesis?.contexto_cualitativo || '').parent_hypothesis_id || '').trim();
+  const stripInterviewHierarchyMetadata = (value = '') => String(value || '').replace(/\s*\[interview_hierarchy\][\s\S]*?\[\/interview_hierarchy\]\s*/g, '').trim();
+  const extractInterviewHierarchyMetadata = (value = '') => {
+    const match = String(value || '').match(/\[interview_hierarchy\]([\s\S]*?)\[\/interview_hierarchy\]/);
+    if (!match) return {};
+    try {
+      return JSON.parse(match[1]);
+    } catch {
+      return {};
+    }
+  };
+  const getInterviewParentHypothesisId = (hypothesis = {}) => String(extractInterviewHierarchyMetadata(hypothesis?.observations || '').parent_hypothesis_id || '').trim();
+
+  const collectEvolutionBranchIds = (items = [], rootId = '', getParentId = () => '') => {
+    const normalizedRootId = String(rootId || '').trim();
+    if (!normalizedRootId) return [];
+    const pending = [normalizedRootId];
+    const collected = new Set();
+    while (pending.length) {
+      const currentId = pending.shift();
+      if (!currentId || collected.has(currentId)) continue;
+      collected.add(currentId);
+      items.forEach((item) => {
+        if (String(getParentId(item) || '').trim() === currentId) pending.push(String(item.id || '').trim());
+      });
+    }
+    return [...collected];
+  };
+
+  const openHypothesisEvolutionDeleteModal = (hypothesis) => {
+    const sourceHypothesisId = String(hypothesis?.id || '').trim();
+    const sourceEvolutions = (evolutionLinksBySourceId.get(sourceHypothesisId) || []).filter((link) => !link?.deleted_at);
+    if (!sourceEvolutions.length) return;
+    setHypothesisMenuId('');
+    setHypothesisEvolutionDeleteModal({
+      open: true,
+      deleting: false,
+      error: '',
+      sourceHypothesisId,
+      selectedEvolutionId: String(sourceEvolutions[0]?.id || ''),
+      deleteMode: 'branch',
+    });
+  };
+
+  const closeHypothesisEvolutionDeleteModal = () => {
+    setHypothesisEvolutionDeleteModal({ open: false, deleting: false, error: '', sourceHypothesisId: '', selectedEvolutionId: '', deleteMode: 'branch' });
+  };
+
+  const saveHypothesisEvolutionDeletion = async () => {
+    const evolution = selectedEvolutionToDelete;
+    const deleteMode = String(hypothesisEvolutionDeleteModal.deleteMode || 'branch');
+    if (!evolution) {
+      setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, error: 'Selecciona una evolución para eliminar.' }));
+      return;
+    }
+    setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleting: true, error: '' }));
+    try {
+      const destinationMode = String(evolution.destination_mode || '').trim();
+      const rootDestinationId = String(evolution.destination_hypothesis_id || '').trim();
+      let destinationHypotheses = [];
+      let destinationIdsToDelete = [rootDestinationId];
+
+      if (destinationMode === 'interviews') {
+        destinationHypotheses = await interviewsModuleApi.listHypotheses(campaignId);
+        const branchIds = collectEvolutionBranchIds(destinationHypotheses, rootDestinationId, getInterviewParentHypothesisId);
+        destinationIdsToDelete = deleteMode === 'branch' ? branchIds : [rootDestinationId];
+        const idsToDetach = branchIds.filter((id) => !destinationIdsToDelete.includes(id));
+        for (const childId of idsToDetach) {
+          const child = destinationHypotheses.find((item) => String(item.id) === childId);
+          if (!child) continue;
+          await interviewsModuleApi.updateHypothesis(childId, { observations: stripInterviewHierarchyMetadata(child.observations || '') || null });
+        }
+        for (const hypothesisId of [...destinationIdsToDelete].reverse()) {
+          await interviewsModuleApi.deleteHypothesis(hypothesisId);
+        }
+      } else if (destinationMode === 'video') {
+        destinationHypotheses = await fetchVideoHypotheses(campaignId);
+        const branchIds = collectEvolutionBranchIds(destinationHypotheses, rootDestinationId, getVideoParentHypothesisId);
+        destinationIdsToDelete = deleteMode === 'branch' ? branchIds : [rootDestinationId];
+        const idsToDetach = branchIds.filter((id) => !destinationIdsToDelete.includes(id));
+        for (const childId of idsToDetach) {
+          const child = destinationHypotheses.find((item) => String(item.id) === childId);
+          if (!child) continue;
+          await updateVideoHypothesis(childId, { contexto_cualitativo: stripVideoHierarchyMetadata(child.contexto_cualitativo || '') || null });
+        }
+        for (const hypothesisId of [...destinationIdsToDelete].reverse()) {
+          const deleted = await deleteVideoHypothesis(hypothesisId, campaignId);
+          if (!deleted) throw new Error('No se pudo eliminar una hipótesis evolucionada en Modo Video.');
+        }
+      } else {
+        throw new Error('La evolución seleccionada no tiene un modo destino válido.');
+      }
+
+      await markHypothesisEvolutionLinksDeleted({
+        projectId,
+        campaignId,
+        destinationMode,
+        destinationHypothesisIds: destinationIdsToDelete,
+        deletionContext: {
+          source_mode: 'comments',
+          source_hypothesis_id: evolution.source_hypothesis_id,
+          destination_mode: destinationMode,
+          deleted_from_comments_menu: true,
+          delete_mode: deleteMode,
+        },
+      });
+
+      const nextEvolutionLinks = hypothesisEvolutionLinks.map((link) => (destinationIdsToDelete.includes(String(link?.destination_hypothesis_id || ''))
+        ? {
+          ...link,
+          deleted_at: new Date().toISOString(),
+          deletion_context: {
+            ...link?.deletion_context,
+            source_mode: 'comments',
+            source_hypothesis_id: evolution.source_hypothesis_id,
+            destination_mode: destinationMode,
+            deleted_from_comments_menu: true,
+            delete_mode: deleteMode,
+          },
+        }
+        : link));
+      persist({ ...store, hypothesisEvolutionLinks: nextEvolutionLinks });
+      closeHypothesisEvolutionDeleteModal();
+    } catch (error) {
+      setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleting: false, error: error?.message || 'No se pudo eliminar la evolución seleccionada.' }));
+      return;
+    }
+    setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleting: false }));
+  };
+
   const hydrateEvolutionDrafts = (hypothesis = null) => {
     const sourceTitle = String(hypothesis?.title || '').trim() || 'Hipótesis evolucionada';
     const sourceDescription = String(hypothesis?.description || '').trim();
@@ -5377,6 +5541,7 @@ const CommentsModePage = () => {
                               <div className="absolute right-0 top-9 z-40 w-44 rounded-lg border bg-white p-1.5 shadow-lg">
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEditor(hypothesis)}>Editar</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionModal(hypothesis)}>Evolucionar hipótesis</button>
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionDeleteModal(hypothesis)} disabled={!evolutions.length}>Eliminar evoluciones</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => deleteHypothesis(hypothesis.id)}>Eliminar</button>
                               </div>
                             ) : null}
@@ -5438,6 +5603,94 @@ const CommentsModePage = () => {
           )}
 
 
+
+          {hypothesisEvolutionDeleteModal.open ? (
+            <div className="fixed inset-0 z-[73] overflow-y-auto bg-slate-950/55 p-4">
+              <div className="mx-auto my-10 w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
+                <div className="border-b border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#fff7ed_50%,#fef2f2_100%)] px-6 py-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-rose-600">Eliminar evoluciones</p>
+                      <h3 className="mt-1 text-xl font-semibold text-slate-900">Eliminar una evolución desde Modo Comentarios</h3>
+                      <p className="mt-2 text-sm text-slate-600">Selecciona cuál evolución borrar y decide si quieres eliminar solo esa hipótesis destino o toda su rama derivada en el modo destino.</p>
+                    </div>
+                    <button type="button" className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-500 hover:text-slate-900" onClick={closeHypothesisEvolutionDeleteModal}>✕</button>
+                  </div>
+                </div>
+
+                <div className="space-y-5 p-6">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hipótesis origen</p>
+                    <h4 className="mt-1 text-base font-semibold text-slate-900">{activeEvolutionDeletionSourceHypothesis?.title || 'Hipótesis comentarios'}</h4>
+                    <p className="mt-1 text-sm text-slate-600">{activeEvolutionDeletionSourceHypothesis?.description || 'Sin descripción conceptual.'}</p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Evoluciones disponibles</p>
+                    <div className="mt-2 space-y-2">
+                      {activeSourceEvolutionOptions.map((evolution) => {
+                        const checked = String(hypothesisEvolutionDeleteModal.selectedEvolutionId) === String(evolution.id);
+                        return (
+                          <label key={evolution.id} className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 text-sm transition ${checked ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                            <input
+                              type="radio"
+                              name="selected-evolution"
+                              checked={checked}
+                              onChange={() => setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, selectedEvolutionId: String(evolution.id), error: '' }))}
+                            />
+                            <span className="min-w-0">
+                              <span className="block font-semibold text-slate-900">{evolution.destination_mode === 'interviews' ? 'Modo Entrevistas' : 'Modo Video'}</span>
+                              <span className="mt-0.5 block text-slate-600">{evolution.destination_hypothesis_title || evolution.destination_hypothesis_id || 'Hipótesis destino'}</span>
+                              <span className="mt-1 block text-xs text-slate-500">{new Date(evolution.evolved_at).toLocaleString()}</span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Modo de eliminación</p>
+                    <div className="mt-2 grid gap-2 md:grid-cols-2">
+                      <button
+                        type="button"
+                        className={`rounded-2xl border px-4 py-3 text-left transition ${hypothesisEvolutionDeleteModal.deleteMode === 'branch' ? 'border-rose-400 bg-rose-600 text-white shadow-lg shadow-rose-200' : 'border-slate-200 bg-white text-slate-700 hover:border-rose-200 hover:bg-rose-50'}`}
+                        onClick={() => setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleteMode: 'branch', error: '' }))}
+                      >
+                        <span className="block text-sm font-semibold">Eliminar evolución de rama completa</span>
+                        <span className={`mt-1 block text-xs ${hypothesisEvolutionDeleteModal.deleteMode === 'branch' ? 'text-rose-100' : 'text-slate-500'}`}>Elimina la hipótesis destino seleccionada y todas sus hijas en el modo destino.</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`rounded-2xl border px-4 py-3 text-left transition ${hypothesisEvolutionDeleteModal.deleteMode === 'single' ? 'border-amber-400 bg-amber-500 text-white shadow-lg shadow-amber-200' : 'border-slate-200 bg-white text-slate-700 hover:border-amber-200 hover:bg-amber-50'}`}
+                        onClick={() => setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleteMode: 'single', error: '' }))}
+                      >
+                        <span className="block text-sm font-semibold">Eliminar evolución de esta hipótesis</span>
+                        <span className={`mt-1 block text-xs ${hypothesisEvolutionDeleteModal.deleteMode === 'single' ? 'text-amber-100' : 'text-slate-500'}`}>Elimina solo la hipótesis destino elegida y desacopla sus hijas directas para no romper la jerarquía restante.</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                    <p><span className="font-semibold text-slate-900">La hipótesis origen queda intacta.</span></p>
+                    <p className="mt-1">Se eliminará el vínculo activo de evolución y no se borrarán perfiles, códigos ni fragmentos del origen.</p>
+                  </div>
+
+                  {hypothesisEvolutionDeleteModal.error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{hypothesisEvolutionDeleteModal.error}</div> : null}
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
+                  <div className="text-xs text-slate-500">La eliminación se ejecuta desde la hipótesis de Comentarios para mantener el control del origen conceptual.</div>
+                  <div className="flex items-center gap-2">
+                    <Button className="bg-white border text-slate-700" onClick={closeHypothesisEvolutionDeleteModal}>Cancelar</Button>
+                    <Button className="bg-rose-600 text-white" onClick={saveHypothesisEvolutionDeletion} disabled={hypothesisEvolutionDeleteModal.deleting || !hypothesisEvolutionDeleteModal.selectedEvolutionId}>
+                      {hypothesisEvolutionDeleteModal.deleting ? 'Eliminando…' : 'Eliminar evolución'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           {hypothesisEvolutionModal.open ? (
             <div className="fixed inset-0 z-[72] overflow-y-auto bg-slate-950/55 p-4">
