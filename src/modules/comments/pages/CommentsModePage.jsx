@@ -58,7 +58,6 @@ const defaultEvolutionInterviewDraft = {
 };
 
 const defaultEvolutionVideoDraft = {
-  title: '',
   type: 'problema',
   hypothesis_statement: '',
   variable_x: '',
@@ -3662,7 +3661,6 @@ const CommentsModePage = () => {
     });
     setHypothesisEvolutionVideoDraft({
       ...defaultEvolutionVideoDraft,
-      title: sourceTitle,
       type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionVideoDraft.type,
       hypothesis_statement: sourceDescription || sourceTitle,
       variable_x: sourceTitle,
@@ -3825,7 +3823,7 @@ const CommentsModePage = () => {
       }
 
       const draft = hypothesisEvolutionVideoDraft;
-      if (!String(draft.title || '').trim() || !String(draft.type || '').trim() || !String(draft.hypothesis_statement || '').trim() || !String(draft.metrica_objetivo_y || '').trim() || !String(draft.volumen_unidad || '').trim()) {
+      if (!String(draft.type || '').trim() || !String(draft.hypothesis_statement || '').trim() || !String(draft.metrica_objetivo_y || '').trim() || !String(draft.volumen_unidad || '').trim()) {
         throw new Error('Completa los campos clave para evolucionar la hipótesis a Modo Video.');
       }
       const thresholdSuffix = draft.umbral_tipo === '%' ? '%' : '';
@@ -3836,7 +3834,6 @@ const CommentsModePage = () => {
         const parentDestinationId = createdBySourceId.get(String(branchHypothesis.parent_hypothesis_id || '').trim()) || '';
         const isRoot = sourceId === String(sourceHypothesis.id || '');
         const created = await createVideoHypothesis({
-          title: isRoot ? String(draft.title || '').trim() : String(branchHypothesis.title || '').trim() || 'Hipótesis evolucionada',
           type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || '').trim() : 'problema'),
           hypothesis_statement: isRoot ? String(draft.hypothesis_statement || '').trim() : (String(branchHypothesis.description || '').trim() || String(branchHypothesis.title || '').trim()),
           variable_x: isRoot ? String(draft.variable_x || '').trim() : String(branchHypothesis.title || '').trim(),
@@ -5929,7 +5926,10 @@ const CommentsModePage = () => {
                           <p className="mt-1 text-sm text-slate-500">Completa la hipótesis operativa con statement, variable, métrica, umbral, volumen y canal.</p>
                         </div>
                         <div className="grid gap-3 md:grid-cols-2">
-                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Título" value={hypothesisEvolutionVideoDraft.title} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, title: e.target.value }))} />
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Título de la hipótesis a evolucionar</span>
+                            <span className="mt-1 block font-medium text-slate-900">{activeEvolutionSourceHypothesis?.title || 'Hipótesis comentarios'}</span>
+                          </div>
                           <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.type} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, type: e.target.value }))}>
                             {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_video_${option.value}`} value={option.value}>{option.label}</option>)}
                           </select>
