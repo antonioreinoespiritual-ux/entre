@@ -71,6 +71,18 @@ const defaultEvolutionVideoDraft = {
   contexto_cualitativo: '',
 };
 
+const normalizeVideoEvolutionDisplayTitle = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
+
+const resolveVideoEvolutionDisplayTitle = ({ explicitTitle = '', fallbackTitle = '', statement = '' } = {}) => {
+  const normalizedStatement = normalizeVideoEvolutionDisplayTitle(statement);
+  const candidates = [explicitTitle, fallbackTitle]
+    .map((candidate) => normalizeVideoEvolutionDisplayTitle(candidate))
+    .filter(Boolean)
+    .filter((candidate, index, array) => array.indexOf(candidate) === index);
+  const shortCandidate = candidates.find((candidate) => candidate.length <= 120 && candidate !== normalizedStatement);
+  return shortCandidate || candidates[0] || normalizedStatement;
+};
+
 const buildCommentHypothesisTraceBlock = ({ sourceHypothesis = {}, destinationMode = '', workspaceId = '', evolvedAt = '', destinationHypothesisId = '' } = {}) => {
   const sourceId = String(sourceHypothesis?.id || '').trim();
   const sourceTitle = String(sourceHypothesis?.title || '').trim();
@@ -3836,7 +3848,17 @@ const CommentsModePage = () => {
         const created = await createVideoHypothesis({
           type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || '').trim() : 'problema'),
           hypothesis_statement: isRoot ? String(draft.hypothesis_statement || '').trim() : (String(branchHypothesis.description || '').trim() || String(branchHypothesis.title || '').trim()),
-          variable_x: isRoot ? String(draft.variable_x || '').trim() : String(branchHypothesis.title || '').trim(),
+          variable_x: isRoot
+            ? resolveVideoEvolutionDisplayTitle({
+              explicitTitle: String(draft.variable_x || '').trim(),
+              fallbackTitle: String(sourceHypothesis?.title || '').trim(),
+              statement: String(draft.hypothesis_statement || '').trim(),
+            })
+            : resolveVideoEvolutionDisplayTitle({
+              explicitTitle: String(branchHypothesis.title || '').trim(),
+              fallbackTitle: String(branchHypothesis.description || '').trim(),
+              statement: String(branchHypothesis.description || '').trim(),
+            }),
           metrica_objetivo_y: String(draft.metrica_objetivo_y || '').trim(),
           umbral_operador: String(draft.umbral_operador || '>=').trim() || '>=',
           umbral_valor: Number(draft.umbral_valor || 0),

@@ -94,7 +94,10 @@ const extractEvolutionTraceMetadata = (value = '') => {
   return metadata;
 };
 
-const getHypothesisDisplayTitle = (hypothesis = {}) => String(hypothesis?.title || hypothesis?.hypothesis_statement || hypothesis?.condition || '').trim();
+const getHypothesisDisplayTitle = (hypothesis = {}) => {
+  const trace = extractEvolutionTraceMetadata(hypothesis?.contexto_cualitativo || '');
+  return String(hypothesis?.title || hypothesis?.variable_x || trace.origen_hypothesis_title || hypothesis?.condition || hypothesis?.hypothesis_statement || '').trim();
+};
 
 const getEvolutionTraceLabel = (hypothesis = {}, evolutionLink = null) => {
   if (evolutionLink) return 'Evolucionada desde Comentarios';
