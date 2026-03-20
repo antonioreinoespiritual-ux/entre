@@ -3591,7 +3591,7 @@ const CommentsModePage = () => {
       let destinationIdsToDelete = [rootDestinationId];
 
       if (destinationMode === 'interviews') {
-        destinationHypotheses = await interviewsModuleApi.listHypotheses(campaignId);
+        destinationHypotheses = await interviewsModuleApi.listHypotheses(projectId, campaignId);
         const branchIds = collectEvolutionBranchIds(destinationHypotheses, rootDestinationId, getInterviewParentHypothesisId);
         destinationIdsToDelete = deleteMode === 'branch' ? branchIds : [rootDestinationId];
         const idsToDetach = branchIds.filter((id) => !destinationIdsToDelete.includes(id));
