@@ -125,12 +125,39 @@ const COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT = {
   producto: '',
 };
 
+const COMMENT_HYPOTHESIS_VALIDATION_STATUS = {
+  PENDING: 'pendiente',
+  VALID: 'validada',
+  INVALID: 'invalidada',
+};
+
 const normalizeCommentHypothesisType = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase();
   return COMMENT_HYPOTHESIS_TYPE_OPTIONS.some((option) => option.value === normalized) ? normalized : '';
 };
 
 const commentHypothesisTypeLabel = (value = '') => COMMENT_HYPOTHESIS_TYPE_OPTIONS.find((option) => option.value === normalizeCommentHypothesisType(value))?.label || 'Sin tipo';
+
+const normalizeCommentHypothesisValidationStatus = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID) return COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID;
+  if (normalized === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID || normalized === 'refutada') return COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID;
+  return COMMENT_HYPOTHESIS_VALIDATION_STATUS.PENDING;
+};
+
+const commentHypothesisValidationStatusLabel = (value = '') => {
+  const normalized = normalizeCommentHypothesisValidationStatus(value);
+  if (normalized === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID) return 'Validada';
+  if (normalized === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) return 'Invalidada';
+  return 'Pendiente';
+};
+
+const commentHypothesisValidationStatusClasses = (value = '') => {
+  const normalized = normalizeCommentHypothesisValidationStatus(value);
+  if (normalized === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID) return 'border-emerald-200 bg-emerald-50 text-emerald-700';
+  if (normalized === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) return 'border-rose-200 bg-rose-50 text-rose-700';
+  return 'border-amber-200 bg-amber-50 text-amber-700';
+};
 
 const parseYouTubeVideoId = (value = '') => {
   const input = String(value || '').trim();
@@ -1812,6 +1839,20 @@ const CommentsModePage = () => {
     return new Map(rows.map((item) => [item.id, item]));
   }, [visibleCodeMapNodes, codeMapProfileNodes]);
 
+  const hypothesisById = useMemo(
+    () => new Map(hypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
+    [hypotheses],
+  );
+
+  const childHypothesesByParentId = useMemo(() => hypotheses.reduce((acc, hypothesis) => {
+    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
+    if (!parentId) return acc;
+    const current = acc.get(parentId) || [];
+    current.push(hypothesis);
+    acc.set(parentId, current);
+    return acc;
+  }, new Map()), [hypotheses]);
+
   useEffect(() => {
     setHypothesisMapLayoutById(hypothesisMapLayout && typeof hypothesisMapLayout === 'object' ? hypothesisMapLayout : {});
   }, [hypothesisMapLayout]);
@@ -1848,6 +1889,20 @@ const CommentsModePage = () => {
     addDescendants(filterId);
     return hypotheses.filter((h) => visible.has(String(h.id)));
   }, [hypotheses, hypothesisMapFilter, hypothesisById, childHypothesesByParentId]);
+
+  const hypothesisMapProblemFilterOptions = useMemo(
+    () => hypotheses.filter((hypothesis) => normalizeCommentHypothesisType(hypothesis.type) === 'problema'),
+    [hypotheses],
+  );
+
+  useEffect(() => {
+    const filterId = String(hypothesisMapFilter || '').trim();
+    if (!filterId) return;
+    const selectedHypothesis = hypothesisById.get(filterId);
+    if (normalizeCommentHypothesisType(selectedHypothesis?.type) !== 'problema') {
+      setHypothesisMapFilter('');
+    }
+  }, [hypothesisMapFilter, hypothesisById]);
 
   const hypothesisMapNodes = useMemo(() => hypothesisMapVisibleHypotheses.map((hypothesis, index) => {
     const saved = hypothesisMapLayoutById[hypothesis.id] || {};
@@ -3590,20 +3645,6 @@ const CommentsModePage = () => {
     [availableHypothesisProfiles],
   );
 
-  const hypothesisById = useMemo(
-    () => new Map(hypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
-    [hypotheses],
-  );
-
-  const childHypothesesByParentId = useMemo(() => hypotheses.reduce((acc, hypothesis) => {
-    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
-    if (!parentId) return acc;
-    const current = acc.get(parentId) || [];
-    current.push(hypothesis);
-    acc.set(parentId, current);
-    return acc;
-  }, new Map()), [hypotheses]);
-
   const filteredHypotheses = useMemo(() => {
     const q = String(hypothesisQuery || '').trim().toLowerCase();
     if (!q) return hypotheses;
@@ -3646,6 +3687,100 @@ const CommentsModePage = () => {
     () => hypotheses.find((item) => String(item.id) === String(hypothesisEvolutionDeleteModal.sourceHypothesisId || '')) || null,
     [hypotheses, hypothesisEvolutionDeleteModal.sourceHypothesisId],
   );
+
+  const collectDescendantHypothesisIds = (rootId = '') => {
+    const pending = [String(rootId || '').trim()].filter(Boolean);
+    const descendants = new Set();
+
+    while (pending.length) {
+      const currentId = pending.pop();
+      const children = childHypothesesByParentId.get(String(currentId)) || [];
+      children.forEach((child) => {
+        const childId = String(child?.id || '').trim();
+        if (!childId || descendants.has(childId)) return;
+        descendants.add(childId);
+        pending.push(childId);
+      });
+    }
+
+    return descendants;
+  };
+
+  const findInvalidAncestorForHypothesis = (hypothesisId = '', excludedAncestorIds = new Set()) => {
+    let current = hypothesisById.get(String(hypothesisId || '').trim());
+    while (current) {
+      const parentId = String(current.parent_hypothesis_id || '').trim();
+      if (!parentId) return null;
+      if (!excludedAncestorIds.has(parentId)) {
+        const parent = hypothesisById.get(parentId);
+        if (normalizeCommentHypothesisValidationStatus(parent?.validation_status) === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
+          return parent;
+        }
+        current = parent;
+      } else {
+        current = hypothesisById.get(parentId);
+      }
+    }
+    return null;
+  };
+
+  const updateHypothesisValidationStatus = (hypothesisId, nextStatus) => {
+    const normalizedId = String(hypothesisId || '').trim();
+    if (!normalizedId) return;
+
+    const normalizedStatus = normalizeCommentHypothesisValidationStatus(nextStatus);
+    const targetHypothesis = hypothesisById.get(normalizedId);
+    if (!targetHypothesis) return;
+
+    if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID) {
+      const invalidAncestor = findInvalidAncestorForHypothesis(normalizedId);
+      if (invalidAncestor) {
+        window.alert(`No puedes validar esta hipótesis mientras su hipótesis padre "${invalidAncestor.title || 'Sin título'}" siga invalidada.`);
+        return;
+      }
+    }
+
+    const descendantIds = normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID
+      ? collectDescendantHypothesisIds(normalizedId)
+      : new Set();
+    if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
+      const descendantsCount = descendantIds.size;
+      const confirmed = window.confirm(
+        descendantsCount
+          ? `¿Invalidar esta hipótesis y toda su rama descendente? Se invalidarán ${descendantsCount + 1} hipótesis en total.`
+          : '¿Invalidar esta hipótesis? No tiene descendientes, así que solo cambiará este nodo.',
+      );
+      if (!confirmed) return;
+    }
+    const affectedIds = new Set([normalizedId, ...descendantIds]);
+    const timestamp = new Date().toISOString();
+    const invalidatedAt = normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? timestamp : '';
+
+    const nextHypotheses = hypotheses.map((item) => {
+      const itemId = String(item?.id || '').trim();
+      if (!affectedIds.has(itemId)) return item;
+
+      const isDirectTarget = itemId === normalizedId;
+      const nextItem = {
+        ...item,
+        validation_status: normalizedStatus,
+        updated_at: timestamp,
+      };
+
+      if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
+        nextItem.invalidated_at = invalidatedAt;
+        nextItem.invalidated_from_hypothesis_id = isDirectTarget ? itemId : normalizedId;
+      } else {
+        delete nextItem.invalidated_at;
+        delete nextItem.invalidated_from_hypothesis_id;
+      }
+
+      return nextItem;
+    });
+
+    persist({ ...store, hypotheses: nextHypotheses });
+    setHypothesisMenuId('');
+  };
 
   const activeSourceEvolutionOptions = useMemo(
     () => (evolutionLinksBySourceId.get(String(hypothesisEvolutionDeleteModal.sourceHypothesisId || '')) || []).filter((link) => !link?.deleted_at),
@@ -4109,6 +4244,7 @@ const CommentsModePage = () => {
         title,
         description,
         type: hypothesisType,
+        validation_status: COMMENT_HYPOTHESIS_VALIDATION_STATUS.PENDING,
         parent_hypothesis_id: parentHypothesisId || '',
         context_note: contextNote,
         linked_profile_ids: linkedProfileIds,
@@ -5758,11 +5894,12 @@ const CommentsModePage = () => {
                     const linkedProfiles = linkedProfileIds
                       .map((profileId) => profileById.get(String(profileId)))
                       .filter(Boolean);
+                    const validationStatus = normalizeCommentHypothesisValidationStatus(hypothesis.validation_status);
                     const parentHypothesis = hypothesisById.get(String(hypothesis.parent_hypothesis_id || '')) || null;
                     const childHypotheses = childHypothesesByParentId.get(String(hypothesis.id)) || [];
                     const evolutions = evolutionLinksBySourceId.get(String(hypothesis.id)) || [];
                     return (
-                      <article key={hypothesis.id} className="relative rounded-xl border bg-white p-4 shadow-sm">
+                      <article key={hypothesis.id} className={`relative rounded-xl border bg-white p-4 shadow-sm ${validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? 'border-rose-200 bg-rose-50/30' : 'border-slate-200'}`}>
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
                             <h3 className="text-sm font-semibold text-slate-900">{hypothesis.title}</h3>
@@ -5775,6 +5912,8 @@ const CommentsModePage = () => {
                             {hypothesisMenuId === String(hypothesis.id) ? (
                               <div className="absolute right-0 top-9 z-40 w-44 rounded-lg border bg-white p-1.5 shadow-lg">
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEditor(hypothesis)}>Editar</button>
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-emerald-700 hover:bg-emerald-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID)}>Marcar validada</button>
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID)}>Invalidar rama</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionModal(hypothesis)}>Evolucionar hipótesis</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionDeleteModal(hypothesis)} disabled={!evolutions.length}>Eliminar evoluciones</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => deleteHypothesis(hypothesis.id)}>Eliminar</button>
@@ -5786,6 +5925,7 @@ const CommentsModePage = () => {
                         {hypothesis.context_note ? <p className="mt-2 rounded border bg-slate-50 px-2 py-1 text-xs text-slate-600">{hypothesis.context_note}</p> : null}
                         <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
                           <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-700">Tipo: {commentHypothesisTypeLabel(hypothesis.type)}</span>
+                          <span className={`rounded-full border px-2 py-1 ${commentHypothesisValidationStatusClasses(validationStatus)}`}>Estado: {commentHypothesisValidationStatusLabel(validationStatus)}</span>
                           <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Padre: {parentHypothesis ? parentHypothesis.title : 'Sin padre'}</span>
                           <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Hijas: {childHypotheses.length}</span>
                           <span className="rounded-full border border-teal-200 bg-teal-50 px-2 py-1 text-teal-700">Perfiles: {linkedProfiles.length}</span>
@@ -5793,8 +5933,10 @@ const CommentsModePage = () => {
                         <div className="mt-3 space-y-3">
                           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
                             <p><span className="font-semibold text-slate-700">Padre jerárquico:</span> {parentHypothesis ? `${parentHypothesis.title} · ${commentHypothesisTypeLabel(parentHypothesis.type)}` : 'Sin padre asignado'}</p>
+                            <p className="mt-1"><span className="font-semibold text-slate-700">Estado de validación:</span> {commentHypothesisValidationStatusLabel(validationStatus)}</p>
                             <p className="mt-1"><span className="font-semibold text-slate-700">Capa hija permitida:</span> {COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[normalizeCommentHypothesisType(hypothesis.type)] ? commentHypothesisTypeLabel(COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[normalizeCommentHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
                             <p className="mt-1"><span className="font-semibold text-slate-700">Hipótesis hijas:</span> {childHypotheses.length ? childHypotheses.map((child) => child.title).join(' · ') : 'Sin hijas'}</p>
+                            {validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID && childHypotheses.length ? <p className="mt-1 text-rose-600">La rama descendente de esta hipótesis también queda invalidada automáticamente.</p> : null}
                           </div>
                           <div>
                             <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Perfiles vinculados</p>
@@ -5855,7 +5997,7 @@ const CommentsModePage = () => {
                       onChange={(e) => setHypothesisMapFilter(e.target.value)}
                     >
                       <option value="">Todas</option>
-                      {hypotheses.map((h) => (
+                      {hypothesisMapProblemFilterOptions.map((h) => (
                         <option key={h.id} value={h.id}>{h.title || h.id}</option>
                       ))}
                     </select>
@@ -5921,6 +6063,7 @@ const CommentsModePage = () => {
                     {hypothesisMapNodes.map((hypothesis) => {
                       const isSelected = selectedHypothesisMapNode === hypothesis.id;
                       const type = normalizeCommentHypothesisType(hypothesis.type);
+                      const validationStatus = normalizeCommentHypothesisValidationStatus(hypothesis.validation_status);
                       const typeColors = {
                         problema: { bg: '#fef2f2', border: '#fca5a5', badge: '#991b1b', badgeBg: '#fee2e2' },
                         segmento: { bg: '#eff6ff', border: '#93c5fd', badge: '#1d4ed8', badgeBg: '#dbeafe' },
@@ -5958,6 +6101,15 @@ const CommentsModePage = () => {
                               style={{ color: colors.badge, backgroundColor: colors.badgeBg }}
                             >
                               {commentHypothesisTypeLabel(hypothesis.type)}
+                            </span>
+                            <span
+                              className="rounded-full px-1.5 py-0.5 text-[10px] font-semibold"
+                              style={{
+                                color: validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? '#be123c' : validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID ? '#047857' : '#b45309',
+                                backgroundColor: validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? '#ffe4e6' : validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID ? '#d1fae5' : '#fef3c7',
+                              }}
+                            >
+                              {commentHypothesisValidationStatusLabel(validationStatus)}
                             </span>
                             <span className="text-[10px] text-slate-500">
                               {childHypothesesForNode.length > 0 ? `${childHypothesesForNode.length} hija${childHypothesesForNode.length !== 1 ? 's' : ''}` : parentHypothesis ? 'hoja' : 'raíz'}
