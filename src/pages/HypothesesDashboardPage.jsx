@@ -78,6 +78,30 @@ const buildHierarchyContext = (context = '', parentHypothesisId = '') => {
 
 const getParentHypothesisId = (hypothesis = {}) => String(extractHierarchyMetadata(hypothesis?.contexto_cualitativo || '').parent_hypothesis_id || '').trim();
 
+const extractEvolutionTraceMetadata = (value = '') => {
+  const normalized = String(value || '');
+  if (!normalized.includes('TRAZABILIDAD DE EVOLUCIÓN')) return {};
+  const lines = normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const metadata = {};
+  lines.forEach((line) => {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex <= 0) return;
+    const key = line.slice(0, separatorIndex).trim();
+    const rawValue = line.slice(separatorIndex + 1).trim();
+    if (!key) return;
+    metadata[key] = rawValue;
+  });
+  return metadata;
+};
+
+const getHypothesisDisplayTitle = (hypothesis = {}) => String(hypothesis?.title || hypothesis?.hypothesis_statement || hypothesis?.condition || '').trim();
+
+const getEvolutionTraceLabel = (hypothesis = {}, evolutionLink = null) => {
+  if (evolutionLink) return 'Evolucionada desde Comentarios';
+  const trace = extractEvolutionTraceMetadata(hypothesis?.contexto_cualitativo || '');
+  return trace.origen_modo === 'comentarios' ? 'Evolucionada desde Comentarios' : 'Sin evolución trazada';
+};
+
 const metricObjectiveOptions = [
   { value: '', label: '-- seleccionar --' },
   { value: 'ctr', label: 'CTR' },
@@ -483,17 +507,21 @@ const HypothesesDashboardPage = () => {
 
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <h3 className="text-base font-semibold text-slate-900">{hypothesis.title || 'Hipótesis sin título'}</h3>
+                        <h3 className="text-base font-semibold text-slate-900">{getHypothesisDisplayTitle(hypothesis) || 'Hipótesis sin título'}</h3>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Tipo: {hypothesisTypeLabel(hypothesis.type)}</span>
                           <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">Padre: {parentHypothesis ? hypothesisTypeLabel(parentHypothesis.type) : 'Sin padre'}</span>
                           <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600">Hijas: {childHypotheses.length}</span>
-                          <span className={`rounded-full border px-2 py-0.5 text-[11px] ${activeEvolutionLinksByDestinationId.has(String(hypothesis.id)) ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{activeEvolutionLinksByDestinationId.has(String(hypothesis.id)) ? 'Evolucionada desde Comentarios' : 'Sin evolución trazada'}</span>
+                          {(() => {
+                            const evolutionLink = activeEvolutionLinksByDestinationId.get(String(hypothesis.id)) || null;
+                            const traced = Boolean(evolutionLink) || getEvolutionTraceLabel(hypothesis, null) === 'Evolucionada desde Comentarios';
+                            return <span className={`rounded-full border px-2 py-0.5 text-[11px] ${traced ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{getEvolutionTraceLabel(hypothesis, evolutionLink)}</span>;
+                          })()}
                         </div>
                         <p className="mt-3 text-sm font-medium text-slate-700">Problema</p>
                         <p className="text-sm text-gray-700 mt-1">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
                         <p className="text-xs text-gray-500 mt-2">Métrica: {metricLabel}</p>
-                        <p className="text-xs text-gray-500 mt-1">Padre jerárquico: {parentHypothesis ? (parentHypothesis.title || parentHypothesis.hypothesis_statement || parentHypothesis.condition || parentHypothesis.id) : 'Sin padre'} · Capa hija permitida: {childTypeByParent[normalizeHypothesisType(hypothesis.type)] ? hypothesisTypeLabel(childTypeByParent[normalizeHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
+                        <p className="text-xs text-gray-500 mt-1">Padre jerárquico: {parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Capa hija permitida: {childTypeByParent[normalizeHypothesisType(hypothesis.type)] ? hypothesisTypeLabel(childTypeByParent[normalizeHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
                         {(() => {
                           const rawStatus = getHypothesisRawStatus(hypothesis);
                           const validated = isValidatedStatus(rawStatus);
