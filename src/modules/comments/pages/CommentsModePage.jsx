@@ -1890,6 +1890,20 @@ const CommentsModePage = () => {
     return hypotheses.filter((h) => visible.has(String(h.id)));
   }, [hypotheses, hypothesisMapFilter, hypothesisById, childHypothesesByParentId]);
 
+  const hypothesisMapProblemFilterOptions = useMemo(
+    () => hypotheses.filter((hypothesis) => normalizeCommentHypothesisType(hypothesis.type) === 'problema'),
+    [hypotheses],
+  );
+
+  useEffect(() => {
+    const filterId = String(hypothesisMapFilter || '').trim();
+    if (!filterId) return;
+    const selectedHypothesis = hypothesisById.get(filterId);
+    if (normalizeCommentHypothesisType(selectedHypothesis?.type) !== 'problema') {
+      setHypothesisMapFilter('');
+    }
+  }, [hypothesisMapFilter, hypothesisById]);
+
   const hypothesisMapNodes = useMemo(() => hypothesisMapVisibleHypotheses.map((hypothesis, index) => {
     const saved = hypothesisMapLayoutById[hypothesis.id] || {};
     const x = Number(saved.x);
@@ -5983,7 +5997,7 @@ const CommentsModePage = () => {
                       onChange={(e) => setHypothesisMapFilter(e.target.value)}
                     >
                       <option value="">Todas</option>
-                      {hypotheses.map((h) => (
+                      {hypothesisMapProblemFilterOptions.map((h) => (
                         <option key={h.id} value={h.id}>{h.title || h.id}</option>
                       ))}
                     </select>
