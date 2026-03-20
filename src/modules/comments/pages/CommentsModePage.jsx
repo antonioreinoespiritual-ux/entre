@@ -1812,6 +1812,20 @@ const CommentsModePage = () => {
     return new Map(rows.map((item) => [item.id, item]));
   }, [visibleCodeMapNodes, codeMapProfileNodes]);
 
+  const hypothesisById = useMemo(
+    () => new Map(hypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
+    [hypotheses],
+  );
+
+  const childHypothesesByParentId = useMemo(() => hypotheses.reduce((acc, hypothesis) => {
+    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
+    if (!parentId) return acc;
+    const current = acc.get(parentId) || [];
+    current.push(hypothesis);
+    acc.set(parentId, current);
+    return acc;
+  }, new Map()), [hypotheses]);
+
   useEffect(() => {
     setHypothesisMapLayoutById(hypothesisMapLayout && typeof hypothesisMapLayout === 'object' ? hypothesisMapLayout : {});
   }, [hypothesisMapLayout]);
@@ -3589,20 +3603,6 @@ const CommentsModePage = () => {
     () => new Map(availableHypothesisProfiles.map((profile) => [String(profile.id), profile])),
     [availableHypothesisProfiles],
   );
-
-  const hypothesisById = useMemo(
-    () => new Map(hypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
-    [hypotheses],
-  );
-
-  const childHypothesesByParentId = useMemo(() => hypotheses.reduce((acc, hypothesis) => {
-    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
-    if (!parentId) return acc;
-    const current = acc.get(parentId) || [];
-    current.push(hypothesis);
-    acc.set(parentId, current);
-    return acc;
-  }, new Map()), [hypotheses]);
 
   const filteredHypotheses = useMemo(() => {
     const q = String(hypothesisQuery || '').trim().toLowerCase();
