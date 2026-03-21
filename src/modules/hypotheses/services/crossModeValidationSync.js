@@ -17,7 +17,7 @@ import {
   normalizeId,
   loadUnifiedCrossModeGraph,
 } from './crossModeGraph.js';
-import { createResolverContextFromGraph, resolveCrossModeBranchNodeKeys, resolveEquivalentNodeKeys } from './crossModeBranchResolver.js';
+import { buildStateTransitionPlan, STATE_TRANSITION_ACTIONS, createResolverContextFromGraph } from './crossModeStateTransitionEngine.js';
 import { updateCommentStatuses, updateInterviewStatuses, updateVideoStatuses } from './crossModeStateRepository.js';
 
 export const syncVideoHypothesisStateTransition = async ({
@@ -47,9 +47,12 @@ export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '',
 
   const graph = await loadUnifiedCrossModeGraph({ projectId, campaignId });
   const resolverContext = createResolverContextFromGraph(graph);
-  const affectedNodeKeys = nextState === VALIDATION_STATE_INVALID
-    ? resolveCrossModeBranchNodeKeys(resolverContext, { mode: MODE_VIDEO, hypothesisId: normalizedVideoId }, { includeRoot: true })
-    : resolveEquivalentNodeKeys(resolverContext, { mode: MODE_VIDEO, hypothesisId: normalizedVideoId }, { includeSelf: true });
+  const transitionPlan = buildStateTransitionPlan(resolverContext, {
+    mode: MODE_VIDEO,
+    hypothesisId: normalizedVideoId,
+    action: nextState === VALIDATION_STATE_INVALID ? STATE_TRANSITION_ACTIONS.INVALIDATE : STATE_TRANSITION_ACTIONS.VALIDATE,
+  });
+  const affectedNodeKeys = transitionPlan.affectedNodeKeys;
 
   const affectedIdsByMode = groupAffectedIdsByMode([...affectedNodeKeys]);
   const updatedVideoIds = await updateVideoStatuses({
