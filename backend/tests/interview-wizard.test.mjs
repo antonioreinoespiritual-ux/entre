@@ -117,3 +117,49 @@ test('saved session stores form snapshot', async () => {
     assert.equal(data.form_snapshot_json.questions[0].title, 'Nombre');
   } finally { server.kill('SIGTERM'); }
 });
+
+
+test('db query allows interview_hypotheses with user scoping intact', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-iv-4-'));
+  const baseUrl = 'http://127.0.0.1:4123';
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: '4123', SQLITE_PATH: path.join(dir, 'db.sqlite') } });
+  try {
+    await waitForHealth(baseUrl);
+    const tokenA = await authed(baseUrl);
+    const tokenB = await authed(baseUrl);
+    const { projectId: projectA, campaignId: campaignA } = await setup(baseUrl, tokenA);
+    const { projectId: projectB, campaignId: campaignB } = await setup(baseUrl, tokenB);
+
+    const inserted = await db(baseUrl, tokenA, {
+      table: 'interview_hypotheses',
+      operation: 'insert',
+      payload: {
+        project_id: projectA,
+        campaign_id: campaignA,
+        type: 'insight',
+        title: 'Hipótesis entrevista',
+        description: 'Detalle',
+        validation_result: 'pendiente',
+        observations: 'obs',
+      },
+    });
+
+    assert.equal(inserted.length, 1);
+    assert.equal(inserted[0].campaign_id, campaignA);
+    assert.ok(inserted[0].user_id);
+
+    const selectedByOwner = await db(baseUrl, tokenA, {
+      table: 'interview_hypotheses',
+      operation: 'select',
+      filters: [{ field: 'id', value: inserted[0].id }],
+    });
+    assert.equal(selectedByOwner.length, 1);
+
+    const selectedByOtherUser = await db(baseUrl, tokenB, {
+      table: 'interview_hypotheses',
+      operation: 'select',
+      filters: [{ field: 'id', value: inserted[0].id }, { field: 'campaign_id', value: campaignB }, { field: 'project_id', value: projectB }],
+    });
+    assert.equal(selectedByOtherUser.length, 0);
+  } finally { server.kill('SIGTERM'); }
+});
