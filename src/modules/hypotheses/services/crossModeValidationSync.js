@@ -20,6 +20,79 @@ import {
 import { buildStateTransitionPlan, STATE_TRANSITION_ACTIONS, createResolverContextFromGraph } from './crossModeStateTransitionEngine.js';
 import { updateCommentStatuses, updateInterviewStatuses, updateVideoStatuses } from './crossModeStateRepository.js';
 
+const resolveTransitionAction = (nextState = '') => {
+  if (nextState === VALIDATION_STATE_INVALID) return STATE_TRANSITION_ACTIONS.INVALIDATE;
+  if (nextState === VALIDATION_STATE_VALID) return STATE_TRANSITION_ACTIONS.VALIDATE;
+  return '';
+};
+
+export const syncCrossModeHypothesisStateTransition = async ({
+  projectId = '',
+  campaignId = '',
+  mode = '',
+  hypothesisId = '',
+  previousState = '',
+  nextState = '',
+  origin = 'unknown',
+} = {}) => {
+  const normalizedHypothesisId = normalizeId(hypothesisId);
+  const normalizedPreviousState = normalizeValidationState(previousState);
+  const normalizedNextState = normalizeValidationState(nextState);
+  if (!projectId || !campaignId || !mode || !normalizedHypothesisId) return { synced: false, skipped: true, reason: 'missing_context' };
+  if (normalizedNextState === VALIDATION_STATE_INCONCLUSIVE) return { synced: false, skipped: true, reason: 'inconclusive_target_state' };
+  if (normalizedPreviousState === normalizedNextState) return { synced: false, skipped: true, reason: 'no_state_change' };
+
+  const graph = await loadUnifiedCrossModeGraph({ projectId, campaignId });
+  const resolverContext = createResolverContextFromGraph(graph);
+  const transitionPlan = buildStateTransitionPlan(resolverContext, {
+    mode,
+    hypothesisId: normalizedHypothesisId,
+    action: resolveTransitionAction(normalizedNextState),
+  });
+  const affectedIdsByMode = groupAffectedIdsByMode(transitionPlan.affectedNodeKeys);
+
+  const updatedVideoIds = await updateVideoStatuses({
+    affectedVideoIds: [...affectedIdsByMode.video],
+    nextState: normalizedNextState,
+  });
+  [...affectedIdsByMode.video].forEach((videoId) => {
+    const nodeKey = buildNodeKey(MODE_VIDEO, videoId);
+    const currentNode = graph.nodes.get(nodeKey);
+    if (!currentNode) return;
+    graph.nodes.set(nodeKey, { ...currentNode, validationState: normalizedNextState });
+  });
+
+  const updatedCommentIds = await updateCommentStatuses({
+    graph,
+    affectedCommentIds: [...affectedIdsByMode.comments],
+    nextState: normalizedNextState,
+  });
+  const updatedInterviewIds = await updateInterviewStatuses({
+    affectedInterviewIds: [...affectedIdsByMode.interviews],
+    nextState: normalizedNextState,
+  });
+
+  const trace = {
+    origin,
+    source: { mode, hypothesisId: normalizedHypothesisId },
+    action: transitionPlan.action,
+    strategy: transitionPlan.strategy,
+    state: normalizedNextState,
+    affectedNodeKeys: transitionPlan.affectedNodeKeys,
+    updatedByMode: {
+      comments: updatedCommentIds,
+      video: updatedVideoIds,
+      interviews: updatedInterviewIds,
+    },
+  };
+  console.info('[cross-mode-validation-sync]', trace);
+
+  return {
+    synced: updatedCommentIds.length > 0 || updatedVideoIds.length > 0 || updatedInterviewIds.length > 0,
+    ...trace,
+  };
+};
+
 export const syncVideoHypothesisStateTransition = async ({
   projectId = '',
   campaignId = '',
@@ -30,61 +103,26 @@ export const syncVideoHypothesisStateTransition = async ({
   if (!shouldSyncVideoStateTransition({ previousState: previousVideoStatus, nextState: nextVideoStatus })) {
     return { synced: false, skipped: true, reason: 'no_state_change' };
   }
-  return syncVideoHypothesisValidationAcrossModes({
+  return syncCrossModeHypothesisStateTransition({
     projectId,
     campaignId,
-    videoHypothesisId,
-    nextVideoStatus,
-  });
-};
-
-export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '', campaignId = '', videoHypothesisId = '', nextVideoStatus = '' } = {}) => {
-  const normalizedVideoId = normalizeId(videoHypothesisId);
-  const nextState = normalizeValidationState(nextVideoStatus);
-  if (!projectId || !campaignId || !normalizedVideoId) return { synced: false };
-
-  if (nextState === VALIDATION_STATE_INCONCLUSIVE) return { synced: false, skipped: true, reason: 'inconclusive_target_state' };
-
-  const graph = await loadUnifiedCrossModeGraph({ projectId, campaignId });
-  const resolverContext = createResolverContextFromGraph(graph);
-  const transitionPlan = buildStateTransitionPlan(resolverContext, {
     mode: MODE_VIDEO,
-    hypothesisId: normalizedVideoId,
-    action: nextState === VALIDATION_STATE_INVALID ? STATE_TRANSITION_ACTIONS.INVALIDATE : STATE_TRANSITION_ACTIONS.VALIDATE,
+    hypothesisId: videoHypothesisId,
+    previousState: previousVideoStatus,
+    nextState: nextVideoStatus,
+    origin: 'video',
   });
-  const affectedNodeKeys = transitionPlan.affectedNodeKeys;
-
-  const affectedIdsByMode = groupAffectedIdsByMode([...affectedNodeKeys]);
-  const updatedVideoIds = await updateVideoStatuses({
-    affectedVideoIds: [...affectedIdsByMode.video],
-    nextState,
-  });
-  [...affectedIdsByMode.video].forEach((videoId) => {
-    const nodeKey = buildNodeKey(MODE_VIDEO, videoId);
-    const currentNode = graph.nodes.get(nodeKey);
-    if (!currentNode) return;
-    graph.nodes.set(nodeKey, { ...currentNode, validationState: nextState });
-  });
-
-  const updatedCommentIds = await updateCommentStatuses({
-    graph,
-    affectedCommentIds: [...affectedIdsByMode.comments],
-    nextState,
-  });
-  const updatedInterviewIds = await updateInterviewStatuses({
-    affectedInterviewIds: [...affectedIdsByMode.interviews],
-    nextState,
-  });
-
-  return {
-    synced: updatedCommentIds.length > 0 || updatedVideoIds.length > 0 || updatedInterviewIds.length > 0,
-    mode: nextState === VALIDATION_STATE_VALID ? 'valid' : 'invalid',
-    state: nextState,
-    updatedCommentIds,
-    updatedVideoIds,
-    updatedInterviewIds,
-  };
 };
+
+export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '', campaignId = '', videoHypothesisId = '', nextVideoStatus = '' } = {}) => syncCrossModeHypothesisStateTransition({
+  projectId,
+  campaignId,
+  mode: MODE_VIDEO,
+  hypothesisId: videoHypothesisId,
+  previousState: '',
+  nextState: nextVideoStatus,
+  origin: 'video',
+});
 
 export const __crossModeValidationSyncTestUtils = {
   buildNodeKey,
@@ -98,4 +136,5 @@ export const __crossModeValidationSyncTestUtils = {
   toInterviewValidationState,
   getValidationStateFromNode,
   shouldSyncVideoStateTransition,
+  resolveTransitionAction,
 };

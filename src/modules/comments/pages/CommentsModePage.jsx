@@ -9,6 +9,7 @@ import { loadCommentsModeStore, saveCommentsModeStore } from '@/modules/comments
 import { markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
+import { syncCrossModeHypothesisStateTransition } from '@/modules/hypotheses/services/crossModeValidationSync';
 
 const defaultCodeEditor = {
   mode: 'create',
@@ -3818,7 +3819,7 @@ const CommentsModePage = () => {
     return null;
   };
 
-  const updateHypothesisValidationStatus = (hypothesisId, nextStatus) => {
+  const updateHypothesisValidationStatus = async (hypothesisId, nextStatus) => {
     const normalizedId = String(hypothesisId || '').trim();
     if (!normalizedId) return;
 
@@ -3834,45 +3835,28 @@ const CommentsModePage = () => {
       }
     }
 
-    const descendantIds = normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID
-      ? collectDescendantHypothesisIds(normalizedId)
-      : new Set();
     if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
-      const descendantsCount = descendantIds.size;
       const confirmed = window.confirm(
-        descendantsCount
-          ? `¿Invalidar esta hipótesis y toda su rama descendente? Se invalidarán ${descendantsCount + 1} hipótesis en total.`
-          : '¿Invalidar esta hipótesis? No tiene descendientes, así que solo cambiará este nodo.',
+        '¿Invalidar esta hipótesis? La sincronización nueva invalidará el nodo, sus equivalentes directos y toda la rama descendente cross-mode.',
       );
       if (!confirmed) return;
     }
-    const affectedIds = new Set([normalizedId, ...descendantIds]);
-    const timestamp = new Date().toISOString();
-    const invalidatedAt = normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? timestamp : '';
-
-    const nextHypotheses = hypotheses.map((item) => {
-      const itemId = String(item?.id || '').trim();
-      if (!affectedIds.has(itemId)) return item;
-
-      const isDirectTarget = itemId === normalizedId;
-      const nextItem = {
-        ...item,
-        validation_status: normalizedStatus,
-        updated_at: timestamp,
-      };
-
-      if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
-        nextItem.invalidated_at = invalidatedAt;
-        nextItem.invalidated_from_hypothesis_id = isDirectTarget ? itemId : normalizedId;
-      } else {
-        delete nextItem.invalidated_at;
-        delete nextItem.invalidated_from_hypothesis_id;
-      }
-
-      return nextItem;
+    await syncCrossModeHypothesisStateTransition({
+      projectId,
+      campaignId,
+      mode: 'comments',
+      hypothesisId: normalizedId,
+      previousState: targetHypothesis.validation_status || '',
+      nextState: normalizedStatus,
+      origin: 'comments_manual_update',
     });
 
-    persist({ ...store, hypotheses: nextHypotheses });
+    const nextStore = await loadCommentsModeStore(storageKey);
+    if (nextStore && typeof nextStore === 'object') {
+      setStore(nextStore);
+    } else {
+      setStore(loadCommentsStoreFromLocalStorage(storageKey));
+    }
     setHypothesisMenuId('');
   };
 
