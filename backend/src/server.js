@@ -40,7 +40,7 @@ const corsOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigins.join(','))
   .map((item) => item.trim())
   .filter(Boolean);
 const sessions = new Map();
-const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos', 'users']);
+const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos', 'interview_hypotheses', 'users']);
 const storageRoot = path.resolve('backend/storage');
 
 const schemaSql = [

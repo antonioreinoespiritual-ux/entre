@@ -1,16 +1,50 @@
 import { supabase } from '@/lib/customSupabaseClient';
 import { listEvolutionStores, persistEvolutionStoreByKey } from '@/modules/comments/services/hypothesisEvolutionService';
 
-const COMMENT_VALID = 'validada';
-const COMMENT_INVALID = 'invalidada';
-const VIDEO_VALID = 'Validada';
-const VIDEO_INVALID = 'No validada';
-const INTERVIEW_VALID = 'validada';
-const INTERVIEW_INVALID = 'invalidada';
+const VALIDATION_STATE_VALID = 'validada';
+const VALIDATION_STATE_INVALID = 'invalidada';
+const VALIDATION_STATE_INCONCLUSIVE = 'inconclusa';
 
 const MODE_COMMENTS = 'comments';
 const MODE_VIDEO = 'video';
 const MODE_INTERVIEWS = 'interviews';
+
+const normalizeValidationState = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return VALIDATION_STATE_INCONCLUSIVE;
+  if ([VALIDATION_STATE_VALID, 'validated', 'valid', 'aprobada', 'approved', 'passed'].includes(normalized)) return VALIDATION_STATE_VALID;
+  if ([VALIDATION_STATE_INVALID, 'no validada', 'no_validada', 'invalid', 'invalidated', 'refutada', 'refutada parcialmente', 'rejected', 'failed'].includes(normalized)) return VALIDATION_STATE_INVALID;
+  if ([VALIDATION_STATE_INCONCLUSIVE, 'pendiente', 'pending', 'no evaluada', 'no_evaluada', 'sin evaluar', 'unknown', 'exploracion', 'exploración', 'en prueba'].includes(normalized)) return VALIDATION_STATE_INCONCLUSIVE;
+  return VALIDATION_STATE_INCONCLUSIVE;
+};
+
+const toCommentsValidationState = (state = '') => {
+  const canonical = normalizeValidationState(state);
+  if (canonical === VALIDATION_STATE_VALID) return VALIDATION_STATE_VALID;
+  if (canonical === VALIDATION_STATE_INVALID) return VALIDATION_STATE_INVALID;
+  return 'pendiente';
+};
+
+const toVideoValidationState = (state = '') => {
+  const canonical = normalizeValidationState(state);
+  if (canonical === VALIDATION_STATE_VALID) return 'Validada';
+  if (canonical === VALIDATION_STATE_INVALID) return 'No validada';
+  return 'Inconclusa';
+};
+
+const toInterviewValidationState = (state = '') => {
+  const canonical = normalizeValidationState(state);
+  if (canonical === VALIDATION_STATE_VALID) return VALIDATION_STATE_VALID;
+  if (canonical === VALIDATION_STATE_INVALID) return VALIDATION_STATE_INVALID;
+  return 'no evaluada';
+};
+
+const getValidationStateFromNode = (mode = '', node = {}) => {
+  if (mode === MODE_COMMENTS) return normalizeValidationState(node?.hypothesis?.validation_status);
+  if (mode === MODE_VIDEO) return normalizeValidationState(node?.row?.validation_status);
+  if (mode === MODE_INTERVIEWS) return normalizeValidationState(node?.row?.validation_status || node?.row?.validation_result);
+  return VALIDATION_STATE_INCONCLUSIVE;
+};
 
 const normalizeId = (value = '') => String(value || '').trim();
 const buildNodeKey = (mode = '', id = '') => `${String(mode || '').trim()}:${normalizeId(id)}`;
@@ -59,7 +93,7 @@ const registerCommentNode = (graph, storageKey, hypothesis) => {
   const id = normalizeId(hypothesis?.id);
   if (!storageKey || !id) return;
   const nodeKey = buildNodeKey(MODE_COMMENTS, id);
-  graph.nodes.set(nodeKey, { mode: MODE_COMMENTS, id, storageKey, hypothesis });
+  graph.nodes.set(nodeKey, { mode: MODE_COMMENTS, id, storageKey, hypothesis, validationState: getValidationStateFromNode(MODE_COMMENTS, { hypothesis }) });
   const storeEntry = graph.commentsStores.get(storageKey) || { hypotheses: new Map(), store: null };
   storeEntry.hypotheses.set(id, hypothesis);
   graph.commentsStores.set(storageKey, storeEntry);
@@ -68,15 +102,26 @@ const registerCommentNode = (graph, storageKey, hypothesis) => {
 const registerModeNode = (graph, mode, row) => {
   const id = normalizeId(row?.id);
   if (!id) return;
-  graph.nodes.set(buildNodeKey(mode, id), { mode, id, row });
+  graph.nodes.set(buildNodeKey(mode, id), { mode, id, row, validationState: getValidationStateFromNode(mode, { row }) });
 };
 
-const getEquivalentNodesAcrossModes = (graph, nodeId = '', mode = '') => {
+const getEquivalentClosureAcrossModes = (graph, nodeId = '', mode = '') => {
   const startKey = buildNodeKey(mode, nodeId);
-  const results = new Set([startKey]);
-  const directNeighbors = graph.equivalentAdjacency.get(startKey) || new Set();
-  directNeighbors.forEach((neighborKey) => results.add(neighborKey));
-  return results;
+  const pending = [startKey];
+  const visited = new Set();
+
+  while (pending.length) {
+    const currentKey = pending.shift();
+    if (!currentKey || visited.has(currentKey)) continue;
+    visited.add(currentKey);
+
+    const equivalentNeighbors = graph.equivalentAdjacency.get(currentKey) || new Set();
+    equivalentNeighbors.forEach((neighborKey) => {
+      if (!visited.has(neighborKey)) pending.push(neighborKey);
+    });
+  }
+
+  return visited;
 };
 
 const getDescendantsAcrossUnifiedGraph = (graph, nodeKeys = []) => {
@@ -114,14 +159,14 @@ const loadUnifiedCrossModeGraph = async ({ projectId = '', campaignId = '' } = {
 
   const { data: videoRows, error: videoError } = await supabase
     .from('hypotheses')
-    .select('id, campaign_id, contexto_cualitativo')
+    .select('id, campaign_id, contexto_cualitativo, validation_status')
     .eq('campaign_id', campaignId);
   if (videoError) throw videoError;
   (videoRows || []).forEach((row) => registerModeNode(graph, MODE_VIDEO, row));
 
   const { data: interviewRows, error: interviewError } = await supabase
     .from('interview_hypotheses')
-    .select('id, campaign_id, observations')
+    .select('id, campaign_id, observations, validation_result')
     .eq('campaign_id', campaignId);
   if (interviewError) throw interviewError;
   (interviewRows || []).forEach((row) => registerModeNode(graph, MODE_INTERVIEWS, row));
@@ -180,7 +225,7 @@ const groupAffectedIdsByMode = (nodeKeys = []) => {
   return grouped;
 };
 
-const updateCommentsStatus = async ({ graph, affectedCommentIds = [], mode, originHypothesisId = '' }) => {
+const updateCommentsStatus = async ({ graph, affectedCommentIds = [], nextState = '', originHypothesisId = '' }) => {
   const targetIds = new Set((affectedCommentIds || []).map(normalizeId).filter(Boolean));
   if (!targetIds.size) return [];
 
@@ -199,10 +244,10 @@ const updateCommentsStatus = async ({ graph, affectedCommentIds = [], mode, orig
       if (!targetIds.has(itemId)) return item;
       touched = true;
       updatedIds.push(itemId);
-      if (mode === 'valid') {
+      if (normalizeValidationState(nextState) === VALIDATION_STATE_VALID) {
         const nextItem = {
           ...item,
-          validation_status: COMMENT_VALID,
+          validation_status: toCommentsValidationState(nextState),
           updated_at: timestamp,
         };
         delete nextItem.invalidated_at;
@@ -211,7 +256,7 @@ const updateCommentsStatus = async ({ graph, affectedCommentIds = [], mode, orig
       }
       return {
         ...item,
-        validation_status: COMMENT_INVALID,
+        validation_status: toCommentsValidationState(nextState),
         updated_at: timestamp,
         invalidated_at: timestamp,
         invalidated_from_hypothesis_id: normalizedOriginId || itemId,
@@ -227,28 +272,28 @@ const updateCommentsStatus = async ({ graph, affectedCommentIds = [], mode, orig
   return [...new Set(updatedIds)];
 };
 
-const updateVideoStatuses = async ({ affectedVideoIds = [], mode }) => {
+const updateVideoStatuses = async ({ affectedVideoIds = [], nextState = '' }) => {
   const targetIds = [...new Set((affectedVideoIds || []).map(normalizeId).filter(Boolean))];
   if (!targetIds.length) return [];
   const timestamp = new Date().toISOString();
   await Promise.all(targetIds.map(async (id) => {
     const { error } = await supabase
       .from('hypotheses')
-      .update({ validation_status: mode === 'valid' ? VIDEO_VALID : VIDEO_INVALID, updated_at: timestamp })
+      .update({ validation_status: toVideoValidationState(nextState), updated_at: timestamp })
       .eq('id', id);
     if (error) throw error;
   }));
   return targetIds;
 };
 
-const updateInterviewStatuses = async ({ affectedInterviewIds = [], mode }) => {
+const updateInterviewStatuses = async ({ affectedInterviewIds = [], nextState = '' }) => {
   const targetIds = [...new Set((affectedInterviewIds || []).map(normalizeId).filter(Boolean))];
   if (!targetIds.length) return [];
   const timestamp = new Date().toISOString();
   await Promise.all(targetIds.map(async (id) => {
     const { error } = await supabase
       .from('interview_hypotheses')
-      .update({ validation_result: mode === 'valid' ? INTERVIEW_VALID : INTERVIEW_INVALID, updated_at: timestamp })
+      .update({ validation_result: toInterviewValidationState(nextState), updated_at: timestamp })
       .eq('id', id);
     if (error) throw error;
   }));
@@ -257,15 +302,14 @@ const updateInterviewStatuses = async ({ affectedInterviewIds = [], mode }) => {
 
 export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '', campaignId = '', videoHypothesisId = '', nextVideoStatus = '' } = {}) => {
   const normalizedVideoId = normalizeId(videoHypothesisId);
-  const normalizedStatus = normalizeId(nextVideoStatus).toLowerCase();
+  const nextState = normalizeValidationState(nextVideoStatus);
   if (!projectId || !campaignId || !normalizedVideoId) return { synced: false };
 
-  const mode = normalizedStatus === 'validada' ? 'valid' : normalizedStatus === 'no validada' ? 'invalid' : '';
-  if (!mode) return { synced: false };
+  if (nextState === VALIDATION_STATE_INCONCLUSIVE) return { synced: false };
 
   const graph = await loadUnifiedCrossModeGraph({ projectId, campaignId });
-  const rootSet = getEquivalentNodesAcrossModes(graph, normalizedVideoId, MODE_VIDEO);
-  const affectedNodeKeys = mode === 'invalid'
+  const rootSet = getEquivalentClosureAcrossModes(graph, normalizedVideoId, MODE_VIDEO);
+  const affectedNodeKeys = nextState === VALIDATION_STATE_INVALID
     ? getDescendantsAcrossUnifiedGraph(graph, [...rootSet])
     : rootSet;
 
@@ -273,21 +317,22 @@ export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '',
   const updatedCommentIds = await updateCommentsStatus({
     graph,
     affectedCommentIds: [...affectedIdsByMode[MODE_COMMENTS]],
-    mode,
+    nextState,
     originHypothesisId: normalizedVideoId,
   });
   const updatedVideoIds = await updateVideoStatuses({
     affectedVideoIds: [...affectedIdsByMode[MODE_VIDEO]],
-    mode,
+    nextState,
   });
   const updatedInterviewIds = await updateInterviewStatuses({
     affectedInterviewIds: [...affectedIdsByMode[MODE_INTERVIEWS]],
-    mode,
+    nextState,
   });
 
   return {
     synced: updatedCommentIds.length > 0 || updatedVideoIds.length > 0 || updatedInterviewIds.length > 0,
-    mode,
+    mode: nextState === VALIDATION_STATE_VALID ? 'valid' : 'invalid',
+    state: nextState,
     updatedCommentIds,
     updatedVideoIds,
     updatedInterviewIds,
@@ -300,7 +345,12 @@ export const __crossModeValidationSyncTestUtils = {
   createUnifiedGraph,
   addEquivalentEdge,
   addChildEdge,
-  getEquivalentNodesAcrossModes,
+  getEquivalentClosureAcrossModes,
   getDescendantsAcrossUnifiedGraph,
   groupAffectedIdsByMode,
+  normalizeValidationState,
+  toCommentsValidationState,
+  toVideoValidationState,
+  toInterviewValidationState,
+  getValidationStateFromNode,
 };

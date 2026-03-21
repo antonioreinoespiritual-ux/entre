@@ -1,0 +1,139 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+function loadGraphUtils() {
+  const source = fs.readFileSync(new URL('../src/modules/hypotheses/services/crossModeValidationSync.js', import.meta.url), 'utf8');
+  const start = source.indexOf("const VALIDATION_STATE_VALID =");
+  const end = source.indexOf("const updateCommentsStatus = async");
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('Could not locate graph utility block in crossModeValidationSync.js');
+  }
+
+  const utilityBlock = source.slice(start, end);
+  const factory = new Function(`${utilityBlock}\nreturn { buildNodeKey, createUnifiedGraph, addEquivalentEdge, addChildEdge, getEquivalentClosureAcrossModes, getDescendantsAcrossUnifiedGraph, groupAffectedIdsByMode, normalizeValidationState, toCommentsValidationState, toVideoValidationState, toInterviewValidationState, getValidationStateFromNode };`);
+  return factory();
+}
+
+const {
+  buildNodeKey,
+  createUnifiedGraph,
+  addEquivalentEdge,
+  addChildEdge,
+  getEquivalentClosureAcrossModes,
+  getDescendantsAcrossUnifiedGraph,
+  groupAffectedIdsByMode,
+  normalizeValidationState,
+  toCommentsValidationState,
+  toVideoValidationState,
+  toInterviewValidationState,
+  getValidationStateFromNode,
+} = loadGraphUtils();
+
+function createGraphFixture() {
+  const graph = createUnifiedGraph();
+
+  const commentRoot = buildNodeKey('comments', 'comment-root');
+  const videoRoot = buildNodeKey('video', 'video-root');
+  const interviewRoot = buildNodeKey('interviews', 'interview-root');
+  const commentChild = buildNodeKey('comments', 'comment-child');
+  const videoChild = buildNodeKey('video', 'video-child');
+  const interviewChild = buildNodeKey('interviews', 'interview-child');
+
+  [commentRoot, videoRoot, interviewRoot, commentChild, videoChild, interviewChild].forEach((key) => {
+    graph.nodes.set(key, { key });
+  });
+
+  addEquivalentEdge(graph, commentRoot, videoRoot);
+  addEquivalentEdge(graph, commentRoot, interviewRoot);
+  addEquivalentEdge(graph, commentChild, videoChild);
+  addEquivalentEdge(graph, commentChild, interviewChild);
+
+  addChildEdge(graph, commentRoot, commentChild);
+  addChildEdge(graph, videoRoot, videoChild);
+  addChildEdge(graph, interviewRoot, interviewChild);
+
+  return { graph, commentRoot, videoRoot, interviewRoot, commentChild, videoChild, interviewChild };
+}
+
+test('equivalent closure reaches all transitively linked cross-mode nodes for validation root set', () => {
+  const { graph, commentRoot, videoRoot, interviewRoot, commentChild, videoChild, interviewChild } = createGraphFixture();
+
+  const rootClosure = getEquivalentClosureAcrossModes(graph, 'video-root', 'video');
+  assert.deepEqual(rootClosure, new Set([videoRoot, commentRoot, interviewRoot]));
+  assert.equal(rootClosure.has(commentChild), false);
+  assert.equal(rootClosure.has(videoChild), false);
+  assert.equal(rootClosure.has(interviewChild), false);
+});
+
+test('invalidating a video root covers the full descendant branch across all modes', () => {
+  const { graph, commentRoot, videoRoot, interviewRoot, commentChild, videoChild, interviewChild } = createGraphFixture();
+
+  const rootClosure = getEquivalentClosureAcrossModes(graph, 'video-root', 'video');
+  const affected = getDescendantsAcrossUnifiedGraph(graph, [...rootClosure]);
+
+  assert.deepEqual(affected, new Set([
+    videoRoot,
+    commentRoot,
+    interviewRoot,
+    videoChild,
+    commentChild,
+    interviewChild,
+  ]));
+});
+
+test('invalidating an intermediate video node does not affect ancestors', () => {
+  const graph = createUnifiedGraph();
+  const commentRoot = buildNodeKey('comments', 'comment-root');
+  const videoRoot = buildNodeKey('video', 'video-root');
+  const interviewRoot = buildNodeKey('interviews', 'interview-root');
+  const commentMid = buildNodeKey('comments', 'comment-mid');
+  const videoMid = buildNodeKey('video', 'video-mid');
+  const interviewMid = buildNodeKey('interviews', 'interview-mid');
+  const commentLeaf = buildNodeKey('comments', 'comment-leaf');
+  const videoLeaf = buildNodeKey('video', 'video-leaf');
+  const interviewLeaf = buildNodeKey('interviews', 'interview-leaf');
+
+  [commentRoot, videoRoot, interviewRoot, commentMid, videoMid, interviewMid, commentLeaf, videoLeaf, interviewLeaf].forEach((key) => {
+    graph.nodes.set(key, { key });
+  });
+
+  addEquivalentEdge(graph, commentRoot, videoRoot);
+  addEquivalentEdge(graph, commentRoot, interviewRoot);
+  addEquivalentEdge(graph, commentMid, videoMid);
+  addEquivalentEdge(graph, commentMid, interviewMid);
+  addEquivalentEdge(graph, commentLeaf, videoLeaf);
+  addEquivalentEdge(graph, commentLeaf, interviewLeaf);
+
+  addChildEdge(graph, commentRoot, commentMid);
+  addChildEdge(graph, videoRoot, videoMid);
+  addChildEdge(graph, interviewRoot, interviewMid);
+  addChildEdge(graph, commentMid, commentLeaf);
+  addChildEdge(graph, videoMid, videoLeaf);
+  addChildEdge(graph, interviewMid, interviewLeaf);
+
+  const midClosure = getEquivalentClosureAcrossModes(graph, 'video-mid', 'video');
+  const affected = getDescendantsAcrossUnifiedGraph(graph, [...midClosure]);
+  const grouped = groupAffectedIdsByMode([...affected]);
+
+  assert.deepEqual(midClosure, new Set([videoMid, commentMid, interviewMid]));
+  assert.equal(affected.has(videoRoot), false);
+  assert.equal(affected.has(commentRoot), false);
+  assert.equal(affected.has(interviewRoot), false);
+  assert.deepEqual(grouped.video, new Set(['video-mid', 'video-leaf']));
+  assert.deepEqual(grouped.comments, new Set(['comment-mid', 'comment-leaf']));
+  assert.deepEqual(grouped.interviews, new Set(['interview-mid', 'interview-leaf']));
+});
+
+
+test('canonical validation-state helpers normalize and adapt states per mode', () => {
+  assert.equal(normalizeValidationState('Validada'), 'validada');
+  assert.equal(normalizeValidationState('No validada'), 'invalidada');
+  assert.equal(normalizeValidationState('no evaluada'), 'inconclusa');
+  assert.equal(toCommentsValidationState('Inconclusa'), 'pendiente');
+  assert.equal(toVideoValidationState('invalidada'), 'No validada');
+  assert.equal(toInterviewValidationState('inconclusa'), 'no evaluada');
+  assert.equal(getValidationStateFromNode('comments', { hypothesis: { validation_status: 'validada' } }), 'validada');
+  assert.equal(getValidationStateFromNode('video', { row: { validation_status: 'No validada' } }), 'invalidada');
+  assert.equal(getValidationStateFromNode('interviews', { row: { validation_result: 'no evaluada' } }), 'inconclusa');
+});
