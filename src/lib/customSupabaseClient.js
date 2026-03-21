@@ -1,4 +1,4 @@
-const configuredApiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const configuredApiBaseUrl = (import.meta.env && import.meta.env.VITE_BACKEND_URL) || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
 
 const authSubscribers = new Set();

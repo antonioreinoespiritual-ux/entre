@@ -1,4 +1,3 @@
-import { supabase } from '../../../lib/customSupabaseClient.js';
 import {
   MODE_COMMENTS,
   MODE_VIDEO,
@@ -7,7 +6,6 @@ import {
   createUnifiedGraph,
   addEquivalentEdge,
   addChildEdge,
-  getValidationStateFromNode,
   normalizeId,
 } from './crossModeGraphCore.js';
 import {
@@ -20,6 +18,7 @@ import {
   attachTopologyToGraph,
   connectParentChildTopologyToGraph,
 } from './crossModeTopologyStore.js';
+import { getModeHypothesisAdapter } from './adapters/modeHypothesisAdapters.js';
 
 export * from './crossModeGraphCore.js';
 export {
@@ -41,56 +40,48 @@ const ensureModeStoreEntry = (graph, mode, storageKey, store = null) => {
   return currentEntry;
 };
 
-const registerCommentNode = (graph, storageKey, hypothesis) => {
-  const id = normalizeId(hypothesis?.id);
+const registerCommentNode = (graph, node) => {
+  const id = normalizeId(node?.id);
+  const storageKey = String(node?.storageKey || '').trim();
   if (!storageKey || !id) return;
+  const hypothesis = node?.record || {};
   const nodeKey = buildNodeKey(MODE_COMMENTS, id);
-  graph.nodes.set(nodeKey, { mode: MODE_COMMENTS, id, storageKey, hypothesis, validationState: getValidationStateFromNode(MODE_COMMENTS, { hypothesis }) });
-  const storeEntry = ensureModeStoreEntry(graph, MODE_COMMENTS, storageKey);
+  graph.nodes.set(nodeKey, { mode: MODE_COMMENTS, id, storageKey, hypothesis, validationState: node?.validationState });
+  const storeEntry = ensureModeStoreEntry(graph, MODE_COMMENTS, storageKey, node?.sourceStore || null);
   storeEntry.hypotheses.set(id, hypothesis);
 };
 
-const registerModeNode = (graph, mode, row) => {
-  const id = normalizeId(row?.id);
-  if (!id) return;
-  graph.nodes.set(buildNodeKey(mode, id), { mode, id, row, validationState: getValidationStateFromNode(mode, { row }) });
+const registerModeNode = (graph, node) => {
+  const id = normalizeId(node?.id);
+  const mode = String(node?.mode || '').trim();
+  if (!id || !mode) return;
+  graph.nodes.set(buildNodeKey(mode, id), { mode, id, row: node?.record || {}, validationState: node?.validationState });
 };
 
 const loadUnifiedCrossModeGraph = async ({ projectId = '', campaignId = '' } = {}) => {
   const graph = createUnifiedGraph();
 
-  const { data: videoRows, error: videoError } = await supabase
-    .from('hypotheses')
-    .select('id, campaign_id, contexto_cualitativo, validation_status')
-    .eq('campaign_id', campaignId);
-  if (videoError) throw videoError;
-  (videoRows || []).forEach((row) => registerModeNode(graph, MODE_VIDEO, row));
+  const videoNodes = await getModeHypothesisAdapter(MODE_VIDEO).listNodes({ campaignId });
+  videoNodes.forEach((node) => registerModeNode(graph, node));
 
-  const { data: interviewRows, error: interviewError } = await supabase
-    .from('interview_hypotheses')
-    .select('id, campaign_id, observations, validation_result')
-    .eq('campaign_id', campaignId);
-  if (interviewError) throw interviewError;
-  (interviewRows || []).forEach((row) => registerModeNode(graph, MODE_INTERVIEWS, row));
+  const interviewNodes = await getModeHypothesisAdapter(MODE_INTERVIEWS).listNodes({ campaignId });
+  interviewNodes.forEach((node) => registerModeNode(graph, node));
 
   const identityRegistry = await loadCrossModeIdentityRegistry({
     projectId,
     campaignId,
-    videoRows,
-    interviewRows,
+    videoRows: videoNodes.map((node) => node.record),
+    interviewRows: interviewNodes.map((node) => node.record),
   });
   const topologyRegistry = await loadCrossModeTopologyRegistry({
     projectId,
     campaignId,
-    videoRows,
-    interviewRows,
+    videoRows: videoNodes.map((node) => node.record),
+    interviewRows: interviewNodes.map((node) => node.record),
   });
 
-  identityRegistry.syncStores.forEach(({ storageKey, store }) => {
-    const hypotheses = Array.isArray(store?.hypotheses) ? store.hypotheses : [];
-    ensureModeStoreEntry(graph, MODE_COMMENTS, storageKey, store);
-    hypotheses.forEach((hypothesis) => registerCommentNode(graph, storageKey, hypothesis));
-  });
+  const commentNodes = await getModeHypothesisAdapter(MODE_COMMENTS).listNodes({ projectId, campaignId });
+  commentNodes.forEach((node) => registerCommentNode(graph, node));
 
   attachIdentityToGraphNodes(graph, identityRegistry);
   connectEquivalentNodesFromIdentityRegistry(graph, addEquivalentEdge);

@@ -1,7 +1,7 @@
 const DB_NAME = 'entre-comments-mode-db';
 const STORE_NAME = 'states';
 const DB_VERSION = 1;
-const configuredApiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const configuredApiBaseUrl = (import.meta.env && import.meta.env.VITE_BACKEND_URL) || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
 
 const openCommentsModeDb = () => new Promise((resolve, reject) => {
