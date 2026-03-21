@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
-import { Download, FileText, FolderOpen, Headphones, MoreHorizontal, Trash2 } from 'lucide-react';
+import { Download, FileText, FolderOpen, Headphones, MoreHorizontal, Network, Trash2 } from 'lucide-react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
@@ -14,6 +14,7 @@ import { useInterviewCenterData } from '@/modules/interviews/hooks/useInterviewC
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
 import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 import { getLeanProblemScore, getLeanScore, getLeanSolutionScore } from '@/modules/interviews/components/LeanEvaluationPanel';
+import HypothesisMapModal from '@/components/hypotheses/HypothesisMapModal';
 
 
 const profileMarker = `\n\n---INTERVIEW_PROFILE_JSON---\n`;
@@ -218,6 +219,7 @@ const InterviewCenterPage = () => {
   const center = useInterviewCenterData({ projectId, campaignId, toast });
   const { reload } = center;
   const [hypothesisEvolutionMenuId, setHypothesisEvolutionMenuId] = useState('');
+  const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
 
@@ -1574,7 +1576,12 @@ const InterviewCenterPage = () => {
         )}
 
         {!center.loading && !center.error && tab === 'hypotheses' && (
+          <>
           <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-lg font-semibold text-slate-900">Hipótesis cualitativas</h3>
+              <Button className="bg-white border text-slate-700" onClick={() => setHypothesisMapOpen(true)}><Network className="mr-1 h-4 w-4" />Mapa de hipótesis</Button>
+            </div>
             <div className="bg-white border rounded-xl p-4 space-y-3">
               <h4 className="text-sm font-semibold text-slate-900">Nueva ficha de hipótesis</h4>
 
@@ -1794,7 +1801,36 @@ const InterviewCenterPage = () => {
               );
             })}
           </div>
+
+          </>
         )}
+
+        <HypothesisMapModal
+          open={hypothesisMapOpen}
+          onClose={() => setHypothesisMapOpen(false)}
+          title="Mapa de hipótesis"
+          description="Vista de grafo para la jerarquía de hipótesis del Modo Entrevistas."
+          hypotheses={center.hypotheses || []}
+          getHypothesisId={(hypothesis) => String(hypothesis?.id || '').trim()}
+          getHypothesisTitle={(hypothesis) => String(hypothesis?.title || hypothesis?.id || 'Hipótesis sin título').trim()}
+          getParentId={(hypothesis) => getInterviewParentHypothesisId(hypothesis)}
+          getType={(hypothesis) => normalizeInterviewHypothesisType(hypothesis?.type)}
+          getTypeLabel={(value) => interviewHypothesisTypeLabel(value)}
+          getFilterOptions={(items) => items.filter((hypothesis) => hypothesis.type === 'problema')}
+          getStatus={(hypothesis) => String(hypothesis?.validation_result || hypothesis?.status || '').trim()}
+          getStatusStyle={(hypothesis, status) => {
+            const tone = validationToneByResult[status || 'no evaluada'] || validationToneByResult['no evaluada'];
+            if (tone.includes('emerald')) return { label: status || 'validada', color: '#047857', backgroundColor: '#d1fae5' };
+            if (tone.includes('rose')) return { label: status || 'refutada', color: '#be123c', backgroundColor: '#ffe4e6' };
+            if (tone.includes('sky')) return { label: status || 'señal fuerte', color: '#0369a1', backgroundColor: '#e0f2fe' };
+            if (tone.includes('indigo')) return { label: status || 'señal moderada', color: '#4338ca', backgroundColor: '#e0e7ff' };
+            if (tone.includes('amber')) return { label: status || 'señal débil', color: '#b45309', backgroundColor: '#fef3c7' };
+            return { label: status || 'no evaluada', color: '#475569', backgroundColor: '#f1f5f9' };
+          }}
+          getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? parentHypothesis.title : 'Sin padre'} · Hijas: ${childHypotheses.length} · Audiencia: ${hypothesis?.audience_name || '—'}`}
+          emptyStateText="No hay hipótesis para los filtros aplicados."
+          emptyWorkspaceText="No hay hipótesis en Modo Entrevistas todavía."
+        />
 
         {!center.loading && !center.error && tab === 'sessions' && (
           <div className="space-y-3">
