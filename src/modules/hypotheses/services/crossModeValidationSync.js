@@ -1,50 +1,21 @@
 import { supabase } from '@/lib/customSupabaseClient';
 import { listEvolutionStores, persistEvolutionStoreByKey } from '@/modules/comments/services/hypothesisEvolutionService';
+import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypothesisState, readHypothesisStateForMode } from '../../../../shared/hypothesisState.js';
 
-const VALIDATION_STATE_VALID = 'validada';
-const VALIDATION_STATE_INVALID = 'invalidada';
-const VALIDATION_STATE_INCONCLUSIVE = 'inconclusa';
+const VALIDATION_STATE_VALID = HYPOTHESIS_STATE.VALIDATED;
+const VALIDATION_STATE_INVALID = HYPOTHESIS_STATE.INVALIDATED;
+const VALIDATION_STATE_INCONCLUSIVE = HYPOTHESIS_STATE.INCONCLUSIVE;
 
-const MODE_COMMENTS = 'comments';
-const MODE_VIDEO = 'video';
-const MODE_INTERVIEWS = 'interviews';
+const MODE_COMMENTS = HYPOTHESIS_MODES.COMMENTS;
+const MODE_VIDEO = HYPOTHESIS_MODES.VIDEO;
+const MODE_INTERVIEWS = HYPOTHESIS_MODES.INTERVIEWS;
 
-const normalizeValidationState = (value = '') => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) return VALIDATION_STATE_INCONCLUSIVE;
-  if ([VALIDATION_STATE_VALID, 'validated', 'valid', 'aprobada', 'approved', 'passed'].includes(normalized)) return VALIDATION_STATE_VALID;
-  if ([VALIDATION_STATE_INVALID, 'no validada', 'no_validada', 'invalid', 'invalidated', 'refutada', 'refutada parcialmente', 'rejected', 'failed'].includes(normalized)) return VALIDATION_STATE_INVALID;
-  if ([VALIDATION_STATE_INCONCLUSIVE, 'pendiente', 'pending', 'no evaluada', 'no_evaluada', 'sin evaluar', 'unknown', 'exploracion', 'exploración', 'en prueba'].includes(normalized)) return VALIDATION_STATE_INCONCLUSIVE;
-  return VALIDATION_STATE_INCONCLUSIVE;
-};
+const normalizeValidationState = normalizeHypothesisState;
+const toCommentsValidationState = (state = '') => buildModeStatePatch(MODE_COMMENTS, state).validation_status;
+const toVideoValidationState = (state = '') => buildModeStatePatch(MODE_VIDEO, state).validation_status;
+const toInterviewValidationState = (state = '') => buildModeStatePatch(MODE_INTERVIEWS, state).validation_result;
 
-const toCommentsValidationState = (state = '') => {
-  const canonical = normalizeValidationState(state);
-  if (canonical === VALIDATION_STATE_VALID) return VALIDATION_STATE_VALID;
-  if (canonical === VALIDATION_STATE_INVALID) return VALIDATION_STATE_INVALID;
-  return 'pendiente';
-};
-
-const toVideoValidationState = (state = '') => {
-  const canonical = normalizeValidationState(state);
-  if (canonical === VALIDATION_STATE_VALID) return 'Validada';
-  if (canonical === VALIDATION_STATE_INVALID) return 'No validada';
-  return 'Inconclusa';
-};
-
-const toInterviewValidationState = (state = '') => {
-  const canonical = normalizeValidationState(state);
-  if (canonical === VALIDATION_STATE_VALID) return VALIDATION_STATE_VALID;
-  if (canonical === VALIDATION_STATE_INVALID) return VALIDATION_STATE_INVALID;
-  return 'no evaluada';
-};
-
-const getValidationStateFromNode = (mode = '', node = {}) => {
-  if (mode === MODE_COMMENTS) return normalizeValidationState(node?.hypothesis?.validation_status);
-  if (mode === MODE_VIDEO) return normalizeValidationState(node?.row?.validation_status);
-  if (mode === MODE_INTERVIEWS) return normalizeValidationState(node?.row?.validation_status || node?.row?.validation_result);
-  return VALIDATION_STATE_INCONCLUSIVE;
-};
+const getValidationStateFromNode = (mode = '', node = {}) => readHypothesisStateForMode(mode, node?.hypothesis || node?.row || {});
 
 const normalizeId = (value = '') => String(value || '').trim();
 const buildNodeKey = (mode = '', id = '') => `${String(mode || '').trim()}:${normalizeId(id)}`;
@@ -279,7 +250,7 @@ const updateVideoStatuses = async ({ affectedVideoIds = [], nextState = '' }) =>
   await Promise.all(targetIds.map(async (id) => {
     const { error } = await supabase
       .from('hypotheses')
-      .update({ validation_status: toVideoValidationState(nextState), updated_at: timestamp })
+      .update(buildModeStatePatch(MODE_VIDEO, nextState, { updated_at: timestamp }))
       .eq('id', id);
     if (error) throw error;
   }));
@@ -293,7 +264,7 @@ const updateInterviewStatuses = async ({ affectedInterviewIds = [], nextState = 
   await Promise.all(targetIds.map(async (id) => {
     const { error } = await supabase
       .from('interview_hypotheses')
-      .update({ validation_result: toInterviewValidationState(nextState), updated_at: timestamp })
+      .update(buildModeStatePatch(MODE_INTERVIEWS, nextState, { updated_at: timestamp }))
       .eq('id', id);
     if (error) throw error;
   }));

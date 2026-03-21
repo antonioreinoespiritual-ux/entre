@@ -11,6 +11,7 @@ import { loadBackendEnv } from './config/env.js';
 import { getYouTubeConfig, isYouTubeApiKeyConfigured, isYouTubeOAuthConfigured } from './youtube/config.js';
 import { buildYouTubeConsentUrl, exchangeYouTubeCodeForTokens, refreshYouTubeAccessToken, revokeYouTubeToken } from './youtube/auth.js';
 import { listYouTubeChannels, listYouTubeVideos, listYouTubePlaylists, listYouTubeCommentThreads, listYouTubeComments, searchYouTubeVideos } from './youtube/services.js';
+import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypothesisState, withCanonicalHypothesisState } from '../../shared/hypothesisState.js';
 
 
 const envSource = loadBackendEnv();
@@ -180,7 +181,7 @@ const schemaSql = [
     contexto_cualitativo TEXT,
     audience_id TEXT,
     condition TEXT,
-    validation_status TEXT DEFAULT 'No Validada',
+    validation_status TEXT DEFAULT 'inconclusa',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
@@ -2334,7 +2335,7 @@ async function ensureVideoHierarchyMigration() {
       hypothesisId = buildEntityId('interview_hypothesis');
       await pool.query(
         'INSERT INTO hypotheses (id, campaign_id, user_id, type, condition, validation_status) VALUES (?, ?, ?, ?, ?, ?)',
-        [hypothesisId, audience.campaign_id, video.user_id, 'Auto-migrated', migrationCondition, 'No Validada'],
+        [hypothesisId, audience.campaign_id, video.user_id, 'Auto-migrated', migrationCondition, HYPOTHESIS_STATE.INCONCLUSIVE],
       );
     }
 
@@ -2460,8 +2461,8 @@ function normalizeInterviewHypothesisValidationConfig(rawConfig) {
   const deduplicatedMetrics = [...new Set(selectedMetrics)];
   const thresholdValue = Number(parsedConfig.threshold_value);
   const comparisonOperator = String(parsedConfig.comparison_operator || '>=').trim();
-  const outcomeIfTrue = String(parsedConfig.outcome_if_true || 'validada').trim() || 'validada';
-  const outcomeIfFalse = String(parsedConfig.outcome_if_false || 'refutada').trim() || 'refutada';
+  const outcomeIfTrue = normalizeHypothesisState(parsedConfig.outcome_if_true || HYPOTHESIS_STATE.VALIDATED);
+  const outcomeIfFalse = normalizeHypothesisState(parsedConfig.outcome_if_false || HYPOTHESIS_STATE.INVALIDATED);
   const evaluationType = String(parsedConfig.evaluation_type || 'average_selected_metrics').trim() || 'average_selected_metrics';
   if (!deduplicatedMetrics.length || !Number.isFinite(thresholdValue) || !INTERVIEW_HYPOTHESIS_COMPARISON_OPERATORS.has(comparisonOperator)) {
     return null;
@@ -2490,16 +2491,15 @@ function parseInterviewHypothesisRow(row = null) {
   return {
     ...row,
     validation_metric_config: normalizeInterviewHypothesisValidationConfig(row.validation_metric_config),
+    ...withCanonicalHypothesisState(row, HYPOTHESIS_MODES.INTERVIEWS),
   };
 }
 
 function buildHypothesisValidationSummary({ result, interviewsCount, passCount, failCount, minInterviews, problemScoreAvg, solutionScoreAvg }) {
-  if (result === 'no evaluada') return `Muestra insuficiente para evaluar la hipótesis (${interviewsCount}/${minInterviews || 0} entrevistas).`;
-  if (result === 'validada') return `Hipótesis validada: problema y solución superan umbrales (${passCount} criterios cumplidos).`;
-  if (result === 'refutada') return `Hipótesis refutada: bajo cumplimiento de criterios (${failCount} fallos).`;
-  if (result === 'señal fuerte') return `Señal fuerte: cumplimiento alto de criterios con evidencia consistente.`;
-  if (result === 'señal moderada') return `Señal moderada: buen dolor (${problemScoreAvg ?? '—'}) y/o solución (${solutionScoreAvg ?? '—'}) con brechas puntuales.`;
-  return 'Señal débil: resultados iniciales aún no alcanzan umbrales robustos.';
+  if (result === HYPOTHESIS_STATE.INCONCLUSIVE) return `Muestra insuficiente o evidencia mixta para evaluar la hipótesis (${interviewsCount}/${minInterviews || 0} entrevistas).`;
+  if (result === HYPOTHESIS_STATE.VALIDATED) return `Hipótesis validada: problema y solución superan umbrales (${passCount} criterios cumplidos).`;
+  if (result === HYPOTHESIS_STATE.INVALIDATED) return `Hipótesis invalidada: bajo cumplimiento de criterios (${failCount} fallos).`;
+  return `Resultado inconcluso: dolor (${problemScoreAvg ?? '—'}) y solución (${solutionScoreAvg ?? '—'}) todavía no cierran una validación robusta.`;
 }
 
 
@@ -2653,7 +2653,7 @@ async function getProjectScopeSummary(userId, projectId) {
     })),
     top_interview_hypotheses: topInterviewHypRows.map((row) => ({
       title: row.title || 'Hipótesis sin título',
-      validation_result: row.validation_result || 'no evaluada',
+      validation_result: normalizeHypothesisState(row.validation_result),
       evaluated_interviews_count: Number(row.evaluated_interviews_count || 0),
       problem_score_avg: row.problem_score_avg == null ? null : Number(row.problem_score_avg),
       solution_score_avg: row.solution_score_avg == null ? null : Number(row.solution_score_avg),
@@ -5553,15 +5553,15 @@ function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos, 
   const cleanEnough = diagnostics.warnings_count <= 2;
   const operationalMetricValue = computeOperationalMetricValue(videos, config?.primary_metric);
   const operationalStatus = operationalMetricValue == null
-    ? 'Inconclusa'
+    ? HYPOTHESIS_STATE.INCONCLUSIVE
     : compareAgainstThreshold(operationalMetricValue, config?.threshold_operator, Number(config?.threshold_value ?? 0))
-      ? 'Validada'
-      : 'No validada';
+      ? HYPOTHESIS_STATE.VALIDATED
+      : HYPOTHESIS_STATE.INVALIDATED;
   return {
     status: operationalStatus,
-    summary: operationalStatus === 'Validada'
+    summary: operationalStatus === HYPOTHESIS_STATE.VALIDATED
       ? 'La hipótesis cumple su métrica objetivo y supera el umbral operativo configurado.'
-      : operationalStatus === 'No validada'
+      : operationalStatus === HYPOTHESIS_STATE.INVALIDATED
         ? 'La hipótesis no cumple su métrica objetivo contra el umbral operativo configurado.'
         : 'No hay datos suficientes para calcular la validación operativa automática.',
     confidence: {
@@ -5569,7 +5569,7 @@ function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos, 
       operational_metric_value: operationalMetricValue,
       operational_operator: config?.threshold_operator || '>=',
       operational_threshold: Number(config?.threshold_value ?? 0),
-      operational_pass: operationalStatus === 'Validada',
+      operational_pass: operationalStatus === HYPOTHESIS_STATE.VALIDATED,
       frequentist_pass: passesFrequentist,
       bayesian_probability: Number(bayesian?.p_improvement_gt_threshold || 0),
       volume_ok: volumeOk,
@@ -5579,9 +5579,9 @@ function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos, 
       warnings: diagnostics.warnings_count,
       statistical_support: volumeOk && cleanEnough && (passesFrequentist || bayesStrong),
     },
-    recommendation: operationalStatus === 'Validada'
+    recommendation: operationalStatus === HYPOTHESIS_STATE.VALIDATED
       ? 'Escalar'
-      : operationalStatus === 'No validada'
+      : operationalStatus === HYPOTHESIS_STATE.INVALIDATED
         ? 'Iterar creativos / cambiar variable X'
         : 'Recolectar más muestra',
   };
@@ -6031,6 +6031,41 @@ function compareAudiencesAB(audienceA, audienceB, config = {}) {
   };
 }
 
+
+function normalizePersistedHypothesisRecord(table, row = null) {
+  if (!row || typeof row !== 'object') return row;
+  if (table === 'hypotheses') {
+    return withCanonicalHypothesisState({
+      ...row,
+      ...buildModeStatePatch(HYPOTHESIS_MODES.VIDEO, row.validation_status ?? row.hypothesis_state),
+    }, HYPOTHESIS_MODES.VIDEO);
+  }
+  if (table === 'interview_hypotheses') {
+    return withCanonicalHypothesisState({
+      ...row,
+      ...buildModeStatePatch(HYPOTHESIS_MODES.INTERVIEWS, row.validation_result ?? row.validation_status ?? row.hypothesis_state),
+    }, HYPOTHESIS_MODES.INTERVIEWS);
+  }
+  return row;
+}
+
+function normalizePersistedHypothesisPayload(table, row = null) {
+  if (!row || typeof row !== 'object') return row;
+  if (table === 'hypotheses') {
+    return {
+      ...row,
+      ...buildModeStatePatch(HYPOTHESIS_MODES.VIDEO, row.validation_status ?? row.validation_result ?? row.hypothesis_state),
+    };
+  }
+  if (table === 'interview_hypotheses') {
+    return {
+      ...row,
+      ...buildModeStatePatch(HYPOTHESIS_MODES.INTERVIEWS, row.validation_result ?? row.validation_status ?? row.hypothesis_state),
+    };
+  }
+  return row;
+}
+
 async function executeCrudQuery(body, currentUserId) {
   const table = body.table;
   const operation = body.operation || 'select';
@@ -6061,11 +6096,11 @@ async function executeCrudQuery(body, currentUserId) {
   if (operation === 'select') {
     const orderSql = orderBy ? ` ORDER BY ${normalizeIdentifier(orderBy.column)} ${orderBy.ascending ? 'ASC' : 'DESC'}` : '';
     const [rows] = await pool.query(`SELECT * FROM ${quotedTable}${where}${orderSql}`, whereValues);
-    return rows;
+    return rows.map((row) => normalizePersistedHypothesisRecord(table, row));
   }
 
   if (operation === 'insert') {
-    const row = Array.isArray(payload) ? payload[0] : payload;
+    const row = normalizePersistedHypothesisPayload(table, Array.isArray(payload) ? payload[0] : payload);
     const writeRow = { ...row, id: row?.id || uuid() };
     if (table !== 'users') {
       delete writeRow.user_id;
@@ -6217,14 +6252,15 @@ async function executeCrudQuery(body, currentUserId) {
     if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
-    return inserted;
+    return inserted.map((row) => normalizePersistedHypothesisRecord(table, row));
   }
 
   if (operation === 'update') {
-    const fields = Object.keys(payload || {});
+    const normalizedPayload = normalizePersistedHypothesisPayload(table, payload || {});
+    const fields = Object.keys(normalizedPayload || {});
     if (!fields.length) throw new Error('Empty update payload');
     const setSql = fields.map((field) => `${normalizeIdentifier(field)} = ?`).join(', ');
-    await pool.query(`UPDATE ${quotedTable} SET ${setSql}${where}`, [...fields.map((field) => payload[field]), ...whereValues]);
+    await pool.query(`UPDATE ${quotedTable} SET ${setSql}${where}`, [...fields.map((field) => normalizedPayload[field]), ...whereValues]);
     const [updated] = await pool.query(`SELECT * FROM ${quotedTable}${where}`, whereValues);
     if (table === 'hypotheses' && Object.prototype.hasOwnProperty.call(payload || {}, 'audience_id')) {
       for (const hypothesis of updated) {
@@ -6237,7 +6273,7 @@ async function executeCrudQuery(body, currentUserId) {
     if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
-    return updated;
+    return updated.map((row) => normalizePersistedHypothesisRecord(table, row));
   }
 
   if (operation === 'delete') {
@@ -9259,7 +9295,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
           body.evaluated_interviews_count ?? null,
           body.problem_score_avg ?? null,
           body.solution_score_avg ?? null,
-          body.validation_result || 'no evaluada',
+          normalizeHypothesisState(body.validation_result || body.validation_status || body.hypothesis_state),
           body.experiment_notes || null,
           body.observations || null,
           body.next_actions || null,
@@ -9306,7 +9342,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
           body.evaluated_interviews_count ?? null,
           body.problem_score_avg ?? null,
           body.solution_score_avg ?? null,
-          body.validation_result || 'no evaluada',
+          normalizeHypothesisState(body.validation_result || body.validation_status || body.hypothesis_state),
           body.experiment_notes || null,
           body.observations || null,
           body.next_actions || null,
@@ -9399,7 +9435,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
 
       const minInterviews = Number(hypothesis.min_interviews);
       const minInterviewsTarget = Number.isFinite(minInterviews) && minInterviews > 0 ? minInterviews : 1;
-      let validationResult = 'no evaluada';
+      let validationResult = HYPOTHESIS_STATE.INCONCLUSIVE;
       if (interviews.length >= minInterviewsTarget) {
         if (validationMetricConfig) {
           const passed = evaluateComparison(
@@ -9407,9 +9443,9 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
             validationMetricConfig.threshold_value,
             validationMetricConfig.comparison_operator,
           );
-          validationResult = passed ? validationMetricConfig.outcome_if_true : validationMetricConfig.outcome_if_false;
+          validationResult = normalizeHypothesisState(passed ? validationMetricConfig.outcome_if_true : validationMetricConfig.outcome_if_false);
         } else {
-          validationResult = 'señal débil';
+          validationResult = HYPOTHESIS_STATE.INCONCLUSIVE;
         }
       }
 
@@ -10351,7 +10387,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         [runId, hypothesisId, JSON.stringify(config), JSON.stringify(results), datasetHash],
       );
 
-      await pool.query('UPDATE hypotheses SET validation_status = ? WHERE id = ?', [results.verdict.status, hypothesisId]);
+      await pool.query('UPDATE hypotheses SET validation_status = ? WHERE id = ?', [normalizeHypothesisState(results.verdict.status), hypothesisId]);
 
       sendJson(req, res, 200, {
         hypothesis,

@@ -3,6 +3,7 @@ import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/contexts/SupabaseAuthContext';
+import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, withCanonicalHypothesisState } from '../../shared/hypothesisState.js';
 
 const HypothesisContext = createContext();
 
@@ -74,8 +75,9 @@ export const HypothesisProvider = ({ children }) => {
 
       if (error) throw error;
 
-      setHypotheses(data || []);
-      return data || [];
+      const normalizedData = (data || []).map((item) => withCanonicalHypothesisState(item, HYPOTHESIS_MODES.VIDEO));
+      setHypotheses(normalizedData);
+      return normalizedData;
     } catch (error) {
       toast({
         title: 'Error',
@@ -94,7 +96,7 @@ export const HypothesisProvider = ({ children }) => {
     try {
       const { data, error } = await supabase
         .from('hypotheses')
-        .insert([{ ...hypothesisData, validation_status: 'No Validada', user_id: currentUser.id }])
+.insert([{ ...hypothesisData, ...buildModeStatePatch(HYPOTHESIS_MODES.VIDEO, HYPOTHESIS_STATE.INCONCLUSIVE), user_id: currentUser.id }])
         .select()
         .single();
 
@@ -108,7 +110,7 @@ export const HypothesisProvider = ({ children }) => {
       if (hypothesisData.campaign_id) {
         await fetchHypotheses(hypothesisData.campaign_id);
       }
-      return data;
+      return withCanonicalHypothesisState(data, HYPOTHESIS_MODES.VIDEO);
     } catch (error) {
       toast({
         title: 'Error',
@@ -129,6 +131,19 @@ export const HypothesisProvider = ({ children }) => {
       delete sanitizedPayload.audiences_breakdown;
       delete sanitizedPayload.audience_breakdown;
       delete sanitizedPayload.breakdown_config;
+      if (
+        sanitizedPayload.validation_status != null
+        || sanitizedPayload.validation_result != null
+        || sanitizedPayload.hypothesis_state != null
+      ) {
+        Object.assign(
+          sanitizedPayload,
+          buildModeStatePatch(
+            HYPOTHESIS_MODES.VIDEO,
+            sanitizedPayload.validation_status ?? sanitizedPayload.validation_result ?? sanitizedPayload.hypothesis_state,
+          ),
+        );
+      }
 
       const { data, error } = await supabase
         .from('hypotheses')
@@ -149,7 +164,7 @@ export const HypothesisProvider = ({ children }) => {
         await fetchHypotheses(data.campaign_id);
       }
 
-      return data;
+      return withCanonicalHypothesisState(data, HYPOTHESIS_MODES.VIDEO);
     } catch (error) {
       toast({
         title: 'Error',
