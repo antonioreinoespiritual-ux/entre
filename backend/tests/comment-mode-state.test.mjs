@@ -158,3 +158,92 @@ test('comment mode state persists structurally in backend and lists workspace-sc
     server.kill('SIGTERM');
   }
 });
+
+test('comment mode state absorbs legacy payload aliases and reconstructs explicit compatibility records', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-comment-mode-legacy-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4114;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: String(port), SQLITE_PATH: dbPath }, stdio: 'pipe' });
+
+  try {
+    await waitForHealth(baseUrl);
+    const token = await createSession(baseUrl);
+    const { projectId, campaignId } = await setupEntities(baseUrl, token);
+
+    const workspaceRes = await fetch(`${baseUrl}/api/comment-base/workspaces`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, campaign_id: campaignId, name: 'Legacy Workspace', description: '', status: 'active' }),
+    });
+    assert.equal(workspaceRes.status, 200);
+    const workspaceJson = await workspaceRes.json();
+    const workspaceId = workspaceJson?.data?.id;
+    assert.ok(workspaceId);
+
+    const storageKey = `comments-mode:${projectId}:${campaignId}:workspace:${workspaceId}`;
+    const payload = {
+      hypotheses: [
+        {
+          id: 'legacy-comment-root',
+          state: 'señal fuerte',
+          linkedProfiles: ['profile-a'],
+        },
+        {
+          id: 'legacy-comment-child',
+          status: 'pending',
+          parentHypothesisId: 'legacy-comment-root',
+          profile_ids: ['profile-b'],
+        },
+      ],
+      evolutionLinks: [
+        {
+          linkId: 'legacy-link-1',
+          sourceHypothesisId: 'legacy-comment-root',
+          targetMode: 'video',
+          targetId: 'legacy-video-root',
+        },
+      ],
+    };
+
+    const saveRes = await fetch(`${baseUrl}/api/comment-mode/state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storageKey, payload }),
+    });
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await fetch(`${baseUrl}/api/comment-mode/state?${new URLSearchParams({ storageKey }).toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(getRes.status, 200);
+    const getJson = await getRes.json();
+    const normalizedPayload = getJson?.data?.payload;
+    assert.equal(normalizedPayload?.hypotheses?.[0]?.validation_status, 'validada');
+    assert.equal(normalizedPayload?.hypotheses?.[1]?.parent_hypothesis_id, 'legacy-comment-root');
+    assert.equal(normalizedPayload?.hypothesisEvolutionLinks?.[0]?.destination_mode, 'video');
+    assert.equal(normalizedPayload?.hypothesisCrossModeIdentities?.[0]?.origin_node?.hypothesis_id, 'legacy-comment-root');
+    assert.equal(normalizedPayload?.hypothesisTopology?.[0]?.parent?.hypothesis_id, 'legacy-comment-root');
+
+    const hypothesisRows = await dbQuery(baseUrl, token, {
+      table: 'comment_mode_hypotheses',
+      operation: 'select',
+      filters: [{ field: 'workspace_id', value: workspaceId }],
+    });
+    const rootRow = hypothesisRows.find((row) => String(row.hypothesis_id) === 'legacy-comment-root');
+    const childRow = hypothesisRows.find((row) => String(row.hypothesis_id) === 'legacy-comment-child');
+    assert.equal(rootRow?.validation_status, 'validada');
+    assert.equal(childRow?.parent_hypothesis_id, 'legacy-comment-root');
+    assert.match(String(rootRow?.lineage_id || ''), /legacy_identity:legacy-comment-root/);
+
+    const evolutionRows = await dbQuery(baseUrl, token, {
+      table: 'comment_mode_evolution_links',
+      operation: 'select',
+      filters: [{ field: 'workspace_id', value: workspaceId }],
+    });
+    assert.equal(evolutionRows[0]?.destination_mode, 'video');
+    assert.equal(evolutionRows[0]?.link_id, 'legacy-link-1');
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

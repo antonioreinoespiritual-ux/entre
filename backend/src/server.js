@@ -12,6 +12,7 @@ import { getYouTubeConfig, isYouTubeApiKeyConfigured, isYouTubeOAuthConfigured }
 import { buildYouTubeConsentUrl, exchangeYouTubeCodeForTokens, refreshYouTubeAccessToken, revokeYouTubeToken } from './youtube/auth.js';
 import { listYouTubeChannels, listYouTubeVideos, listYouTubePlaylists, listYouTubeCommentThreads, listYouTubeComments, searchYouTubeVideos } from './youtube/services.js';
 import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypothesisState, withCanonicalHypothesisState } from '../../shared/hypothesisState.js';
+import { buildLegacyIdentityRecords, buildLegacyTopologyRecords, collectLegacyEvolutionLinks, normalizeLegacyCommentHypothesis } from '../../shared/hypothesisLegacyCompat.js';
 
 
 const envSource = loadBackendEnv();
@@ -763,16 +764,22 @@ function parseCommentModeStorageKey(storageKey = '') {
   return { storageKey: normalized, projectId, campaignId, workspaceId };
 }
 
-function normalizeCommentModeStructuralPayload(payload = {}) {
+function normalizeCommentModeStructuralPayload(payload = {}, { storageKey = '' } = {}) {
   const safe = payload && typeof payload === 'object' ? payload : {};
+  const hypotheses = (Array.isArray(safe.hypotheses) ? safe.hypotheses : [])
+    .map((hypothesis) => normalizeLegacyCommentHypothesis(hypothesis))
+    .filter(Boolean);
+  const hypothesisEvolutionLinks = collectLegacyEvolutionLinks(safe, { storageKey });
+  const explicitIdentities = Array.isArray(safe.hypothesisCrossModeIdentities) ? safe.hypothesisCrossModeIdentities : [];
+  const explicitTopology = Array.isArray(safe.hypothesisTopology) ? safe.hypothesisTopology : [];
   return {
     fragments: Array.isArray(safe.fragments) ? safe.fragments : [],
     codes: Array.isArray(safe.codes) ? safe.codes : [],
     codeProposals: Array.isArray(safe.codeProposals) ? safe.codeProposals : [],
-    hypotheses: Array.isArray(safe.hypotheses) ? safe.hypotheses : [],
-    hypothesisEvolutionLinks: Array.isArray(safe.hypothesisEvolutionLinks) ? safe.hypothesisEvolutionLinks : [],
-    hypothesisCrossModeIdentities: Array.isArray(safe.hypothesisCrossModeIdentities) ? safe.hypothesisCrossModeIdentities : [],
-    hypothesisTopology: Array.isArray(safe.hypothesisTopology) ? safe.hypothesisTopology : [],
+    hypotheses,
+    hypothesisEvolutionLinks,
+    hypothesisCrossModeIdentities: explicitIdentities.length ? explicitIdentities : buildLegacyIdentityRecords({ evolutionLinks: hypothesisEvolutionLinks, storageKey }),
+    hypothesisTopology: explicitTopology.length ? explicitTopology : buildLegacyTopologyRecords({ hypotheses, storageKey }),
     codeMapLayoutsByHypothesis: safe.codeMapLayoutsByHypothesis && typeof safe.codeMapLayoutsByHypothesis === 'object' ? safe.codeMapLayoutsByHypothesis : {},
     codeMapAnalysisSessions: safe.codeMapAnalysisSessions && typeof safe.codeMapAnalysisSessions === 'object' ? safe.codeMapAnalysisSessions : {},
     codeMapVisualProfilesByScope: safe.codeMapVisualProfilesByScope && typeof safe.codeMapVisualProfilesByScope === 'object' ? safe.codeMapVisualProfilesByScope : {},
@@ -796,7 +803,30 @@ function createCommentLineageIndex(payload = {}) {
   return lineageByCommentId;
 }
 
+async function rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey) {
+  const [hypothesisRows] = await pool.query(
+    `SELECT payload_json FROM comment_mode_hypotheses
+     WHERE user_id = ? AND storage_key = ?
+     ORDER BY created_at ASC, hypothesis_id ASC`,
+    [userId, parsedKey.storageKey],
+  );
+  const [linkRows] = await pool.query(
+    `SELECT payload_json FROM comment_mode_evolution_links
+     WHERE user_id = ? AND storage_key = ?
+     ORDER BY created_at ASC, link_id ASC`,
+    [userId, parsedKey.storageKey],
+  );
+  const payload = {
+    hypotheses: hypothesisRows.map((row) => safeParseJsonField(row.payload_json, {})),
+    hypothesisEvolutionLinks: linkRows.map((row) => safeParseJsonField(row.payload_json, {})),
+  };
+  const normalizedPayload = normalizeCommentModeStructuralPayload(payload, { storageKey: parsedKey.storageKey });
+  if (!normalizedPayload.hypotheses.length && !normalizedPayload.hypothesisEvolutionLinks.length) return null;
+  return normalizedPayload;
+}
+
 async function ensureCommentWorkspaceRecord(userId, projectId, campaignId, workspaceId = '') {
+
   const requested = String(workspaceId || '').trim() || COMMENT_WORKSPACE_LEGACY;
   if (requested !== COMMENT_WORKSPACE_LEGACY) return resolveCommentWorkspace(userId, projectId, campaignId, requested);
 
@@ -829,7 +859,7 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
   if (!campaign) throw new Error('Campaign not found');
 
   const workspace = await ensureCommentWorkspaceRecord(userId, parsedKey.projectId, parsedKey.campaignId, parsedKey.workspaceId);
-  const normalizedPayload = normalizeCommentModeStructuralPayload(payload);
+  const normalizedPayload = normalizeCommentModeStructuralPayload(payload, { storageKey: parsedKey.storageKey });
   const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
   const now = nowIso();
 
@@ -931,7 +961,11 @@ async function readCommentModeStructuralState(userId, storageKey) {
     [userId, parsedKey.storageKey, parsedKey.projectId, parsedKey.campaignId],
   );
   const row = rows[0] || null;
-  return row ? normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {})) : null;
+  if (row) {
+    const normalizedPayload = normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {}), { storageKey: parsedKey.storageKey });
+    if (normalizedPayload.hypotheses.length || normalizedPayload.hypothesisEvolutionLinks.length) return normalizedPayload;
+  }
+  return rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey);
 }
 
 function autoExternalIdForVideo(videoType, videoId) {

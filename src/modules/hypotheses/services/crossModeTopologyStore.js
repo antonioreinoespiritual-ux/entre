@@ -4,7 +4,8 @@ import {
   loadCrossModeSyncStoreByKey,
   persistCrossModeSyncStoreByKey,
 } from './evolutionLinkStore.js';
-import { MODE_COMMENTS, MODE_VIDEO, MODE_INTERVIEWS, buildNodeKey, normalizeId } from './crossModeGraphCore.js';
+import { buildNodeKey } from './crossModeGraphCore.js';
+import { buildLegacyTopologyRecords } from '../../../../shared/hypothesisLegacyCompat.js';
 import {
   TOPOLOGY_RECORD_FIELD,
   createCrossModeTopologyRegistry,
@@ -16,47 +17,13 @@ import {
 const toArray = (value) => (Array.isArray(value) ? value : []);
 const stableStringify = (value) => JSON.stringify(value, null, 2);
 
-const extractJsonMetadataBlock = (value = '', tag = '') => {
-  const match = String(value || '').match(new RegExp(`\\[${tag}\\]([\\s\\S]*?)\\[\\/${tag}\\]`));
-  if (!match) return {};
-  try {
-    return JSON.parse(match[1]) || {};
-  } catch {
-    return {};
-  }
-};
-
-const collectLegacyCommentTopology = (syncStores = []) => syncStores.flatMap(({ storageKey, store }) => toArray(store?.hypotheses)
-  .map((hypothesis) => {
-    const parentHypothesisId = normalizeId(hypothesis?.parent_hypothesis_id);
-    if (!parentHypothesisId) return null;
-    return {
-      parent: { mode: MODE_COMMENTS, hypothesis_id: parentHypothesisId, storage_key: storageKey },
-      child: { mode: MODE_COMMENTS, hypothesis_id: normalizeId(hypothesis?.id), storage_key: storageKey },
-      source: 'legacy_comments_parent_field',
-    };
-  })
-  .filter(Boolean));
-
-const collectLegacyVideoTopology = (videoRows = []) => toArray(videoRows).map((row) => {
-  const parentHypothesisId = normalizeId(extractJsonMetadataBlock(row?.contexto_cualitativo || '', 'hierarchy_meta')?.parent_hypothesis_id);
-  if (!parentHypothesisId) return null;
-  return {
-    parent: { mode: MODE_VIDEO, hypothesis_id: parentHypothesisId },
-    child: { mode: MODE_VIDEO, hypothesis_id: normalizeId(row?.id) },
-    source: 'legacy_video_hierarchy_metadata',
-  };
-}).filter(Boolean);
-
-const collectLegacyInterviewTopology = (interviewRows = []) => toArray(interviewRows).map((row) => {
-  const parentHypothesisId = normalizeId(extractJsonMetadataBlock(row?.observations || '', 'interview_hierarchy')?.parent_hypothesis_id);
-  if (!parentHypothesisId) return null;
-  return {
-    parent: { mode: MODE_INTERVIEWS, hypothesis_id: parentHypothesisId },
-    child: { mode: MODE_INTERVIEWS, hypothesis_id: normalizeId(row?.id) },
-    source: 'legacy_interview_hierarchy_metadata',
-  };
-}).filter(Boolean);
+const collectLegacyTopologyRecords = ({ syncStores = [], videoRows = [], interviewRows = [] } = {}) => [
+  ...syncStores.flatMap(({ storageKey, store }) => buildLegacyTopologyRecords({
+    hypotheses: toArray(store?.hypotheses),
+    storageKey,
+  })),
+  ...buildLegacyTopologyRecords({ videoRows, interviewRows }),
+];
 
 const persistCentralTopologyRecords = async ({ projectId = '', campaignId = '', records = [] } = {}) => {
   const storageKey = buildCrossModeSyncStorageKey(projectId, campaignId);
@@ -78,11 +45,7 @@ const loadCrossModeTopologyRegistry = async ({ projectId = '', campaignId = '', 
 
   const registry = createCrossModeTopologyRegistry({
     explicitTopologyRecords,
-    legacyTopologyRecords: [
-      ...collectLegacyCommentTopology(syncStores),
-      ...collectLegacyVideoTopology(videoRows),
-      ...collectLegacyInterviewTopology(interviewRows),
-    ],
+    legacyTopologyRecords: collectLegacyTopologyRecords({ syncStores, videoRows, interviewRows }),
   });
 
   await persistCentralTopologyRecords({ projectId, campaignId, records: registry.records });

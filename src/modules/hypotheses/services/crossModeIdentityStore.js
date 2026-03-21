@@ -5,6 +5,7 @@ import {
   persistCrossModeSyncStoreByKey,
 } from './evolutionLinkStore.js';
 import { MODE_COMMENTS, MODE_VIDEO, MODE_INTERVIEWS, buildNodeKey } from './crossModeGraphCore.js';
+import { collectLegacyEvolutionLinks } from '../../../../shared/hypothesisLegacyCompat.js';
 import {
   IDENTITY_RECORD_FIELD,
   createCrossModeIdentityRegistry,
@@ -17,9 +18,8 @@ import {
 const toArray = (value) => (Array.isArray(value) ? value : []);
 const stableStringify = (value) => JSON.stringify(value, null, 2);
 
-const collectLegacyLinks = (syncStores = []) => syncStores.flatMap(({ storageKey, store }) => toArray(store?.hypothesisEvolutionLinks)
-  .filter((link) => !link?.deleted_at)
-  .map((link) => ({ ...link, storage_key: storageKey })));
+const collectLegacyLinks = (syncStores = []) => syncStores.flatMap(({ storageKey, store }) => collectLegacyEvolutionLinks(store, { storageKey })
+  .filter((link) => !link?.deleted_at));
 
 const collectModeNodeRefs = ({ syncStores = [], videoRows = [], interviewRows = [] } = {}) => ({
   [MODE_COMMENTS]: syncStores.flatMap(({ storageKey, store }) => toArray(store?.hypotheses).map((hypothesis) => createIdentityNodeRef(MODE_COMMENTS, hypothesis?.id, { storageKey }))).filter(Boolean),
