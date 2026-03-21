@@ -12,7 +12,7 @@ function loadGraphUtils() {
   }
 
   const utilityBlock = source.slice(start, end);
-  const factory = new Function('HYPOTHESIS_MODES', 'HYPOTHESIS_STATE', 'buildModeStatePatch', 'normalizeHypothesisState', 'readHypothesisStateForMode', `${utilityBlock}\nreturn { buildNodeKey, createUnifiedGraph, addEquivalentEdge, addChildEdge, getEquivalentClosureAcrossModes, getDescendantsAcrossUnifiedGraph, groupAffectedIdsByMode, normalizeValidationState, toCommentsValidationState, toVideoValidationState, toInterviewValidationState, getValidationStateFromNode };`);
+  const factory = new Function('HYPOTHESIS_MODES', 'HYPOTHESIS_STATE', 'buildModeStatePatch', 'normalizeHypothesisState', 'readHypothesisStateForMode', `${utilityBlock}\nreturn { buildNodeKey, createUnifiedGraph, addEquivalentEdge, addChildEdge, getEquivalentClosureAcrossModes, getDescendantsAcrossUnifiedGraph, groupAffectedIdsByMode, normalizeValidationState, toCommentsValidationState, toVideoValidationState, toInterviewValidationState, getValidationStateFromNode, shouldSyncVideoStateTransition };`);
   return factory(HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypothesisState, readHypothesisStateForMode);
 }
 
@@ -29,6 +29,7 @@ const {
   toVideoValidationState,
   toInterviewValidationState,
   getValidationStateFromNode,
+  shouldSyncVideoStateTransition,
 } = loadGraphUtils();
 
 function createGraphFixture() {
@@ -183,4 +184,11 @@ test('canonical validation-state helpers normalize and adapt states per mode', (
   assert.equal(getValidationStateFromNode('comments', { hypothesis: { validation_status: 'validada' } }), 'validada');
   assert.equal(getValidationStateFromNode('video', { row: { validation_status: 'No validada' } }), 'invalidada');
   assert.equal(getValidationStateFromNode('interviews', { row: { validation_result: 'no evaluada' } }), 'inconclusa');
+});
+
+
+test('video sync only runs when the canonical state actually changes to a syncable value', () => {
+  assert.equal(shouldSyncVideoStateTransition({ previousState: 'validada', nextState: 'Validada' }), false);
+  assert.equal(shouldSyncVideoStateTransition({ previousState: 'inconclusa', nextState: 'invalidada' }), true);
+  assert.equal(shouldSyncVideoStateTransition({ previousState: 'No validada', nextState: 'inconclusa' }), false);
 });

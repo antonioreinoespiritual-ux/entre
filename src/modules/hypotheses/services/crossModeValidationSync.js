@@ -196,6 +196,14 @@ const groupAffectedIdsByMode = (nodeKeys = []) => {
   return grouped;
 };
 
+
+const shouldSyncVideoStateTransition = ({ previousState = '', nextState = '' } = {}) => {
+  const normalizedPrevious = normalizeValidationState(previousState);
+  const normalizedNext = normalizeValidationState(nextState);
+  if (normalizedNext === VALIDATION_STATE_INCONCLUSIVE) return false;
+  return normalizedPrevious !== normalizedNext;
+};
+
 const updateCommentsStatus = async ({ graph, affectedCommentIds = [], nextState = '', originHypothesisId = '' }) => {
   const targetIds = new Set((affectedCommentIds || []).map(normalizeId).filter(Boolean));
   if (!targetIds.size) return [];
@@ -271,12 +279,30 @@ const updateInterviewStatuses = async ({ affectedInterviewIds = [], nextState = 
   return targetIds;
 };
 
+export const syncVideoHypothesisStateTransition = async ({
+  projectId = '',
+  campaignId = '',
+  videoHypothesisId = '',
+  previousVideoStatus = '',
+  nextVideoStatus = '',
+} = {}) => {
+  if (!shouldSyncVideoStateTransition({ previousState: previousVideoStatus, nextState: nextVideoStatus })) {
+    return { synced: false, skipped: true, reason: 'no_state_change' };
+  }
+  return syncVideoHypothesisValidationAcrossModes({
+    projectId,
+    campaignId,
+    videoHypothesisId,
+    nextVideoStatus,
+  });
+};
+
 export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '', campaignId = '', videoHypothesisId = '', nextVideoStatus = '' } = {}) => {
   const normalizedVideoId = normalizeId(videoHypothesisId);
   const nextState = normalizeValidationState(nextVideoStatus);
   if (!projectId || !campaignId || !normalizedVideoId) return { synced: false };
 
-  if (nextState === VALIDATION_STATE_INCONCLUSIVE) return { synced: false };
+  if (nextState === VALIDATION_STATE_INCONCLUSIVE) return { synced: false, skipped: true, reason: 'inconclusive_target_state' };
 
   const graph = await loadUnifiedCrossModeGraph({ projectId, campaignId });
   const rootSet = getEquivalentClosureAcrossModes(graph, normalizedVideoId, MODE_VIDEO);
@@ -324,4 +350,5 @@ export const __crossModeValidationSyncTestUtils = {
   toVideoValidationState,
   toInterviewValidationState,
   getValidationStateFromNode,
+  shouldSyncVideoStateTransition,
 };
