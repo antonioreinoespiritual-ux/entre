@@ -71,12 +71,23 @@ const registerModeNode = (graph, mode, row) => {
   graph.nodes.set(buildNodeKey(mode, id), { mode, id, row });
 };
 
-const getEquivalentNodesAcrossModes = (graph, nodeId = '', mode = '') => {
+const getEquivalentClosureAcrossModes = (graph, nodeId = '', mode = '') => {
   const startKey = buildNodeKey(mode, nodeId);
-  const results = new Set([startKey]);
-  const directNeighbors = graph.equivalentAdjacency.get(startKey) || new Set();
-  directNeighbors.forEach((neighborKey) => results.add(neighborKey));
-  return results;
+  const pending = [startKey];
+  const visited = new Set();
+
+  while (pending.length) {
+    const currentKey = pending.shift();
+    if (!currentKey || visited.has(currentKey)) continue;
+    visited.add(currentKey);
+
+    const equivalentNeighbors = graph.equivalentAdjacency.get(currentKey) || new Set();
+    equivalentNeighbors.forEach((neighborKey) => {
+      if (!visited.has(neighborKey)) pending.push(neighborKey);
+    });
+  }
+
+  return visited;
 };
 
 const getDescendantsAcrossUnifiedGraph = (graph, nodeKeys = []) => {
@@ -264,7 +275,7 @@ export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '',
   if (!mode) return { synced: false };
 
   const graph = await loadUnifiedCrossModeGraph({ projectId, campaignId });
-  const rootSet = getEquivalentNodesAcrossModes(graph, normalizedVideoId, MODE_VIDEO);
+  const rootSet = getEquivalentClosureAcrossModes(graph, normalizedVideoId, MODE_VIDEO);
   const affectedNodeKeys = mode === 'invalid'
     ? getDescendantsAcrossUnifiedGraph(graph, [...rootSet])
     : rootSet;
@@ -300,7 +311,7 @@ export const __crossModeValidationSyncTestUtils = {
   createUnifiedGraph,
   addEquivalentEdge,
   addChildEdge,
-  getEquivalentNodesAcrossModes,
+  getEquivalentClosureAcrossModes,
   getDescendantsAcrossUnifiedGraph,
   groupAffectedIdsByMode,
 };
