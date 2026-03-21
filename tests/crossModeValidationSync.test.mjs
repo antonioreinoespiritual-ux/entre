@@ -126,6 +126,52 @@ test('invalidating an intermediate video node does not affect ancestors', () => 
 });
 
 
+test('validating an intermediate video node syncs only its cross-mode equivalents, not its descendants', () => {
+  const graph = createUnifiedGraph();
+  const commentRoot = buildNodeKey('comments', 'comment-root');
+  const videoRoot = buildNodeKey('video', 'video-root');
+  const interviewRoot = buildNodeKey('interviews', 'interview-root');
+  const commentMid = buildNodeKey('comments', 'comment-mid');
+  const videoMid = buildNodeKey('video', 'video-mid');
+  const interviewMid = buildNodeKey('interviews', 'interview-mid');
+  const commentLeaf = buildNodeKey('comments', 'comment-leaf');
+  const videoLeaf = buildNodeKey('video', 'video-leaf');
+  const interviewLeaf = buildNodeKey('interviews', 'interview-leaf');
+
+  [commentRoot, videoRoot, interviewRoot, commentMid, videoMid, interviewMid, commentLeaf, videoLeaf, interviewLeaf].forEach((key) => {
+    graph.nodes.set(key, { key });
+  });
+
+  addEquivalentEdge(graph, commentRoot, videoRoot);
+  addEquivalentEdge(graph, commentRoot, interviewRoot);
+  addEquivalentEdge(graph, commentMid, videoMid);
+  addEquivalentEdge(graph, commentMid, interviewMid);
+  addEquivalentEdge(graph, commentLeaf, videoLeaf);
+  addEquivalentEdge(graph, commentLeaf, interviewLeaf);
+
+  addChildEdge(graph, commentRoot, commentMid);
+  addChildEdge(graph, videoRoot, videoMid);
+  addChildEdge(graph, interviewRoot, interviewMid);
+  addChildEdge(graph, commentMid, commentLeaf);
+  addChildEdge(graph, videoMid, videoLeaf);
+  addChildEdge(graph, interviewMid, interviewLeaf);
+
+  // VALIDATION uses only the equivalent closure (rootSet), not descendants
+  const midClosure = getEquivalentClosureAcrossModes(graph, 'video-mid', 'video');
+  const grouped = groupAffectedIdsByMode([...midClosure]);
+
+  assert.deepEqual(midClosure, new Set([videoMid, commentMid, interviewMid]));
+  assert.equal(midClosure.has(videoRoot), false, 'ancestors must not be included');
+  assert.equal(midClosure.has(commentRoot), false, 'ancestors must not be included');
+  assert.equal(midClosure.has(interviewRoot), false, 'ancestors must not be included');
+  assert.equal(midClosure.has(videoLeaf), false, 'descendants must not be included for validation');
+  assert.equal(midClosure.has(commentLeaf), false, 'descendants must not be included for validation');
+  assert.equal(midClosure.has(interviewLeaf), false, 'descendants must not be included for validation');
+  assert.deepEqual(grouped.video, new Set(['video-mid']));
+  assert.deepEqual(grouped.comments, new Set(['comment-mid']));
+  assert.deepEqual(grouped.interviews, new Set(['interview-mid']));
+});
+
 test('canonical validation-state helpers normalize and adapt states per mode', () => {
   assert.equal(normalizeValidationState('Validada'), 'validada');
   assert.equal(normalizeValidationState('No validada'), 'invalidada');
