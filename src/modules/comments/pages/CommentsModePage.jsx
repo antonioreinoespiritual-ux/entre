@@ -71,6 +71,34 @@ const defaultEvolutionVideoDraft = {
   contexto_cualitativo: '',
 };
 
+const createEvolutionInterviewDraftForHypothesis = (hypothesis = {}) => {
+  const sourceTitle = String(hypothesis?.title || '').trim() || 'Hipótesis evolucionada';
+  const sourceDescription = String(hypothesis?.description || '').trim();
+  const sourceContext = String(hypothesis?.context_note || '').trim();
+  return {
+    ...defaultEvolutionInterviewDraft,
+    title: sourceTitle,
+    description: [sourceDescription, sourceContext].filter(Boolean).join('\n\n'),
+    type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionInterviewDraft.type,
+    experiment_notes: `Adaptar esta hipótesis al flujo de entrevistas para validar su señal cualitativa.`,
+    observations: sourceContext,
+    next_actions: 'Diseñar entrevistas y ejecutar validación con muestra mínima.',
+  };
+};
+
+const createEvolutionVideoDraftForHypothesis = (hypothesis = {}) => {
+  const sourceTitle = String(hypothesis?.title || '').trim() || 'Hipótesis evolucionada';
+  const sourceDescription = String(hypothesis?.description || '').trim();
+  const sourceContext = String(hypothesis?.context_note || '').trim();
+  return {
+    ...defaultEvolutionVideoDraft,
+    type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionVideoDraft.type,
+    hypothesis_statement: sourceDescription || sourceTitle,
+    variable_x: sourceTitle,
+    contexto_cualitativo: sourceContext,
+  };
+};
+
 const normalizeVideoEvolutionDisplayTitle = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
 
 const resolveVideoEvolutionDisplayTitle = ({ explicitTitle = '', fallbackTitle = '', statement = '' } = {}) => {
@@ -442,6 +470,8 @@ const CommentsModePage = () => {
   });
   const [hypothesisEvolutionInterviewDraft, setHypothesisEvolutionInterviewDraft] = useState(defaultEvolutionInterviewDraft);
   const [hypothesisEvolutionVideoDraft, setHypothesisEvolutionVideoDraft] = useState(defaultEvolutionVideoDraft);
+  const [hypothesisEvolutionInterviewBranchDrafts, setHypothesisEvolutionInterviewBranchDrafts] = useState({});
+  const [hypothesisEvolutionVideoBranchDrafts, setHypothesisEvolutionVideoBranchDrafts] = useState({});
   const [hypothesisEditor, setHypothesisEditor] = useState({
     open: false,
     mode: 'create',
@@ -3688,6 +3718,70 @@ const CommentsModePage = () => {
     [hypotheses, hypothesisEvolutionDeleteModal.sourceHypothesisId],
   );
 
+  const buildEvolutionBranchHypotheses = useCallback((sourceHypothesis = null, scope = 'single') => {
+    if (!sourceHypothesis) return [];
+    if (scope !== 'branch') return [sourceHypothesis];
+
+    const lineage = [];
+    const seen = new Set();
+    let current = sourceHypothesis;
+    while (current) {
+      lineage.unshift(current);
+      seen.add(String(current.id || ''));
+      const parentId = String(current.parent_hypothesis_id || '').trim();
+      current = parentId ? hypothesisById.get(parentId) || null : null;
+    }
+
+    const queue = [sourceHypothesis];
+    while (queue.length) {
+      const item = queue.shift();
+      const itemId = String(item?.id || '').trim();
+      if (!itemId) continue;
+      if (!seen.has(itemId)) {
+        lineage.push(item);
+        seen.add(itemId);
+      }
+      const children = childHypothesesByParentId.get(itemId) || [];
+      children.forEach((child) => queue.push(child));
+    }
+
+    return lineage;
+  }, [childHypothesesByParentId, hypothesisById]);
+
+  const evolutionBranchHypotheses = useMemo(
+    () => buildEvolutionBranchHypotheses(activeEvolutionSourceHypothesis, hypothesisEvolutionModal.scope),
+    [activeEvolutionSourceHypothesis, hypothesisEvolutionModal.scope, buildEvolutionBranchHypotheses],
+  );
+
+  const hydrateEvolutionBranchDrafts = (branchHypotheses = []) => {
+    const interviewDrafts = {};
+    const videoDrafts = {};
+    branchHypotheses.forEach((hypothesis) => {
+      const id = String(hypothesis?.id || '').trim();
+      if (!id) return;
+      interviewDrafts[id] = createEvolutionInterviewDraftForHypothesis(hypothesis);
+      videoDrafts[id] = createEvolutionVideoDraftForHypothesis(hypothesis);
+    });
+    setHypothesisEvolutionInterviewBranchDrafts(interviewDrafts);
+    setHypothesisEvolutionVideoBranchDrafts(videoDrafts);
+  };
+
+  const describeEvolutionBranchPosition = (hypothesis = null) => {
+    if (!hypothesis || !activeEvolutionSourceHypothesis) return 'Hipótesis de la rama';
+    const targetId = String(hypothesis.id || '').trim();
+    const sourceId = String(activeEvolutionSourceHypothesis.id || '').trim();
+    if (targetId === sourceId) return 'Hipótesis seleccionada';
+
+    let current = activeEvolutionSourceHypothesis;
+    while (current) {
+      const parentId = String(current.parent_hypothesis_id || '').trim();
+      if (!parentId) break;
+      if (parentId === targetId) return 'Ancestro necesario de la rama';
+      current = hypothesisById.get(parentId) || null;
+    }
+    return 'Descendiente de la rama';
+  };
+
   const collectDescendantHypothesisIds = (rootId = '') => {
     const pending = [String(rootId || '').trim()].filter(Boolean);
     const descendants = new Set();
@@ -3933,25 +4027,8 @@ const CommentsModePage = () => {
   };
 
   const hydrateEvolutionDrafts = (hypothesis = null) => {
-    const sourceTitle = String(hypothesis?.title || '').trim() || 'Hipótesis evolucionada';
-    const sourceDescription = String(hypothesis?.description || '').trim();
-    const sourceContext = String(hypothesis?.context_note || '').trim();
-    setHypothesisEvolutionInterviewDraft({
-      ...defaultEvolutionInterviewDraft,
-      title: sourceTitle,
-      description: [sourceDescription, sourceContext].filter(Boolean).join('\n\n'),
-      type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionInterviewDraft.type,
-      experiment_notes: `Adaptar esta hipótesis al flujo de entrevistas para validar su señal cualitativa.` ,
-      observations: sourceContext,
-      next_actions: 'Diseñar entrevistas y ejecutar validación con muestra mínima.',
-    });
-    setHypothesisEvolutionVideoDraft({
-      ...defaultEvolutionVideoDraft,
-      type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionVideoDraft.type,
-      hypothesis_statement: sourceDescription || sourceTitle,
-      variable_x: sourceTitle,
-      contexto_cualitativo: sourceContext,
-    });
+    setHypothesisEvolutionInterviewDraft(createEvolutionInterviewDraftForHypothesis(hypothesis));
+    setHypothesisEvolutionVideoDraft(createEvolutionVideoDraftForHypothesis(hypothesis));
   };
 
   const buildVideoEvolutionContext = (context = '', parentHypothesisId = '') => {
@@ -3968,40 +4045,11 @@ const CommentsModePage = () => {
     return [clean, `[interview_hierarchy]${JSON.stringify({ parent_hypothesis_id: normalizedParentId })}[/interview_hierarchy]`].filter(Boolean).join('\n\n');
   };
 
-  const buildEvolutionBranchHypotheses = (sourceHypothesis = null, scope = 'single') => {
-    if (!sourceHypothesis) return [];
-    if (scope !== 'branch') return [sourceHypothesis];
-
-    const lineage = [];
-    const seen = new Set();
-    let current = sourceHypothesis;
-    while (current) {
-      lineage.unshift(current);
-      seen.add(String(current.id || ''));
-      const parentId = String(current.parent_hypothesis_id || '').trim();
-      current = parentId ? hypothesisById.get(parentId) || null : null;
-    }
-
-    const queue = [sourceHypothesis];
-    while (queue.length) {
-      const item = queue.shift();
-      const itemId = String(item?.id || '').trim();
-      if (!itemId) continue;
-      if (!seen.has(itemId)) {
-        lineage.push(item);
-        seen.add(itemId);
-      }
-      const children = childHypothesesByParentId.get(itemId) || [];
-      children.forEach((child) => queue.push(child));
-    }
-
-    return lineage;
-  };
-
   const openHypothesisEvolutionModal = async (hypothesis) => {
     if (!hypothesis) return;
     setHypothesisMenuId('');
     hydrateEvolutionDrafts(hypothesis);
+    hydrateEvolutionBranchDrafts(buildEvolutionBranchHypotheses(hypothesis, 'branch'));
     setHypothesisEvolutionModal({
       open: true,
       saving: false,
@@ -4025,6 +4073,28 @@ const CommentsModePage = () => {
 
   const closeHypothesisEvolutionModal = () => {
     setHypothesisEvolutionModal({ open: false, saving: false, error: '', destinationMode: '', sourceHypothesisId: '', scope: 'single' });
+    setHypothesisEvolutionInterviewBranchDrafts({});
+    setHypothesisEvolutionVideoBranchDrafts({});
+  };
+
+  const updateInterviewBranchDraft = (hypothesisId, patch) => {
+    setHypothesisEvolutionInterviewBranchDrafts((prev) => ({
+      ...prev,
+      [hypothesisId]: {
+        ...(prev[hypothesisId] || createEvolutionInterviewDraftForHypothesis(hypothesisById.get(String(hypothesisId || '')) || null)),
+        ...patch,
+      },
+    }));
+  };
+
+  const updateVideoBranchDraft = (hypothesisId, patch) => {
+    setHypothesisEvolutionVideoBranchDrafts((prev) => ({
+      ...prev,
+      [hypothesisId]: {
+        ...(prev[hypothesisId] || createEvolutionVideoDraftForHypothesis(hypothesisById.get(String(hypothesisId || '')) || null)),
+        ...patch,
+      },
+    }));
   };
 
   const buildEvolutionLinkRecord = ({ sourceHypothesis, destinationMode, destinationHypothesis, destinationRoute, adapterSnapshot }) => ({
@@ -4066,32 +4136,35 @@ const CommentsModePage = () => {
 
       if (destinationMode === 'interviews') {
         const draft = hypothesisEvolutionInterviewDraft;
-        if (!String(draft.title || '').trim()) throw new Error('La evolución a Entrevistas requiere un título.');
+        if (evolutionScope === 'single' && !String(draft.title || '').trim()) throw new Error('La evolución a Entrevistas requiere un título.');
         const createdBySourceId = new Map();
         const createdRecords = [];
         for (const branchHypothesis of sourceBranch) {
           const sourceId = String(branchHypothesis.id || '').trim();
           const parentDestinationId = createdBySourceId.get(String(branchHypothesis.parent_hypothesis_id || '').trim()) || '';
-          const isRoot = sourceId === String(sourceHypothesis.id || '');
+          const branchDraft = evolutionScope === 'branch'
+            ? (hypothesisEvolutionInterviewBranchDrafts[sourceId] || createEvolutionInterviewDraftForHypothesis(branchHypothesis))
+            : draft;
+          if (!String(branchDraft.title || '').trim()) {
+            throw new Error(`Cada hipótesis de la rama hacia Entrevistas requiere su propio título. Falta completar: ${branchHypothesis.title || sourceId}.`);
+          }
           const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, {
-            title: isRoot ? String(draft.title || '').trim() : String(branchHypothesis.title || '').trim() || 'Hipótesis evolucionada',
-            description: isRoot
-              ? (String(draft.description || '').trim() || null)
-              : ([String(branchHypothesis.description || '').trim(), String(branchHypothesis.context_note || '').trim()].filter(Boolean).join('\n\n') || null),
-            type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || 'problema').trim() : 'problema'),
-            status: String(draft.status || 'exploracion').trim() || 'exploracion',
-            audience_id: String(draft.audience_id || '').trim() || null,
-            segment: String(draft.segment || '').trim() || null,
-            related_client_id: String(draft.related_client_id || '').trim() || null,
-            interview_form_id: String(draft.interview_form_id || '').trim() || null,
-            min_interviews: Number(draft.min_interviews || 0) || null,
+            title: String(branchDraft.title || '').trim(),
+            description: String(branchDraft.description || '').trim() || null,
+            type: normalizeCommentHypothesisType(branchHypothesis.type) || String(branchDraft.type || 'problema').trim() || 'problema',
+            status: String(branchDraft.status || 'exploracion').trim() || 'exploracion',
+            audience_id: String(branchDraft.audience_id || '').trim() || null,
+            segment: String(branchDraft.segment || '').trim() || null,
+            related_client_id: String(branchDraft.related_client_id || '').trim() || null,
+            interview_form_id: String(branchDraft.interview_form_id || '').trim() || null,
+            min_interviews: Number(branchDraft.min_interviews || 0) || null,
             experiment_notes: [
-              isRoot ? String(draft.experiment_notes || '').trim() : `Hipótesis de rama evolucionada desde Comentarios: ${String(branchHypothesis.title || '').trim() || 'Hipótesis'}.`,
+              String(branchDraft.experiment_notes || '').trim(),
               buildCommentHypothesisTraceBlock({ sourceHypothesis: branchHypothesis, destinationMode: 'interviews', workspaceId: workspaceContext.workspaceId }),
             ].filter(Boolean).join('\n\n'),
-            observations: buildInterviewEvolutionObservations(isRoot ? String(draft.observations || '').trim() : String(branchHypothesis.context_note || '').trim(), parentDestinationId) || null,
-            next_actions: isRoot ? (String(draft.next_actions || '').trim() || null) : null,
-            validation_metric_config: draft.validation_metric_config,
+            observations: buildInterviewEvolutionObservations(String(branchDraft.observations || '').trim(), parentDestinationId) || null,
+            next_actions: String(branchDraft.next_actions || '').trim() || null,
+            validation_metric_config: branchDraft.validation_metric_config,
           });
           createdBySourceId.set(sourceId, String(created?.id || ''));
           createdRecords.push(buildEvolutionLinkRecord({
@@ -4109,42 +4182,41 @@ const CommentsModePage = () => {
       }
 
       const draft = hypothesisEvolutionVideoDraft;
-      if (!String(draft.type || '').trim() || !String(draft.hypothesis_statement || '').trim() || !String(draft.metrica_objetivo_y || '').trim() || !String(draft.volumen_unidad || '').trim()) {
+      if (evolutionScope === 'single' && (!String(draft.type || '').trim() || !String(draft.hypothesis_statement || '').trim() || !String(draft.metrica_objetivo_y || '').trim() || !String(draft.volumen_unidad || '').trim())) {
         throw new Error('Completa los campos clave para evolucionar la hipótesis a Modo Video.');
       }
-      const thresholdSuffix = draft.umbral_tipo === '%' ? '%' : '';
       const createdBySourceId = new Map();
       const createdRecords = [];
       for (const branchHypothesis of sourceBranch) {
         const sourceId = String(branchHypothesis.id || '').trim();
         const parentDestinationId = createdBySourceId.get(String(branchHypothesis.parent_hypothesis_id || '').trim()) || '';
-        const isRoot = sourceId === String(sourceHypothesis.id || '');
+        const branchDraft = evolutionScope === 'branch'
+          ? (hypothesisEvolutionVideoBranchDrafts[sourceId] || createEvolutionVideoDraftForHypothesis(branchHypothesis))
+          : draft;
+        if (!String(branchDraft.type || '').trim() || !String(branchDraft.hypothesis_statement || '').trim() || !String(branchDraft.metrica_objetivo_y || '').trim() || !String(branchDraft.volumen_unidad || '').trim()) {
+          throw new Error(`Cada hipótesis de la rama hacia Video debe completar statement, tipo, métrica y volumen. Falta completar: ${branchHypothesis.title || sourceId}.`);
+        }
+        const thresholdSuffix = branchDraft.umbral_tipo === '%' ? '%' : '';
         const created = await createVideoHypothesis({
-          type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || '').trim() : 'problema'),
-          hypothesis_statement: isRoot ? String(draft.hypothesis_statement || '').trim() : (String(branchHypothesis.description || '').trim() || String(branchHypothesis.title || '').trim()),
-          variable_x: isRoot
-            ? resolveVideoEvolutionDisplayTitle({
-              explicitTitle: String(draft.variable_x || '').trim(),
-              fallbackTitle: String(sourceHypothesis?.title || '').trim(),
-              statement: String(draft.hypothesis_statement || '').trim(),
-            })
-            : resolveVideoEvolutionDisplayTitle({
-              explicitTitle: String(branchHypothesis.title || '').trim(),
-              fallbackTitle: String(branchHypothesis.description || '').trim(),
-              statement: String(branchHypothesis.description || '').trim(),
-            }),
-          metrica_objetivo_y: String(draft.metrica_objetivo_y || '').trim(),
-          umbral_operador: String(draft.umbral_operador || '>=').trim() || '>=',
-          umbral_valor: Number(draft.umbral_valor || 0),
-          volumen_minimo: Number(draft.volumen_minimo || 0),
-          volumen_unidad: String(draft.volumen_unidad || '').trim(),
-          canal_principal: String(draft.canal_principal || 'organic').trim() || 'organic',
+          type: normalizeCommentHypothesisType(branchHypothesis.type) || String(branchDraft.type || '').trim() || 'problema',
+          hypothesis_statement: String(branchDraft.hypothesis_statement || '').trim(),
+          variable_x: resolveVideoEvolutionDisplayTitle({
+            explicitTitle: String(branchDraft.variable_x || '').trim(),
+            fallbackTitle: String(branchHypothesis?.title || '').trim(),
+            statement: String(branchDraft.hypothesis_statement || '').trim(),
+          }),
+          metrica_objetivo_y: String(branchDraft.metrica_objetivo_y || '').trim(),
+          umbral_operador: String(branchDraft.umbral_operador || '>=').trim() || '>=',
+          umbral_valor: Number(branchDraft.umbral_valor || 0),
+          volumen_minimo: Number(branchDraft.volumen_minimo || 0),
+          volumen_unidad: String(branchDraft.volumen_unidad || '').trim(),
+          canal_principal: String(branchDraft.canal_principal || 'organic').trim() || 'organic',
           contexto_cualitativo: [
-            buildVideoEvolutionContext(isRoot ? String(draft.contexto_cualitativo || '').trim() : String(branchHypothesis.context_note || '').trim(), parentDestinationId),
+            buildVideoEvolutionContext(String(branchDraft.contexto_cualitativo || '').trim(), parentDestinationId),
             buildCommentHypothesisTraceBlock({ sourceHypothesis: branchHypothesis, destinationMode: 'video', workspaceId: workspaceContext.workspaceId }),
           ].filter(Boolean).join('\n\n'),
           campaign_id: campaignId,
-          condition: `${draft.metrica_objetivo_y} ${draft.umbral_operador} ${draft.umbral_valor}${thresholdSuffix}`,
+          condition: `${branchDraft.metrica_objetivo_y} ${branchDraft.umbral_operador} ${branchDraft.umbral_valor}${thresholdSuffix}`,
         });
         if (!created) throw new Error('No se pudo crear una hipótesis de la rama en Modo Video.');
         createdBySourceId.set(sourceId, String(created?.id || ''));
@@ -6255,7 +6327,12 @@ const CommentsModePage = () => {
                               key={value}
                               type="button"
                               className={`rounded-2xl border px-4 py-3 text-left transition ${active ? 'border-slate-900 bg-slate-900 text-white shadow-lg shadow-slate-200' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'}`}
-                              onClick={() => setHypothesisEvolutionModal((prev) => ({ ...prev, scope: value, error: '' }))}
+                              onClick={() => {
+                                setHypothesisEvolutionModal((prev) => ({ ...prev, scope: value, error: '' }));
+                                if (value === 'branch') {
+                                  hydrateEvolutionBranchDrafts(buildEvolutionBranchHypotheses(activeEvolutionSourceHypothesis, 'branch'));
+                                }
+                              }}
                             >
                               <span className="block text-sm font-semibold">{label}</span>
                               <span className={`mt-1 block text-xs ${active ? 'text-slate-200' : 'text-slate-500'}`}>{description}</span>
@@ -6304,42 +6381,76 @@ const CommentsModePage = () => {
                     ) : null}
 
                     {hypothesisEvolutionModal.destinationMode === 'interviews' ? (
-                      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+                      <div className="space-y-4">
+                        {hypothesisEvolutionModal.scope === 'branch' ? (
+                          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 text-sm text-indigo-900">
+                            Se mostrarán adaptadores individuales para las {evolutionBranchHypotheses.length} hipótesis de la rama completa.
+                          </div>
+                        ) : null}
+                        {(hypothesisEvolutionModal.scope === 'branch' ? evolutionBranchHypotheses : [activeEvolutionSourceHypothesis]).filter(Boolean).map((branchHypothesis, index) => {
+                          const branchId = String(branchHypothesis?.id || '').trim();
+                          const draft = hypothesisEvolutionModal.scope === 'branch'
+                            ? (hypothesisEvolutionInterviewBranchDrafts[branchId] || createEvolutionInterviewDraftForHypothesis(branchHypothesis))
+                            : hypothesisEvolutionInterviewDraft;
+                          const setDraft = (updater) => {
+                            if (hypothesisEvolutionModal.scope === 'branch') {
+                              const nextValue = typeof updater === 'function' ? updater(draft) : updater;
+                              updateInterviewBranchDraft(branchId, nextValue);
+                              return;
+                            }
+                            setHypothesisEvolutionInterviewDraft((prev) => (typeof updater === 'function' ? updater(prev) : updater));
+                          };
+                          return (
+                      <div key={`evolution_interview_${branchId || index}`} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
                         <div>
                           <h4 className="text-sm font-semibold text-slate-900">Adaptador hacia Modo Entrevistas</h4>
                           <p className="mt-1 text-sm text-slate-500">Completa la ficha mínima para que la hipótesis pueda vivir correctamente en el módulo de entrevistas.</p>
+                          <div className="mt-3 grid gap-2 md:grid-cols-3">
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                              <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Hipótesis</span>
+                              <span className="mt-1 block text-sm font-medium text-slate-900">{branchHypothesis?.title || 'Hipótesis comentarios'}</span>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                              <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Tipo</span>
+                              <span className="mt-1 block text-sm font-medium text-slate-900">{commentHypothesisTypeLabel(branchHypothesis?.type)}</span>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                              <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Lugar en la rama</span>
+                              <span className="mt-1 block text-sm font-medium text-slate-900">{describeEvolutionBranchPosition(branchHypothesis)}</span>
+                            </div>
+                          </div>
                         </div>
                         <div className="grid gap-3 md:grid-cols-2">
-                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Título" value={hypothesisEvolutionInterviewDraft.title} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, title: e.target.value }))} />
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.type} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, type: e.target.value }))}>
+                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Título" value={draft.title} onChange={(e) => setDraft((prev) => ({ ...prev, title: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.type} onChange={(e) => setDraft((prev) => ({ ...prev, type: e.target.value }))}>
                             {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_interview_${option.value}`} value={option.value}>{option.label}</option>)}
                           </select>
-                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Descripción" value={hypothesisEvolutionInterviewDraft.description} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, description: e.target.value }))} />
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.status} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, status: e.target.value }))}>
+                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Descripción" value={draft.description} onChange={(e) => setDraft((prev) => ({ ...prev, description: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.status} onChange={(e) => setDraft((prev) => ({ ...prev, status: e.target.value }))}>
                             <option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option>
                           </select>
-                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Segmento" value={hypothesisEvolutionInterviewDraft.segment} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, segment: e.target.value }))} />
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.audience_id} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, audience_id: e.target.value }))}>
+                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Segmento" value={draft.segment} onChange={(e) => setDraft((prev) => ({ ...prev, segment: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.audience_id} onChange={(e) => setDraft((prev) => ({ ...prev, audience_id: e.target.value }))}>
                             <option value="">Audiencia objetivo</option>
                             {hypothesisEvolutionSupport.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}
                           </select>
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.related_client_id} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.related_client_id} onChange={(e) => setDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}>
                             <option value="">Cliente relacionado</option>
                             {hypothesisEvolutionSupport.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
                           </select>
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.interview_form_id} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, interview_form_id: e.target.value }))}>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.interview_form_id} onChange={(e) => setDraft((prev) => ({ ...prev, interview_form_id: e.target.value }))}>
                             <option value="">Formulario asociado</option>
                             {hypothesisEvolutionSupport.forms.map((form) => <option key={form.id} value={form.id}>{form.title}</option>)}
                           </select>
-                          <input className="rounded-xl border px-3 py-2 text-sm" type="number" min="1" placeholder="Min entrevistas" value={hypothesisEvolutionInterviewDraft.min_interviews} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, min_interviews: e.target.value }))} />
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.validation_metric_config.comparison_operator} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, comparison_operator: e.target.value } }))}>
+                          <input className="rounded-xl border px-3 py-2 text-sm" type="number" min="1" placeholder="Min entrevistas" value={draft.min_interviews} onChange={(e) => setDraft((prev) => ({ ...prev, min_interviews: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.validation_metric_config.comparison_operator} onChange={(e) => setDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, comparison_operator: e.target.value } }))}>
                             <option value=">=">Promedio métricas ≥ umbral</option><option value=">">Promedio métricas &gt; umbral</option><option value="<=">Promedio métricas ≤ umbral</option><option value="<">Promedio métricas &lt; umbral</option>
                           </select>
-                          <input className="rounded-xl border px-3 py-2 text-sm" type="number" min="1" max="5" step="0.1" placeholder="Umbral" value={hypothesisEvolutionInterviewDraft.validation_metric_config.threshold_value} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, threshold_value: e.target.value } }))} />
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.validation_metric_config.outcome_if_true} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_true: e.target.value } }))}>
+                          <input className="rounded-xl border px-3 py-2 text-sm" type="number" min="1" max="5" step="0.1" placeholder="Umbral" value={draft.validation_metric_config.threshold_value} onChange={(e) => setDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, threshold_value: e.target.value } }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.validation_metric_config.outcome_if_true} onChange={(e) => setDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_true: e.target.value } }))}>
                             <option value="validada">Si cumple → validada</option><option value="refutada">Si cumple → refutada</option><option value="señal fuerte">Si cumple → señal fuerte</option><option value="señal moderada">Si cumple → señal moderada</option><option value="señal débil">Si cumple → señal débil</option>
                           </select>
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.validation_metric_config.outcome_if_false} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_false: e.target.value } }))}>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={draft.validation_metric_config.outcome_if_false} onChange={(e) => setDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_false: e.target.value } }))}>
                             <option value="refutada">Si no cumple → refutada</option><option value="validada">Si no cumple → validada</option><option value="señal fuerte">Si no cumple → señal fuerte</option><option value="señal moderada">Si no cumple → señal moderada</option><option value="señal débil">Si no cumple → señal débil</option><option value="no evaluada">Si no cumple → no evaluada</option>
                           </select>
                           <div className="md:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -6351,13 +6462,13 @@ const CommentsModePage = () => {
                                 ['problem_frequency_avg', 'Frecuencia del problema'],
                                 ['problem_urgency_avg', 'Urgencia'],
                               ].map(([value, label]) => {
-                                const selected = hypothesisEvolutionInterviewDraft.validation_metric_config.selected_metrics.includes(value);
+                                const selected = draft.validation_metric_config.selected_metrics.includes(value);
                                 return (
                                   <label key={value} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
                                     <input
                                       type="checkbox"
                                       checked={selected}
-                                      onChange={(event) => setHypothesisEvolutionInterviewDraft((prev) => {
+                                      onChange={(event) => setDraft((prev) => {
                                         const current = prev.validation_metric_config.selected_metrics || [];
                                         const next = event.target.checked ? [...new Set([...current, value])] : current.filter((item) => item !== value);
                                         return { ...prev, validation_metric_config: { ...prev.validation_metric_config, selected_metrics: next } };
@@ -6369,52 +6480,92 @@ const CommentsModePage = () => {
                               })}
                             </div>
                           </div>
-                          <textarea className="rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Notas del experimento" value={hypothesisEvolutionInterviewDraft.experiment_notes} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, experiment_notes: e.target.value }))} />
-                          <textarea className="rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Observaciones" value={hypothesisEvolutionInterviewDraft.observations} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, observations: e.target.value }))} />
-                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Próximas acciones" value={hypothesisEvolutionInterviewDraft.next_actions} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, next_actions: e.target.value }))} />
+                          <textarea className="rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Notas del experimento" value={draft.experiment_notes} onChange={(e) => setDraft((prev) => ({ ...prev, experiment_notes: e.target.value }))} />
+                          <textarea className="rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Observaciones" value={draft.observations} onChange={(e) => setDraft((prev) => ({ ...prev, observations: e.target.value }))} />
+                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Próximas acciones" value={draft.next_actions} onChange={(e) => setDraft((prev) => ({ ...prev, next_actions: e.target.value }))} />
                         </div>
+                      </div>
+                          );
+                        })}
                       </div>
                     ) : null}
 
                     {hypothesisEvolutionModal.destinationMode === 'video' ? (
-                      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
-                        <div>
-                          <h4 className="text-sm font-semibold text-slate-900">Adaptador hacia Modo Video</h4>
-                          <p className="mt-1 text-sm text-slate-500">Completa la hipótesis operativa con statement, variable, métrica, umbral, volumen y canal.</p>
-                        </div>
-                        <div className="grid gap-3 md:grid-cols-2">
-                          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Título de la hipótesis a evolucionar</span>
-                            <span className="mt-1 block font-medium text-slate-900">{activeEvolutionSourceHypothesis?.title || 'Hipótesis comentarios'}</span>
+                      <div className="space-y-4">
+                        {hypothesisEvolutionModal.scope === 'branch' ? (
+                          <div className="rounded-2xl border border-indigo-100 bg-indigo-50/60 p-4 text-sm text-indigo-900">
+                            Se mostrarán adaptadores individuales para las {evolutionBranchHypotheses.length} hipótesis de la rama completa.
                           </div>
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.type} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, type: e.target.value }))}>
-                            {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_video_${option.value}`} value={option.value}>{option.label}</option>)}
-                          </select>
-                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Variable X" value={hypothesisEvolutionVideoDraft.variable_x} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, variable_x: e.target.value }))} />
-                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Hypothesis statement (Si X entonces Y)" value={hypothesisEvolutionVideoDraft.hypothesis_statement} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, hypothesis_statement: e.target.value }))} />
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.metrica_objetivo_y} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, metrica_objetivo_y: e.target.value }))}>
-                            <option value="ctr">CTR</option><option value="cpc">CPC</option><option value="clicks">Clicks</option><option value="views">Views</option><option value="likes">Likes</option><option value="comments">Comments</option><option value="shares">Shares</option><option value="retencion_pct">Retention %</option>
-                          </select>
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.canal_principal} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, canal_principal: e.target.value }))}>
-                            <option value="paid">paid</option><option value="organic">organic</option><option value="live">live</option>
-                          </select>
-                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.umbral_operador} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, umbral_operador: e.target.value }))}>
-                            <option value=">=">&gt;=</option><option value=">">&gt;</option><option value="<=">&lt;=</option><option value="<">&lt;</option>
-                          </select>
-                          <div className="grid grid-cols-[1fr,120px] gap-3">
-                            <input className="rounded-xl border px-3 py-2 text-sm" type="number" placeholder="Umbral" value={hypothesisEvolutionVideoDraft.umbral_valor} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, umbral_valor: e.target.value }))} />
-                            <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.umbral_tipo} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, umbral_tipo: e.target.value }))}>
-                              <option value="entero">entero</option><option value="decimal">decimal</option><option value="%">%</option>
-                            </select>
-                          </div>
-                          <div className="grid grid-cols-[1fr,160px] gap-3">
-                            <input className="rounded-xl border px-3 py-2 text-sm" type="number" placeholder="Volumen mínimo" value={hypothesisEvolutionVideoDraft.volumen_minimo} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, volumen_minimo: e.target.value }))} />
-                            <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.volumen_unidad} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, volumen_unidad: e.target.value }))}>
-                              <option value="views">Views</option><option value="clicks">Clicks</option><option value="ctr">CTR</option><option value="cpc">CPC</option><option value="purchase_rate">Purchase Rate</option>
-                            </select>
-                          </div>
-                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Contexto cualitativo" value={hypothesisEvolutionVideoDraft.contexto_cualitativo} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, contexto_cualitativo: e.target.value }))} />
-                        </div>
+                        ) : null}
+                        {(hypothesisEvolutionModal.scope === 'branch' ? evolutionBranchHypotheses : [activeEvolutionSourceHypothesis]).filter(Boolean).map((branchHypothesis, index) => {
+                          const branchId = String(branchHypothesis?.id || '').trim();
+                          const draft = hypothesisEvolutionModal.scope === 'branch'
+                            ? (hypothesisEvolutionVideoBranchDrafts[branchId] || createEvolutionVideoDraftForHypothesis(branchHypothesis))
+                            : hypothesisEvolutionVideoDraft;
+                          const setDraft = (updater) => {
+                            if (hypothesisEvolutionModal.scope === 'branch') {
+                              const nextValue = typeof updater === 'function' ? updater(draft) : updater;
+                              updateVideoBranchDraft(branchId, nextValue);
+                              return;
+                            }
+                            setHypothesisEvolutionVideoDraft((prev) => (typeof updater === 'function' ? updater(prev) : updater));
+                          };
+                          return (
+                            <div key={`evolution_video_${branchId || index}`} className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+                              <div>
+                                <h4 className="text-sm font-semibold text-slate-900">Adaptador hacia Modo Video</h4>
+                                <p className="mt-1 text-sm text-slate-500">Completa la hipótesis operativa con statement, variable, métrica, umbral, volumen y canal.</p>
+                                <div className="mt-3 grid gap-2 md:grid-cols-3">
+                                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                    <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Hipótesis</span>
+                                    <span className="mt-1 block font-medium text-slate-900">{branchHypothesis?.title || 'Hipótesis comentarios'}</span>
+                                  </div>
+                                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                    <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Tipo</span>
+                                    <span className="mt-1 block font-medium text-slate-900">{commentHypothesisTypeLabel(branchHypothesis?.type)}</span>
+                                  </div>
+                                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                                    <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Lugar en la rama</span>
+                                    <span className="mt-1 block font-medium text-slate-900">{describeEvolutionBranchPosition(branchHypothesis)}</span>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="grid gap-3 md:grid-cols-2">
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                                  <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Título de la hipótesis a evolucionar</span>
+                                  <span className="mt-1 block font-medium text-slate-900">{branchHypothesis?.title || 'Hipótesis comentarios'}</span>
+                                </div>
+                                <select className="rounded-xl border px-3 py-2 text-sm" value={draft.type} onChange={(e) => setDraft((prev) => ({ ...prev, type: e.target.value }))}>
+                                  {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_video_${option.value}`} value={option.value}>{option.label}</option>)}
+                                </select>
+                                <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Variable X" value={draft.variable_x} onChange={(e) => setDraft((prev) => ({ ...prev, variable_x: e.target.value }))} />
+                                <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Hypothesis statement (Si X entonces Y)" value={draft.hypothesis_statement} onChange={(e) => setDraft((prev) => ({ ...prev, hypothesis_statement: e.target.value }))} />
+                                <select className="rounded-xl border px-3 py-2 text-sm" value={draft.metrica_objetivo_y} onChange={(e) => setDraft((prev) => ({ ...prev, metrica_objetivo_y: e.target.value }))}>
+                                  <option value="ctr">CTR</option><option value="cpc">CPC</option><option value="clicks">Clicks</option><option value="views">Views</option><option value="likes">Likes</option><option value="comments">Comments</option><option value="shares">Shares</option><option value="retencion_pct">Retention %</option>
+                                </select>
+                                <select className="rounded-xl border px-3 py-2 text-sm" value={draft.canal_principal} onChange={(e) => setDraft((prev) => ({ ...prev, canal_principal: e.target.value }))}>
+                                  <option value="paid">paid</option><option value="organic">organic</option><option value="live">live</option>
+                                </select>
+                                <select className="rounded-xl border px-3 py-2 text-sm" value={draft.umbral_operador} onChange={(e) => setDraft((prev) => ({ ...prev, umbral_operador: e.target.value }))}>
+                                  <option value=">=">&gt;=</option><option value=">">&gt;</option><option value="<=">&lt;=</option><option value="<">&lt;</option>
+                                </select>
+                                <div className="grid grid-cols-[1fr,120px] gap-3">
+                                  <input className="rounded-xl border px-3 py-2 text-sm" type="number" placeholder="Umbral" value={draft.umbral_valor} onChange={(e) => setDraft((prev) => ({ ...prev, umbral_valor: e.target.value }))} />
+                                  <select className="rounded-xl border px-3 py-2 text-sm" value={draft.umbral_tipo} onChange={(e) => setDraft((prev) => ({ ...prev, umbral_tipo: e.target.value }))}>
+                                    <option value="entero">entero</option><option value="decimal">decimal</option><option value="%">%</option>
+                                  </select>
+                                </div>
+                                <div className="grid grid-cols-[1fr,160px] gap-3">
+                                  <input className="rounded-xl border px-3 py-2 text-sm" type="number" placeholder="Volumen mínimo" value={draft.volumen_minimo} onChange={(e) => setDraft((prev) => ({ ...prev, volumen_minimo: e.target.value }))} />
+                                  <select className="rounded-xl border px-3 py-2 text-sm" value={draft.volumen_unidad} onChange={(e) => setDraft((prev) => ({ ...prev, volumen_unidad: e.target.value }))}>
+                                    <option value="views">Views</option><option value="clicks">Clicks</option><option value="ctr">CTR</option><option value="cpc">CPC</option><option value="purchase_rate">Purchase Rate</option>
+                                  </select>
+                                </div>
+                                <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Contexto cualitativo" value={draft.contexto_cualitativo} onChange={(e) => setDraft((prev) => ({ ...prev, contexto_cualitativo: e.target.value }))} />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : null}
 
