@@ -5120,7 +5120,9 @@ function metricFromVideo(video, metric) {
 }
 
 function resolveHypothesisMetricConfig(hypothesis = {}) {
-  const primaryMetric = String(hypothesis.metrica_objetivo_y || 'views').trim();
+  const condition = String(hypothesis.condition || '').trim();
+  const parsedMetric = condition.match(/^\s*([a-zA-Z0-9_ %]+?)\s*(>=|<=|>|<)/);
+  const primaryMetric = String(hypothesis.metrica_objetivo_y || parsedMetric?.[1] || 'views').trim();
   const threshold = Number(hypothesis.umbral_valor ?? 0);
   const directOperator = String(hypothesis.umbral_operador || '').trim();
 
@@ -5128,7 +5130,6 @@ function resolveHypothesisMetricConfig(hypothesis = {}) {
     return { metric: primaryMetric, operator: directOperator, threshold: Number.isFinite(threshold) ? threshold : 0 };
   }
 
-  const condition = String(hypothesis.condition || '');
   const parsed = condition.match(/(>=|<=|>|<)\s*(-?[0-9]+(?:\.[0-9]+)?)/);
   if (parsed) {
     return {
@@ -5141,12 +5142,93 @@ function resolveHypothesisMetricConfig(hypothesis = {}) {
   return { metric: primaryMetric, operator: '>=', threshold: Number.isFinite(threshold) ? threshold : 0 };
 }
 
+function buildEffectiveHypothesisAnalysisConfig(hypothesis = {}, overrides = {}, options = {}) {
+  const baseMetricConfig = resolveHypothesisMetricConfig(hypothesis);
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(overrides || {}, key);
+  const overrideMetric = String(overrides.primary_metric || '').trim();
+  const overrideOperator = String(overrides.threshold_operator || '').trim();
+  const overrideThreshold = Number(overrides.threshold_value);
+  const defaultConfig = {
+    secondary_metrics: Array.isArray(overrides.secondary_metrics) ? overrides.secondary_metrics : [],
+    analysis_unit: String(overrides.analysis_unit || 'video').trim() || 'video',
+    comparison_mode: String(overrides.comparison_mode || 'threshold').trim() || 'threshold',
+    method: String(overrides.method || 'hybrid').trim() || 'hybrid',
+    correction: String(overrides.correction || 'none').trim() || 'none',
+    alpha: Number(overrides.alpha || 0.05),
+    power: Number(overrides.power || 0.8),
+    mde: Number(overrides.mde || 0.1),
+    video_type: String(overrides.video_type || '').trim(),
+    date_from: String(overrides.date_from || '').trim(),
+    date_to: String(overrides.date_to || '').trim(),
+  };
+
+  return {
+    ...defaultConfig,
+    primary_metric: hasOwn('primary_metric') && overrideMetric ? overrideMetric : baseMetricConfig.metric,
+    threshold_operator: hasOwn('threshold_operator') && ['>=', '<=', '>', '<'].includes(overrideOperator) ? overrideOperator : baseMetricConfig.operator,
+    threshold_value: hasOwn('threshold_value') && Number.isFinite(overrideThreshold) ? overrideThreshold : baseMetricConfig.threshold,
+    source_of_truth: options.source_of_truth || 'hypothesis_metric_config',
+  };
+}
+
 function compareAgainstThreshold(value, operator, threshold) {
   if (operator === '>=') return value >= threshold;
   if (operator === '<=') return value <= threshold;
   if (operator === '>') return value > threshold;
   if (operator === '<') return value < threshold;
   return value >= threshold;
+}
+
+function computeOperationalMetricValue(videos = [], metric = '') {
+  const normalizedMetric = String(metric || '').trim().toLowerCase();
+  if (!Array.isArray(videos) || !videos.length) return null;
+
+  if (normalizedMetric === 'ctr') {
+    const clicks = videos.reduce((sum, video) => sum + toNumber(video.clicks), 0);
+    const views = videos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+    return views > 0 ? clicks / views : null;
+  }
+  if (normalizedMetric === 'retencion_pct' || normalizedMetric === 'retention_pct') {
+    const weighted = videos.reduce((sum, video) => sum + (toNumber(video.retencion_pct) * Math.max(toNumber(video.views), 0)), 0);
+    const views = videos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+    return views > 0 ? weighted / views : null;
+  }
+  if (normalizedMetric === 'views_finish_pct') {
+    const weighted = videos.reduce((sum, video) => sum + (toNumber(video.views_finish_pct) * Math.max(toNumber(video.views), 0)), 0);
+    const views = videos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+    return views > 0 ? weighted / views : null;
+  }
+  if (normalizedMetric === 'initiate_checkout_rate') {
+    const numerator = videos.reduce((sum, video) => sum + toNumber(video.initiate_checkouts), 0);
+    const denominator = videos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+    return denominator > 0 ? numerator / denominator : null;
+  }
+  if (normalizedMetric === 'view_content_rate') {
+    const numerator = videos.reduce((sum, video) => sum + toNumber(video.view_content), 0);
+    const denominator = videos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+    return denominator > 0 ? numerator / denominator : null;
+  }
+  if (normalizedMetric === 'lead_rate') {
+    const numerator = videos.reduce((sum, video) => sum + toNumber(video.formulario_lead), 0);
+    const denominator = videos.reduce((sum, video) => sum + Math.max(toNumber(video.views), 0), 0);
+    return denominator > 0 ? numerator / denominator : null;
+  }
+  if (normalizedMetric === 'purchase_rate') {
+    const numerator = videos.reduce((sum, video) => sum + toNumber(video.purchase), 0);
+    const denominator = videos.reduce((sum, video) => sum + Math.max(toNumber(video.view_content), 0), 0);
+    return denominator > 0 ? numerator / denominator : null;
+  }
+  if (normalizedMetric === 'cpc') {
+    const values = videos.map((video) => toNumber(video.cpc)).filter((value) => Number.isFinite(value));
+    return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  }
+
+  const metricFieldMap = {
+    lead_form: 'formulario_lead',
+    new_followers: 'nuevos_seguidores',
+  };
+  const field = metricFieldMap[normalizedMetric] || normalizedMetric;
+  return videos.reduce((sum, video) => sum + toNumber(video[field]), 0);
 }
 
 function computeAudienceMetricValueFromAggregate(metric, aggregateRow = {}) {
@@ -5463,22 +5545,31 @@ function runDataDiagnostics(videos, hypothesis, config) {
   };
 }
 
-function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos }) {
+function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos, config }) {
   const volume = buildVolumeSnapshot(hypothesis, videos);
   const volumeOk = volume.meets_minimum;
   const passesFrequentist = Boolean(frequentist?.passes);
   const bayesStrong = Number(bayesian?.p_improvement_gt_threshold || 0) >= 0.95;
   const cleanEnough = diagnostics.warnings_count <= 2;
-  const validated = volumeOk && cleanEnough && (passesFrequentist || bayesStrong);
-  const inconclusive = !validated && (!volumeOk || videos.length > 0);
+  const operationalMetricValue = computeOperationalMetricValue(videos, config?.primary_metric);
+  const operationalStatus = operationalMetricValue == null
+    ? 'Inconclusa'
+    : compareAgainstThreshold(operationalMetricValue, config?.threshold_operator, Number(config?.threshold_value ?? 0))
+      ? 'Validada'
+      : 'No validada';
   return {
-    status: validated ? 'Validada' : inconclusive ? 'Inconclusa' : 'No validada',
-    summary: validated
-      ? 'La hipótesis supera umbral con evidencia estadística y calidad aceptable.'
-      : inconclusive
-        ? 'La hipótesis aún no alcanza evidencia suficiente o calidad de datos adecuada.'
-        : 'No hay evidencia para validar la hipótesis.',
+    status: operationalStatus,
+    summary: operationalStatus === 'Validada'
+      ? 'La hipótesis cumple su métrica objetivo y supera el umbral operativo configurado.'
+      : operationalStatus === 'No validada'
+        ? 'La hipótesis no cumple su métrica objetivo contra el umbral operativo configurado.'
+        : 'No hay datos suficientes para calcular la validación operativa automática.',
     confidence: {
+      operational_metric: config?.primary_metric || '',
+      operational_metric_value: operationalMetricValue,
+      operational_operator: config?.threshold_operator || '>=',
+      operational_threshold: Number(config?.threshold_value ?? 0),
+      operational_pass: operationalStatus === 'Validada',
       frequentist_pass: passesFrequentist,
       bayesian_probability: Number(bayesian?.p_improvement_gt_threshold || 0),
       volume_ok: volumeOk,
@@ -5486,10 +5577,11 @@ function buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos }
       volume_minimum: volume.minimum,
       volume_unit: volume.unit,
       warnings: diagnostics.warnings_count,
+      statistical_support: volumeOk && cleanEnough && (passesFrequentist || bayesStrong),
     },
-    recommendation: validated
+    recommendation: operationalStatus === 'Validada'
       ? 'Escalar'
-      : volumeOk
+      : operationalStatus === 'No validada'
         ? 'Iterar creativos / cambiar variable X'
         : 'Recolectar más muestra',
   };
@@ -5685,7 +5777,7 @@ async function runHypothesisAnalysis(hypothesis, videos, config) {
     can_stop: bayesian.p_improvement_gt_threshold > 0.95 || bayesian.p_improvement_gt_threshold < 0.10,
     risk_note: 'Riesgo de falso positivo controlado por regla bayesiana de stopping.',
   };
-  const verdict = buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos });
+  const verdict = buildVerdict({ frequentist, bayesian, diagnostics, hypothesis, videos, config });
   return { frequentist, bayesian, sequential, diagnostics, verdict, volume };
 }
 
@@ -10039,18 +10131,25 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       }
 
       const hypothesisId = analysisDataMatch[1];
-      const config = {
+      const filters = {
         video_type: url.searchParams.get('video_type') || '',
         date_from: url.searchParams.get('date_from') || '',
         date_to: url.searchParams.get('date_to') || '',
       };
-      const breakdownConfig = {
-        primary_metric: url.searchParams.get('primary_metric') || (url.searchParams.get('metric') || 'ctr'),
-        threshold_operator: url.searchParams.get('threshold_operator') || '>=',
-        threshold_value: Number(url.searchParams.get('threshold_value') || 0),
-      };
+      const hypothesis = await fetchOwnedHypothesisById(hypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+      const breakdownConfig = buildEffectiveHypothesisAnalysisConfig(hypothesis, {
+        ...(url.searchParams.has('primary_metric') ? { primary_metric: url.searchParams.get('primary_metric') } : {}),
+        ...(url.searchParams.has('metric') ? { primary_metric: url.searchParams.get('metric') } : {}),
+        ...(url.searchParams.has('threshold_operator') ? { threshold_operator: url.searchParams.get('threshold_operator') } : {}),
+        ...(url.searchParams.has('threshold_value') ? { threshold_value: Number(url.searchParams.get('threshold_value')) } : {}),
+        ...filters,
+      }, { source_of_truth: 'hypothesis_metric_config' });
 
-      const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
+      const { videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, filters);
       const volume = buildVolumeSnapshot(hypothesis, videos);
       const audienceBreakdown = await buildHypothesisAudienceBreakdown({
         videos,
@@ -10063,7 +10162,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         'SELECT id, hypothesis_id, created_at, config_json, results_json, dataset_hash FROM hypothesis_analysis_runs WHERE hypothesis_id = ? ORDER BY created_at DESC LIMIT 15',
         [hypothesisId],
       );
-      sendJson(req, res, 200, { hypothesis, videos, runs, volume, audience_breakdown: audienceBreakdown, breakdown_config: breakdownConfig });
+      sendJson(req, res, 200, { hypothesis, videos, runs, volume, audience_breakdown: audienceBreakdown, breakdown_config: breakdownConfig, effective_config: breakdownConfig });
       return;
     }
 
@@ -10236,24 +10335,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
 
       const hypothesisId = analyzeMatch[1];
       const body = await readBody(req);
-      const config = {
-        primary_metric: body.primary_metric || 'ctr',
-        secondary_metrics: Array.isArray(body.secondary_metrics) ? body.secondary_metrics : [],
-        analysis_unit: body.analysis_unit || 'video',
-        comparison_mode: body.comparison_mode || 'threshold',
-        method: body.method || 'hybrid',
-        correction: body.correction || 'none',
-        alpha: Number(body.alpha || 0.05),
-        power: Number(body.power || 0.8),
-        mde: Number(body.mde || 0.1),
-        threshold_operator: body.threshold_operator || '>=',
-        threshold_value: Number(body.threshold_value ?? 0),
-        video_type: body.video_type || '',
-        date_from: body.date_from || '',
-        date_to: body.date_to || '',
-      };
+      const hypothesis = await fetchOwnedHypothesisById(hypothesisId, user.id);
+      if (!hypothesis) {
+        sendJson(req, res, 404, { error: 'Hypothesis not found' });
+        return;
+      }
+      const config = buildEffectiveHypothesisAnalysisConfig(hypothesis, body, { source_of_truth: 'hypothesis_metric_config' });
 
-      const { hypothesis, videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
+      const { videos } = await loadHypothesisAnalysisContext(hypothesisId, user.id, config);
       const results = await runHypothesisAnalysis(hypothesis, videos, config);
       const datasetHash = crypto.createHash('sha256').update(videos.map((video) => video.id).sort().join('|')).digest('hex');
       const runId = uuid();
