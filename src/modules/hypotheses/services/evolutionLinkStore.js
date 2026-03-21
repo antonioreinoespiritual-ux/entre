@@ -1,7 +1,7 @@
 import { loadCommentsModeStore, saveCommentsModeStore } from '../../comments/services/commentsModeStore.js';
 
-const buildLegacyStorageKey = (projectId = '', campaignId = '') => `comments-mode:${projectId}:${campaignId}`;
-const buildStoragePrefix = (projectId = '', campaignId = '') => `${buildLegacyStorageKey(projectId, campaignId)}`;
+export const buildCrossModeSyncStorageKey = (projectId = '', campaignId = '') => `comments-mode:${projectId}:${campaignId}`;
+const buildStoragePrefix = (projectId = '', campaignId = '') => `${buildCrossModeSyncStorageKey(projectId, campaignId)}`;
 
 const readLocalStorageStore = (storageKey = '') => {
   if (!storageKey || typeof window === 'undefined') return null;

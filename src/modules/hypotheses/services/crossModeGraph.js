@@ -1,5 +1,4 @@
 import { supabase } from '../../../lib/customSupabaseClient.js';
-import { listCrossModeSyncStores } from './evolutionLinkStore.js';
 import {
   MODE_COMMENTS,
   MODE_VIDEO,
@@ -11,8 +10,18 @@ import {
   getValidationStateFromNode,
   normalizeId,
 } from './crossModeGraphCore.js';
+import {
+  loadCrossModeIdentityRegistry,
+  attachIdentityToGraphNodes,
+  connectEquivalentNodesFromIdentityRegistry,
+} from './crossModeIdentityStore.js';
 
 export * from './crossModeGraphCore.js';
+export {
+  resolveConceptualHypothesisIdentity,
+  listIdentityNodes,
+  areHypothesesConceptuallyEquivalent,
+} from './crossModeIdentityStore.js';
 
 const extractJsonMetadataBlock = (value = '', tag = '') => {
   const match = String(value || '').match(new RegExp(`\\[${tag}\\]([\\s\\S]*?)\\[\\/${tag}\\]`));
@@ -52,13 +61,6 @@ const registerModeNode = (graph, mode, row) => {
 
 const loadUnifiedCrossModeGraph = async ({ projectId = '', campaignId = '' } = {}) => {
   const graph = createUnifiedGraph();
-  const syncStores = await listCrossModeSyncStores({ projectId, campaignId });
-
-  syncStores.forEach(({ storageKey, store }) => {
-    const hypotheses = Array.isArray(store?.hypotheses) ? store.hypotheses : [];
-    ensureModeStoreEntry(graph, MODE_COMMENTS, storageKey, store);
-    hypotheses.forEach((hypothesis) => registerCommentNode(graph, storageKey, hypothesis));
-  });
 
   const { data: videoRows, error: videoError } = await supabase
     .from('hypotheses')
@@ -74,22 +76,21 @@ const loadUnifiedCrossModeGraph = async ({ projectId = '', campaignId = '' } = {
   if (interviewError) throw interviewError;
   (interviewRows || []).forEach((row) => registerModeNode(graph, MODE_INTERVIEWS, row));
 
-  syncStores.forEach(({ storageKey, store }) => {
-    const links = Array.isArray(store?.hypothesisEvolutionLinks) ? store.hypothesisEvolutionLinks.filter((link) => !link?.deleted_at) : [];
-    const commentsStoreEntry = ensureModeStoreEntry(graph, MODE_COMMENTS, storageKey, store);
-    links.forEach((link) => {
-      const sourceId = normalizeId(link?.source_hypothesis_id);
-      const destinationMode = normalizeId(link?.destination_mode);
-      const destinationId = normalizeId(link?.destination_hypothesis_id);
-      if (!sourceId || !destinationMode || !destinationId) return;
-      const sourceKey = buildNodeKey(MODE_COMMENTS, sourceId);
-      const destinationKey = buildNodeKey(destinationMode, destinationId);
-      if (!graph.nodes.has(sourceKey) && commentsStoreEntry?.hypotheses?.has(sourceId)) {
-        registerCommentNode(graph, storageKey, commentsStoreEntry.hypotheses.get(sourceId));
-      }
-      addEquivalentEdge(graph, sourceKey, destinationKey);
-    });
+  const identityRegistry = await loadCrossModeIdentityRegistry({
+    projectId,
+    campaignId,
+    videoRows,
+    interviewRows,
   });
+
+  identityRegistry.syncStores.forEach(({ storageKey, store }) => {
+    const hypotheses = Array.isArray(store?.hypotheses) ? store.hypotheses : [];
+    ensureModeStoreEntry(graph, MODE_COMMENTS, storageKey, store);
+    hypotheses.forEach((hypothesis) => registerCommentNode(graph, storageKey, hypothesis));
+  });
+
+  attachIdentityToGraphNodes(graph, identityRegistry);
+  connectEquivalentNodesFromIdentityRegistry(graph, addEquivalentEdge);
 
   graph.modeStores.forEach(({ mode, hypotheses }) => {
     if (mode !== MODE_COMMENTS) return;
