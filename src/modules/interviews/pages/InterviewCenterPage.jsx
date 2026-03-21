@@ -83,6 +83,7 @@ const validationToneByResult = {
   'señal fuerte': 'border-sky-200 bg-sky-50 text-sky-700',
   validada: 'border-emerald-200 bg-emerald-50 text-emerald-700',
   refutada: 'border-rose-200 bg-rose-50 text-rose-700',
+  invalidada: 'border-rose-200 bg-rose-50 text-rose-700',
 };
 
 const hypothesisMetricOptions = [

@@ -38,7 +38,7 @@ const listCandidateStorageKeys = (projectId = '', campaignId = '') => {
   return [...keys];
 };
 
-const loadStoreByKey = async (storageKey = '') => {
+export const loadEvolutionStoreByKey = async (storageKey = '') => {
   const localValue = readLocalStorageStore(storageKey);
   if (localValue && typeof localValue === 'object') return localValue;
   try {
@@ -48,7 +48,7 @@ const loadStoreByKey = async (storageKey = '') => {
   }
 };
 
-const persistStoreByKey = async (storageKey = '', payload = null) => {
+export const persistEvolutionStoreByKey = async (storageKey = '', payload = null) => {
   if (!storageKey || !payload || typeof payload !== 'object') return;
   writeLocalStorageStore(storageKey, payload);
   try {
@@ -66,9 +66,10 @@ export const listEvolutionLinksByDestination = async ({ projectId = '', campaign
   const matches = [];
   const storageKeys = listCandidateStorageKeys(projectId, campaignId);
   for (const storageKey of storageKeys) {
-    const store = await loadStoreByKey(storageKey);
+    const store = await loadEvolutionStoreByKey(storageKey);
     const links = Array.isArray(store?.hypothesisEvolutionLinks) ? store.hypothesisEvolutionLinks : [];
     links.forEach((link, index) => {
+      if (link?.deleted_at) return;
       if (String(link?.destination_mode || '').trim() !== normalizedMode) return;
       if (String(link?.destination_hypothesis_id || '').trim() !== normalizedDestinationId) return;
       matches.push({ storageKey, store, index, link });
@@ -85,7 +86,7 @@ export const markHypothesisEvolutionLinksDeleted = async ({ projectId = '', camp
   const storageKeys = listCandidateStorageKeys(projectId, campaignId);
   const updatedLinks = [];
   for (const storageKey of storageKeys) {
-    const store = await loadStoreByKey(storageKey);
+    const store = await loadEvolutionStoreByKey(storageKey);
     if (!store || typeof store !== 'object') continue;
     const links = Array.isArray(store.hypothesisEvolutionLinks) ? store.hypothesisEvolutionLinks : [];
     let touched = false;
@@ -106,7 +107,7 @@ export const markHypothesisEvolutionLinksDeleted = async ({ projectId = '', camp
       return nextLink;
     });
     if (!touched) continue;
-    await persistStoreByKey(storageKey, { ...store, hypothesisEvolutionLinks: nextLinks });
+    await persistEvolutionStoreByKey(storageKey, { ...store, hypothesisEvolutionLinks: nextLinks });
   }
   return updatedLinks;
 };
@@ -118,7 +119,7 @@ export const listActiveEvolutionLinksForDestinationMode = async ({ projectId = '
   const matches = [];
   const storageKeys = listCandidateStorageKeys(projectId, campaignId);
   for (const storageKey of storageKeys) {
-    const store = await loadStoreByKey(storageKey);
+    const store = await loadEvolutionStoreByKey(storageKey);
     const links = Array.isArray(store?.hypothesisEvolutionLinks) ? store.hypothesisEvolutionLinks : [];
     links.forEach((link, index) => {
       if (link?.deleted_at) return;
