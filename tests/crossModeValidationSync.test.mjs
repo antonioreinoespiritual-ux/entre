@@ -4,14 +4,14 @@ import fs from 'node:fs';
 
 function loadGraphUtils() {
   const source = fs.readFileSync(new URL('../src/modules/hypotheses/services/crossModeValidationSync.js', import.meta.url), 'utf8');
-  const start = source.indexOf("const MODE_COMMENTS =");
+  const start = source.indexOf("const VALIDATION_STATE_VALID =");
   const end = source.indexOf("const updateCommentsStatus = async");
   if (start === -1 || end === -1 || end <= start) {
     throw new Error('Could not locate graph utility block in crossModeValidationSync.js');
   }
 
   const utilityBlock = source.slice(start, end);
-  const factory = new Function(`${utilityBlock}\nreturn { buildNodeKey, createUnifiedGraph, addEquivalentEdge, addChildEdge, getEquivalentClosureAcrossModes, getDescendantsAcrossUnifiedGraph, groupAffectedIdsByMode };`);
+  const factory = new Function(`${utilityBlock}\nreturn { buildNodeKey, createUnifiedGraph, addEquivalentEdge, addChildEdge, getEquivalentClosureAcrossModes, getDescendantsAcrossUnifiedGraph, groupAffectedIdsByMode, normalizeValidationState, toCommentsValidationState, toVideoValidationState, toInterviewValidationState, getValidationStateFromNode };`);
   return factory();
 }
 
@@ -23,6 +23,11 @@ const {
   getEquivalentClosureAcrossModes,
   getDescendantsAcrossUnifiedGraph,
   groupAffectedIdsByMode,
+  normalizeValidationState,
+  toCommentsValidationState,
+  toVideoValidationState,
+  toInterviewValidationState,
+  getValidationStateFromNode,
 } = loadGraphUtils();
 
 function createGraphFixture() {
@@ -118,4 +123,17 @@ test('invalidating an intermediate video node does not affect ancestors', () => 
   assert.deepEqual(grouped.video, new Set(['video-mid', 'video-leaf']));
   assert.deepEqual(grouped.comments, new Set(['comment-mid', 'comment-leaf']));
   assert.deepEqual(grouped.interviews, new Set(['interview-mid', 'interview-leaf']));
+});
+
+
+test('canonical validation-state helpers normalize and adapt states per mode', () => {
+  assert.equal(normalizeValidationState('Validada'), 'validada');
+  assert.equal(normalizeValidationState('No validada'), 'invalidada');
+  assert.equal(normalizeValidationState('no evaluada'), 'inconclusa');
+  assert.equal(toCommentsValidationState('Inconclusa'), 'pendiente');
+  assert.equal(toVideoValidationState('invalidada'), 'No validada');
+  assert.equal(toInterviewValidationState('inconclusa'), 'no evaluada');
+  assert.equal(getValidationStateFromNode('comments', { hypothesis: { validation_status: 'validada' } }), 'validada');
+  assert.equal(getValidationStateFromNode('video', { row: { validation_status: 'No validada' } }), 'invalidada');
+  assert.equal(getValidationStateFromNode('interviews', { row: { validation_result: 'no evaluada' } }), 'inconclusa');
 });
