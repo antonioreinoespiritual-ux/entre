@@ -1,4 +1,4 @@
-import { loadCommentsModeStore, saveCommentsModeStore } from '../../comments/services/commentsModeStore.js';
+import { listCommentsModeStores, loadCommentsModeStore, migrateLocalCommentsModeStoreToBackend, saveCommentsModeStore } from '../../comments/services/commentsModeStore.js';
 
 export const buildCrossModeSyncStorageKey = (projectId = '', campaignId = '') => `comments-mode:${projectId}:${campaignId}`;
 const buildStoragePrefix = (projectId = '', campaignId = '') => `${buildCrossModeSyncStorageKey(projectId, campaignId)}`;
@@ -40,24 +40,50 @@ const listCandidateStorageKeys = (projectId = '', campaignId = '') => {
 
 export const listCrossModeSyncStores = async ({ projectId = '', campaignId = '' } = {}) => {
   if (!projectId || !campaignId) return [];
+
+  const storesByKey = new Map();
+  try {
+    const backendStores = await listCommentsModeStores({ projectId, campaignId });
+    backendStores.forEach((entry) => {
+      const storageKey = String(entry?.storage_key || entry?.storageKey || '').trim();
+      const store = entry?.payload || entry?.store || null;
+      if (!storageKey || !store || typeof store !== 'object') return;
+      storesByKey.set(storageKey, { storageKey, store });
+    });
+  } catch {
+    // fallback to local discovery below
+  }
+
   const storageKeys = listCandidateStorageKeys(projectId, campaignId);
-  const stores = [];
   for (const storageKey of storageKeys) {
+    if (storesByKey.has(storageKey)) continue;
     const store = await loadCrossModeSyncStoreByKey(storageKey);
     if (!store || typeof store !== 'object') continue;
-    stores.push({ storageKey, store });
+    storesByKey.set(storageKey, { storageKey, store });
   }
-  return stores;
+
+  return [...storesByKey.values()];
 };
 
 export const loadCrossModeSyncStoreByKey = async (storageKey = '') => {
-  const localValue = readLocalStorageStore(storageKey);
-  if (localValue && typeof localValue === 'object') return localValue;
   try {
-    return await loadCommentsModeStore(storageKey);
+    const backendValue = await loadCommentsModeStore(storageKey);
+    if (backendValue && typeof backendValue === 'object') return backendValue;
   } catch {
-    return null;
+    // fallback below
   }
+
+  const localValue = readLocalStorageStore(storageKey);
+  if (localValue && typeof localValue === 'object') {
+    try {
+      await migrateLocalCommentsModeStoreToBackend(storageKey);
+    } catch {
+      // noop
+    }
+    return localValue;
+  }
+
+  return null;
 };
 
 export const persistCrossModeSyncStoreByKey = async (storageKey = '', payload = null) => {

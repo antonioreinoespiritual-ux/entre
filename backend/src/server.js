@@ -41,7 +41,7 @@ const corsOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigins.join(','))
   .map((item) => item.trim())
   .filter(Boolean);
 const sessions = new Map();
-const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos', 'interview_hypotheses', 'users']);
+const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos', 'interview_hypotheses', 'users', 'comment_mode_states', 'comment_mode_hypotheses', 'comment_mode_hypothesis_profiles', 'comment_mode_evolution_links']);
 const storageRoot = path.resolve('backend/storage');
 
 const schemaSql = [
@@ -512,6 +512,80 @@ const schemaSql = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)',
   'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_states (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, storage_key)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_states_scope ON comment_mode_states(user_id, project_id, campaign_id, workspace_id, updated_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_hypotheses (
+    id TEXT PRIMARY KEY,
+    hypothesis_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    lineage_id TEXT,
+    parent_hypothesis_id TEXT,
+    validation_status TEXT DEFAULT 'inconclusa',
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, workspace_id, hypothesis_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_hypotheses_scope ON comment_mode_hypotheses(user_id, project_id, campaign_id, workspace_id, updated_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_hypothesis_profiles (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    hypothesis_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, workspace_id, hypothesis_id, profile_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_hypothesis_profiles_scope ON comment_mode_hypothesis_profiles(user_id, project_id, campaign_id, workspace_id, hypothesis_id)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_evolution_links (
+    id TEXT PRIMARY KEY,
+    link_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    source_hypothesis_id TEXT NOT NULL,
+    destination_mode TEXT NOT NULL,
+    destination_hypothesis_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    deleted_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, workspace_id, link_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_evolution_links_scope ON comment_mode_evolution_links(user_id, project_id, campaign_id, workspace_id, source_hypothesis_id)',
   `CREATE TABLE IF NOT EXISTS comment_code_proposal_reviews (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -676,6 +750,188 @@ async function resolveCommentWorkspace(userId, projectId, campaignId, requestedW
   const fallback = fallbackRows[0] || null;
   if (!fallback) throw new Error('Workspace no encontrado para esta campaña.');
   return fallback;
+}
+
+function parseCommentModeStorageKey(storageKey = '') {
+  const normalized = String(storageKey || '').trim();
+  const parts = normalized.split(':');
+  if (parts[0] !== 'comments-mode' || parts.length < 3) throw new Error('storageKey inválido para Comments Mode.');
+  const projectId = String(parts[1] || '').trim();
+  const campaignId = String(parts[2] || '').trim();
+  let workspaceId = COMMENT_WORKSPACE_LEGACY;
+  if (parts[3] === 'workspace') workspaceId = String(parts[4] || '').trim() || COMMENT_WORKSPACE_LEGACY;
+  return { storageKey: normalized, projectId, campaignId, workspaceId };
+}
+
+function normalizeCommentModeStructuralPayload(payload = {}) {
+  const safe = payload && typeof payload === 'object' ? payload : {};
+  return {
+    fragments: Array.isArray(safe.fragments) ? safe.fragments : [],
+    codes: Array.isArray(safe.codes) ? safe.codes : [],
+    codeProposals: Array.isArray(safe.codeProposals) ? safe.codeProposals : [],
+    hypotheses: Array.isArray(safe.hypotheses) ? safe.hypotheses : [],
+    hypothesisEvolutionLinks: Array.isArray(safe.hypothesisEvolutionLinks) ? safe.hypothesisEvolutionLinks : [],
+    hypothesisCrossModeIdentities: Array.isArray(safe.hypothesisCrossModeIdentities) ? safe.hypothesisCrossModeIdentities : [],
+    hypothesisTopology: Array.isArray(safe.hypothesisTopology) ? safe.hypothesisTopology : [],
+    codeMapLayoutsByHypothesis: safe.codeMapLayoutsByHypothesis && typeof safe.codeMapLayoutsByHypothesis === 'object' ? safe.codeMapLayoutsByHypothesis : {},
+    codeMapAnalysisSessions: safe.codeMapAnalysisSessions && typeof safe.codeMapAnalysisSessions === 'object' ? safe.codeMapAnalysisSessions : {},
+    codeMapVisualProfilesByScope: safe.codeMapVisualProfilesByScope && typeof safe.codeMapVisualProfilesByScope === 'object' ? safe.codeMapVisualProfilesByScope : {},
+    hypothesisMapLayout: safe.hypothesisMapLayout && typeof safe.hypothesisMapLayout === 'object' ? safe.hypothesisMapLayout : {},
+  };
+}
+
+function createCommentLineageIndex(payload = {}) {
+  const lineageByCommentId = new Map();
+  const identities = Array.isArray(payload?.hypothesisCrossModeIdentities) ? payload.hypothesisCrossModeIdentities : [];
+  identities.forEach((identity) => {
+    const identityId = String(identity?.identity_id || identity?.identityId || '').trim();
+    const nodes = Array.isArray(identity?.nodes) ? identity.nodes : [];
+    if (!identityId) return;
+    nodes.forEach((node) => {
+      if (String(node?.mode || '').trim() !== HYPOTHESIS_MODES.COMMENTS) return;
+      const hypothesisId = String(node?.hypothesis_id || node?.hypothesisId || '').trim();
+      if (hypothesisId) lineageByCommentId.set(hypothesisId, identityId);
+    });
+  });
+  return lineageByCommentId;
+}
+
+async function ensureCommentWorkspaceRecord(userId, projectId, campaignId, workspaceId = '') {
+  const requested = String(workspaceId || '').trim() || COMMENT_WORKSPACE_LEGACY;
+  if (requested !== COMMENT_WORKSPACE_LEGACY) return resolveCommentWorkspace(userId, projectId, campaignId, requested);
+
+  const [rows] = await pool.query(
+    `SELECT * FROM comment_workspaces WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [COMMENT_WORKSPACE_LEGACY, userId, projectId, campaignId],
+  );
+  if (rows[0]) return rows[0];
+
+  const now = nowIso();
+  await pool.query(
+    `INSERT INTO comment_workspaces (id, user_id, project_id, campaign_id, name, description, status, is_migrated, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)`,
+    [COMMENT_WORKSPACE_LEGACY, userId, projectId, campaignId, 'Workspace legacy', 'Workspace estructural migrado automáticamente para Comments Mode.', now, now],
+  );
+  const [createdRows] = await pool.query(
+    `SELECT * FROM comment_workspaces WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [COMMENT_WORKSPACE_LEGACY, userId, projectId, campaignId],
+  );
+  return createdRows[0] || null;
+}
+
+async function persistCommentModeStructuralState(userId, storageKey, payload = {}) {
+  const parsedKey = parseCommentModeStorageKey(storageKey);
+  const [campaignRows] = await pool.query(
+    'SELECT * FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+    [parsedKey.campaignId, parsedKey.projectId, userId],
+  );
+  const campaign = campaignRows[0] || null;
+  if (!campaign) throw new Error('Campaign not found');
+
+  const workspace = await ensureCommentWorkspaceRecord(userId, parsedKey.projectId, parsedKey.campaignId, parsedKey.workspaceId);
+  const normalizedPayload = normalizeCommentModeStructuralPayload(payload);
+  const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
+  const now = nowIso();
+
+  await pool.query('BEGIN IMMEDIATE');
+  try {
+    const [existingRows] = await pool.query(
+      'SELECT id, created_at FROM comment_mode_states WHERE user_id = ? AND storage_key = ? LIMIT 1',
+      [userId, parsedKey.storageKey],
+    );
+    const stateId = existingRows[0]?.id || buildEntityId('comment_workspace', 'cms_');
+    const createdAt = existingRows[0]?.created_at || now;
+    await pool.query(
+      `INSERT INTO comment_mode_states (id, user_id, project_id, campaign_id, workspace_id, storage_key, payload_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, storage_key) DO UPDATE SET
+         project_id = excluded.project_id,
+         campaign_id = excluded.campaign_id,
+         workspace_id = excluded.workspace_id,
+         payload_json = excluded.payload_json,
+         updated_at = excluded.updated_at`,
+      [stateId, userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, JSON.stringify(normalizedPayload), createdAt, now],
+    );
+
+    await pool.query('DELETE FROM comment_mode_hypothesis_profiles WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await pool.query('DELETE FROM comment_mode_evolution_links WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await pool.query('DELETE FROM comment_mode_hypotheses WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+
+    for (const hypothesis of normalizedPayload.hypotheses) {
+      const hypothesisId = String(hypothesis?.id || '').trim();
+      if (!hypothesisId) continue;
+      await pool.query(
+        `INSERT INTO comment_mode_hypotheses (id, hypothesis_id, user_id, project_id, campaign_id, workspace_id, storage_key, lineage_id, parent_hypothesis_id, validation_status, payload_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          buildEntityId('comment_hypothesis', 'cmh_'),
+          hypothesisId,
+          userId,
+          parsedKey.projectId,
+          parsedKey.campaignId,
+          String(workspace?.id || parsedKey.workspaceId),
+          parsedKey.storageKey,
+          lineageByCommentId.get(hypothesisId) || null,
+          String(hypothesis?.parent_hypothesis_id || '').trim() || null,
+          String(hypothesis?.validation_status || HYPOTHESIS_STATE.INCONCLUSIVE).trim() || HYPOTHESIS_STATE.INCONCLUSIVE,
+          JSON.stringify(hypothesis),
+          now,
+          now,
+        ],
+      );
+
+      const linkedProfileIds = Array.isArray(hypothesis?.linked_profile_ids) ? hypothesis.linked_profile_ids : [];
+      for (const profileId of linkedProfileIds.map((value) => String(value || '').trim()).filter(Boolean)) {
+        await pool.query(
+          `INSERT OR IGNORE INTO comment_mode_hypothesis_profiles (id, user_id, project_id, campaign_id, workspace_id, storage_key, hypothesis_id, profile_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [buildEntityId('comment_workspace', 'cmp_'), userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, hypothesisId, profileId, now, now],
+        );
+      }
+    }
+
+    for (const link of normalizedPayload.hypothesisEvolutionLinks) {
+      const linkId = String(link?.id || `${link?.source_hypothesis_id || ''}:${link?.destination_mode || ''}:${link?.destination_hypothesis_id || ''}`).trim();
+      if (!linkId) continue;
+      await pool.query(
+        `INSERT INTO comment_mode_evolution_links (id, link_id, user_id, project_id, campaign_id, workspace_id, storage_key, source_hypothesis_id, destination_mode, destination_hypothesis_id, payload_json, deleted_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          buildEntityId('comment_workspace', 'cml_'),
+          linkId,
+          userId,
+          parsedKey.projectId,
+          parsedKey.campaignId,
+          String(workspace?.id || parsedKey.workspaceId),
+          parsedKey.storageKey,
+          String(link?.source_hypothesis_id || '').trim(),
+          String(link?.destination_mode || '').trim(),
+          String(link?.destination_hypothesis_id || '').trim(),
+          JSON.stringify(link),
+          String(link?.deleted_at || '').trim() || null,
+          now,
+          now,
+        ],
+      );
+    }
+
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
+
+  return normalizedPayload;
+}
+
+async function readCommentModeStructuralState(userId, storageKey) {
+  const parsedKey = parseCommentModeStorageKey(storageKey);
+  const [rows] = await pool.query(
+    `SELECT * FROM comment_mode_states WHERE user_id = ? AND storage_key = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [userId, parsedKey.storageKey, parsedKey.projectId, parsedKey.campaignId],
+  );
+  const row = rows[0] || null;
+  return row ? normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {})) : null;
 }
 
 function autoExternalIdForVideo(videoType, videoId) {
@@ -7297,6 +7553,49 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
     }
 
 
+
+    if (url.pathname === '/api/comment-mode/state' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const storageKey = String(url.searchParams.get('storageKey') || '').trim();
+      if (!storageKey) return sendJson(req, res, 400, { error: 'storageKey is required' });
+      const payload = await readCommentModeStructuralState(user.id, storageKey);
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload } });
+    }
+
+    if (url.pathname === '/api/comment-mode/states' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+      const [campaignRows] = await pool.query('SELECT * FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1', [campaignId, projectId, user.id]);
+      if (!campaignRows[0]) return sendJson(req, res, 404, { error: 'Campaign not found' });
+      const [rows] = await pool.query(
+        `SELECT storage_key, workspace_id, payload_json, updated_at FROM comment_mode_states WHERE user_id = ? AND project_id = ? AND campaign_id = ? ORDER BY updated_at DESC`,
+        [user.id, projectId, campaignId],
+      );
+      return sendJson(req, res, 200, {
+        data: {
+          items: rows.map((row) => ({
+            storage_key: row.storage_key,
+            workspace_id: row.workspace_id,
+            updated_at: row.updated_at,
+            payload: normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {})),
+          })),
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-mode/state' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const storageKey = String(body.storageKey || '').trim();
+      if (!storageKey) return sendJson(req, res, 400, { error: 'storageKey is required' });
+      const payload = await persistCommentModeStructuralState(user.id, storageKey, body.payload || {});
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload } });
+    }
 
     if (url.pathname === '/api/comment-base/workspaces' && req.method === 'GET') {
       const user = authFromRequest(req);
