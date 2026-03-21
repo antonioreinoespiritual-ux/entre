@@ -118,6 +118,17 @@ export const saveCommentsModeStore = async (storageKey, payload) => {
   });
 };
 
+export const updateCommentHypothesisManualState = async ({ storageKey = '', hypothesisId = '', nextState = '' } = {}) => {
+  if (!storageKey || !hypothesisId) throw new Error('storageKey y hypothesisId son obligatorios.');
+  const response = await requestBackend('/api/comment-mode/hypotheses/manual-state', {
+    method: 'POST',
+    body: JSON.stringify({ storageKey, hypothesisId, nextState }),
+  });
+  const payload = response?.data?.payload || null;
+  if (payload) await writeCachedCommentsModeStore(storageKey, payload);
+  return response?.data || null;
+};
+
 export const migrateLocalCommentsModeStoreToBackend = async (storageKey) => {
   const cached = await readCachedCommentsModeStore(storageKey);
   if (!cached) return null;

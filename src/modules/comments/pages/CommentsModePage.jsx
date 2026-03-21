@@ -5,11 +5,10 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
-import { loadCommentsModeStore, saveCommentsModeStore } from '@/modules/comments/services/commentsModeStore';
+import { loadCommentsModeStore, saveCommentsModeStore, updateCommentHypothesisManualState } from '@/modules/comments/services/commentsModeStore';
 import { markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
-import { syncCrossModeHypothesisStateTransition } from '@/modules/hypotheses/services/crossModeValidationSync';
 
 const defaultCodeEditor = {
   mode: 'create',
@@ -452,6 +451,7 @@ const CommentsModePage = () => {
   const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
   const [hypothesisQuery, setHypothesisQuery] = useState('');
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [manualStatePickerHypothesisId, setManualStatePickerHypothesisId] = useState('');
   const [hypothesisEvolutionModal, setHypothesisEvolutionModal] = useState({
     open: false,
     saving: false,
@@ -3801,6 +3801,18 @@ const CommentsModePage = () => {
     return descendants;
   };
 
+  const getManualStateChangeBlockReason = useCallback((hypothesisId = '') => {
+    const normalizedId = String(hypothesisId || '').trim();
+    if (!normalizedId) return 'No se pudo identificar la hipótesis.';
+    const branchIds = new Set([normalizedId, ...collectDescendantHypothesisIds(normalizedId)]);
+    const hasActiveEvolution = [...branchIds].some((branchId) => {
+      const links = evolutionLinksBySourceId.get(String(branchId)) || [];
+      return links.some((link) => !link?.deleted_at);
+    });
+    if (!hasActiveEvolution) return '';
+    return 'No se puede cambiar manualmente el estado porque la hipótesis o algún nodo de su rama ya tiene evoluciones activas en otros modos.';
+  }, [collectDescendantHypothesisIds, evolutionLinksBySourceId]);
+
   const findInvalidAncestorForHypothesis = (hypothesisId = '', excludedAncestorIds = new Set()) => {
     let current = hypothesisById.get(String(hypothesisId || '').trim());
     while (current) {
@@ -3827,6 +3839,12 @@ const CommentsModePage = () => {
     const targetHypothesis = hypothesisById.get(normalizedId);
     if (!targetHypothesis) return;
 
+    const blockedReason = getManualStateChangeBlockReason(normalizedId);
+    if (blockedReason) {
+      window.alert(blockedReason);
+      return;
+    }
+
     if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID) {
       const invalidAncestor = findInvalidAncestorForHypothesis(normalizedId);
       if (invalidAncestor) {
@@ -3835,28 +3853,15 @@ const CommentsModePage = () => {
       }
     }
 
-    if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
-      const confirmed = window.confirm(
-        '¿Invalidar esta hipótesis? La sincronización nueva invalidará el nodo, sus equivalentes directos y toda la rama descendente cross-mode.',
-      );
-      if (!confirmed) return;
-    }
-    await syncCrossModeHypothesisStateTransition({
-      projectId,
-      campaignId,
-      mode: 'comments',
+    await updateCommentHypothesisManualState({
+      storageKey,
       hypothesisId: normalizedId,
-      previousState: targetHypothesis.validation_status || '',
       nextState: normalizedStatus,
-      origin: 'comments_manual_update',
     });
 
     const nextStore = await loadCommentsModeStore(storageKey);
-    if (nextStore && typeof nextStore === 'object') {
-      setStore(nextStore);
-    } else {
-      setStore(loadCommentsStoreFromLocalStorage(storageKey));
-    }
+    setStore(nextStore && typeof nextStore === 'object' ? nextStore : loadCommentsStoreFromLocalStorage(storageKey));
+    setManualStatePickerHypothesisId('');
     setHypothesisMenuId('');
   };
 
@@ -5954,6 +5959,8 @@ const CommentsModePage = () => {
                     const parentHypothesis = hypothesisById.get(String(hypothesis.parent_hypothesis_id || '')) || null;
                     const childHypotheses = childHypothesesByParentId.get(String(hypothesis.id)) || [];
                     const evolutions = evolutionLinksBySourceId.get(String(hypothesis.id)) || [];
+                    const manualStateChangeBlockedReason = getManualStateChangeBlockReason(hypothesis.id);
+                    const manualStateChangeAllowed = !manualStateChangeBlockedReason;
                     return (
                       <article key={hypothesis.id} className={`relative rounded-xl border bg-white p-4 shadow-sm ${validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? 'border-rose-200 bg-rose-50/30' : 'border-slate-200'}`}>
                         <div className="flex items-start justify-between gap-2">
@@ -5968,8 +5975,26 @@ const CommentsModePage = () => {
                             {hypothesisMenuId === String(hypothesis.id) ? (
                               <div className="absolute right-0 top-9 z-40 w-44 rounded-lg border bg-white p-1.5 shadow-lg">
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEditor(hypothesis)}>Editar</button>
-                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-emerald-700 hover:bg-emerald-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID)}>Marcar validada</button>
-                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID)}>Invalidar rama</button>
+                                <button
+                                  type="button"
+                                  className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${manualStateChangeAllowed ? 'hover:bg-slate-100 text-slate-700' : 'cursor-not-allowed text-slate-400 bg-slate-50'}`}
+                                  onClick={() => {
+                                    if (!manualStateChangeAllowed) return;
+                                    setManualStatePickerHypothesisId((prev) => (prev === String(hypothesis.id) ? '' : String(hypothesis.id)));
+                                  }}
+                                  disabled={!manualStateChangeAllowed}
+                                  title={manualStateChangeBlockedReason || 'Cambiar estado manualmente'}
+                                >
+                                  Cambiar estado
+                                </button>
+                                {manualStatePickerHypothesisId === String(hypothesis.id) ? (
+                                  <div className="mt-1 space-y-1 border-t pt-1">
+                                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-emerald-700 hover:bg-emerald-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID)}>Marcar validada</button>
+                                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID)}>Marcar invalidada</button>
+                                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-amber-700 hover:bg-amber-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.PENDING)}>Marcar inconclusa</button>
+                                  </div>
+                                ) : null}
+                                {!manualStateChangeAllowed ? <p className="mt-1 rounded-md bg-slate-50 px-2 py-1 text-[11px] leading-4 text-slate-500">{manualStateChangeBlockedReason}</p> : null}
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionModal(hypothesis)}>Evolucionar hipótesis</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionDeleteModal(hypothesis)} disabled={!evolutions.length}>Eliminar evoluciones</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => deleteHypothesis(hypothesis.id)}>Eliminar</button>

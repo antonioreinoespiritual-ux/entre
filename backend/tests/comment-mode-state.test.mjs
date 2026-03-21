@@ -247,3 +247,80 @@ test('comment mode state absorbs legacy payload aliases and reconstructs explici
     server.kill('SIGTERM');
   }
 });
+
+test('manual comment-mode state changes are blocked by active evolutions in the descendant branch and allowed when only deleted links remain', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-comment-mode-manual-state-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4115;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: String(port), SQLITE_PATH: dbPath }, stdio: 'pipe' });
+
+  try {
+    await waitForHealth(baseUrl);
+    const token = await createSession(baseUrl);
+    const { projectId, campaignId } = await setupEntities(baseUrl, token);
+
+    const workspaceRes = await fetch(`${baseUrl}/api/comment-base/workspaces`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, campaign_id: campaignId, name: 'Manual State Workspace', description: '', status: 'active' }),
+    });
+    const workspaceJson = await workspaceRes.json();
+    const workspaceId = workspaceJson?.data?.id;
+    assert.ok(workspaceId);
+
+    const storageKey = `comments-mode:${projectId}:${campaignId}:workspace:${workspaceId}`;
+    const initialPayload = {
+      hypotheses: [
+        { id: 'root', title: 'Raíz', validation_status: 'inconclusa' },
+        { id: 'child', title: 'Hija', parent_hypothesis_id: 'root', validation_status: 'inconclusa' },
+      ],
+      hypothesisEvolutionLinks: [
+        { id: 'active-link', source_hypothesis_id: 'child', destination_mode: 'video', destination_hypothesis_id: 'video-child' },
+      ],
+    };
+
+    const saveRes = await fetch(`${baseUrl}/api/comment-mode/state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storageKey, payload: initialPayload }),
+    });
+    assert.equal(saveRes.status, 200);
+
+    const blockedRes = await fetch(`${baseUrl}/api/comment-mode/hypotheses/manual-state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storageKey, hypothesisId: 'root', nextState: 'validada' }),
+    });
+    assert.equal(blockedRes.status, 409);
+    const blockedJson = await blockedRes.json();
+    assert.match(String(blockedJson?.error || ''), /rama/i);
+
+    const saveDeletedLinkRes = await fetch(`${baseUrl}/api/comment-mode/state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storageKey,
+        payload: {
+          ...initialPayload,
+          hypothesisEvolutionLinks: [
+            { id: 'deleted-link', source_hypothesis_id: 'child', destination_mode: 'video', destination_hypothesis_id: 'video-child', deleted_at: new Date().toISOString() },
+          ],
+        },
+      }),
+    });
+    assert.equal(saveDeletedLinkRes.status, 200);
+
+    const allowedRes = await fetch(`${baseUrl}/api/comment-mode/hypotheses/manual-state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storageKey, hypothesisId: 'root', nextState: 'validada' }),
+    });
+    assert.equal(allowedRes.status, 200);
+    const allowedJson = await allowedRes.json();
+    assert.equal(allowedJson?.data?.payload?.hypotheses?.find((item) => item.id === 'root')?.validation_status, 'validada');
+    assert.equal(allowedJson?.data?.payload?.hypotheses?.find((item) => item.id === 'child')?.validation_status, 'inconclusa');
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

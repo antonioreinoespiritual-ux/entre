@@ -803,6 +803,71 @@ function createCommentLineageIndex(payload = {}) {
   return lineageByCommentId;
 }
 
+function collectCommentBranchHypothesisIds(payload = {}, hypothesisId = '') {
+  const normalizedRootId = String(hypothesisId || '').trim();
+  if (!normalizedRootId) return new Set();
+  const hypotheses = Array.isArray(payload?.hypotheses) ? payload.hypotheses : [];
+  const childrenByParentId = new Map();
+  hypotheses.forEach((hypothesis) => {
+    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
+    const childId = String(hypothesis?.id || '').trim();
+    if (!parentId || !childId) return;
+    const current = childrenByParentId.get(parentId) || [];
+    current.push(childId);
+    childrenByParentId.set(parentId, current);
+  });
+
+  const branchIds = new Set([normalizedRootId]);
+  const pending = [normalizedRootId];
+  while (pending.length) {
+    const currentId = pending.pop();
+    const childIds = childrenByParentId.get(currentId) || [];
+    childIds.forEach((childId) => {
+      if (branchIds.has(childId)) return;
+      branchIds.add(childId);
+      pending.push(childId);
+    });
+  }
+  return branchIds;
+}
+
+function getCommentManualStateChangeBlockReason(payload = {}, hypothesisId = '') {
+  const branchIds = collectCommentBranchHypothesisIds(payload, hypothesisId);
+  if (!branchIds.size) return 'La hipótesis no existe dentro del workspace actual.';
+  const evolutionLinks = Array.isArray(payload?.hypothesisEvolutionLinks) ? payload.hypothesisEvolutionLinks : [];
+  const hasActiveEvolution = evolutionLinks.some((link) => {
+    if (String(link?.deleted_at || '').trim()) return false;
+    return branchIds.has(String(link?.source_hypothesis_id || '').trim());
+  });
+  if (!hasActiveEvolution) return '';
+  return 'No se puede cambiar manualmente el estado porque la hipótesis o algún nodo de su rama ya tiene evoluciones activas en otros modos.';
+}
+
+function applyManualCommentHypothesisStateChange(payload = {}, hypothesisId = '', nextState = '') {
+  const normalizedHypothesisId = String(hypothesisId || '').trim();
+  const normalizedNextState = normalizeHypothesisState(nextState);
+  const hypotheses = Array.isArray(payload?.hypotheses) ? payload.hypotheses : [];
+  const timestamp = nowIso();
+  let found = false;
+  const nextHypotheses = hypotheses.map((hypothesis) => {
+    if (String(hypothesis?.id || '').trim() !== normalizedHypothesisId) return hypothesis;
+    found = true;
+    const nextHypothesis = {
+      ...hypothesis,
+      validation_status: normalizedNextState,
+      updated_at: timestamp,
+    };
+    delete nextHypothesis.invalidated_at;
+    delete nextHypothesis.invalidated_from_hypothesis_id;
+    return nextHypothesis;
+  });
+  if (!found) throw new Error('Hypothesis not found in comment mode state.');
+  return {
+    ...payload,
+    hypotheses: nextHypotheses,
+  };
+}
+
 async function rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey) {
   const [hypothesisRows] = await pool.query(
     `SELECT payload_json FROM comment_mode_hypotheses
@@ -7629,6 +7694,35 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       if (!storageKey) return sendJson(req, res, 400, { error: 'storageKey is required' });
       const payload = await persistCommentModeStructuralState(user.id, storageKey, body.payload || {});
       return sendJson(req, res, 200, { data: { storage_key: storageKey, payload } });
+    }
+
+    if (url.pathname === '/api/comment-mode/hypotheses/manual-state' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const storageKey = String(body.storageKey || '').trim();
+      const hypothesisId = String(body.hypothesisId || '').trim();
+      const nextState = normalizeHypothesisState(body.nextState || body.validation_status || body.hypothesis_state);
+      if (!storageKey || !hypothesisId) return sendJson(req, res, 400, { error: 'storageKey and hypothesisId are required' });
+
+      const payload = await readCommentModeStructuralState(user.id, storageKey);
+      if (!payload) return sendJson(req, res, 404, { error: 'Comment mode state not found for the requested workspace.' });
+
+      const blockedReason = getCommentManualStateChangeBlockReason(payload, hypothesisId);
+      if (blockedReason) {
+        return sendJson(req, res, 409, { error: blockedReason, code: 'comment_manual_state_blocked_by_active_evolution' });
+      }
+
+      const nextPayload = applyManualCommentHypothesisStateChange(payload, hypothesisId, nextState);
+      const savedPayload = await persistCommentModeStructuralState(user.id, storageKey, nextPayload);
+      return sendJson(req, res, 200, {
+        data: {
+          storage_key: storageKey,
+          hypothesis_id: hypothesisId,
+          validation_status: nextState,
+          payload: savedPayload,
+        },
+      });
     }
 
     if (url.pathname === '/api/comment-base/workspaces' && req.method === 'GET') {
