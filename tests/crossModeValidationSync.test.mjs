@@ -6,13 +6,13 @@ import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypot
 function loadGraphUtils() {
   const source = fs.readFileSync(new URL('../src/modules/hypotheses/services/crossModeValidationSync.js', import.meta.url), 'utf8');
   const start = source.indexOf("const VALIDATION_STATE_VALID =");
-  const end = source.indexOf("const updateCommentsStatus = async");
+  const end = source.indexOf("const rebuildCommentsStatusFromVideo = async");
   if (start === -1 || end === -1 || end <= start) {
     throw new Error('Could not locate graph utility block in crossModeValidationSync.js');
   }
 
   const utilityBlock = source.slice(start, end);
-  const factory = new Function('HYPOTHESIS_MODES', 'HYPOTHESIS_STATE', 'buildModeStatePatch', 'normalizeHypothesisState', 'readHypothesisStateForMode', `${utilityBlock}\nreturn { buildNodeKey, createUnifiedGraph, addEquivalentEdge, addChildEdge, getEquivalentClosureAcrossModes, getDescendantsAcrossUnifiedGraph, groupAffectedIdsByMode, normalizeValidationState, toCommentsValidationState, toVideoValidationState, toInterviewValidationState, getValidationStateFromNode, shouldSyncVideoStateTransition };`);
+  const factory = new Function('HYPOTHESIS_MODES', 'HYPOTHESIS_STATE', 'buildModeStatePatch', 'normalizeHypothesisState', 'readHypothesisStateForMode', `${utilityBlock}\nreturn { buildNodeKey, createUnifiedGraph, addEquivalentEdge, addChildEdge, getEquivalentClosureAcrossModes, getDescendantsAcrossUnifiedGraph, groupAffectedIdsByMode, normalizeValidationState, toCommentsValidationState, toVideoValidationState, toInterviewValidationState, getValidationStateFromNode, shouldSyncVideoStateTransition, buildCommentsStateRebuildPlanFromVideoGraph };`);
   return factory(HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypothesisState, readHypothesisStateForMode);
 }
 
@@ -30,6 +30,7 @@ const {
   toInterviewValidationState,
   getValidationStateFromNode,
   shouldSyncVideoStateTransition,
+  buildCommentsStateRebuildPlanFromVideoGraph,
 } = loadGraphUtils();
 
 function createGraphFixture() {
@@ -191,4 +192,26 @@ test('video sync only runs when the canonical state actually changes to a syncab
   assert.equal(shouldSyncVideoStateTransition({ previousState: 'validada', nextState: 'Validada' }), false);
   assert.equal(shouldSyncVideoStateTransition({ previousState: 'inconclusa', nextState: 'invalidada' }), true);
   assert.equal(shouldSyncVideoStateTransition({ previousState: 'No validada', nextState: 'inconclusa' }), false);
+});
+
+
+test('comments states are rebuilt from video states and old comment validation metadata is ignored', () => {
+  const { graph, commentRoot, videoRoot, interviewRoot, commentChild, videoChild, interviewChild } = createGraphFixture();
+  graph.nodes.set(videoRoot, { mode: 'video', id: 'video-root', validationState: 'validada' });
+  graph.nodes.set(videoChild, { mode: 'video', id: 'video-child', validationState: 'No validada' });
+  graph.nodes.set(commentRoot, { mode: 'comments', id: 'comment-root', hypothesis: { validation_status: 'refutada' } });
+  graph.nodes.set(commentChild, { mode: 'comments', id: 'comment-child', hypothesis: { validation_status: 'validada' } });
+  graph.nodes.set(interviewRoot, { mode: 'interviews', id: 'interview-root', row: { validation_result: 'inconclusa' } });
+  graph.nodes.set(interviewChild, { mode: 'interviews', id: 'interview-child', row: { validation_result: 'inconclusa' } });
+  graph.commentsStores.set('comments-mode:test', {
+    store: { hypotheses: [] },
+    hypotheses: new Map([
+      ['comment-root', { id: 'comment-root', validation_status: 'invalidada' }],
+      ['comment-child', { id: 'comment-child', validation_status: 'validada' }],
+    ]),
+  });
+
+  const rebuilt = buildCommentsStateRebuildPlanFromVideoGraph(graph);
+  assert.equal(rebuilt.get('comment-root'), 'validada');
+  assert.equal(rebuilt.get('comment-child'), 'invalidada');
 });

@@ -204,12 +204,51 @@ const shouldSyncVideoStateTransition = ({ previousState = '', nextState = '' } =
   return normalizedPrevious !== normalizedNext;
 };
 
-const updateCommentsStatus = async ({ graph, affectedCommentIds = [], nextState = '', originHypothesisId = '' }) => {
-  const targetIds = new Set((affectedCommentIds || []).map(normalizeId).filter(Boolean));
-  if (!targetIds.size) return [];
+const COMMENT_STATE_PRIORITY = {
+  [VALIDATION_STATE_INVALID]: 3,
+  [VALIDATION_STATE_VALID]: 2,
+  [VALIDATION_STATE_INCONCLUSIVE]: 1,
+};
 
+const assignCommentStateWithPriority = (stateByCommentId, commentId = '', nextState = '') => {
+  const normalizedCommentId = normalizeId(commentId);
+  if (!normalizedCommentId) return;
+  const normalizedNextState = normalizeValidationState(nextState);
+  const currentState = stateByCommentId.get(normalizedCommentId) || VALIDATION_STATE_INCONCLUSIVE;
+  if ((COMMENT_STATE_PRIORITY[normalizedNextState] || 0) >= (COMMENT_STATE_PRIORITY[currentState] || 0)) {
+    stateByCommentId.set(normalizedCommentId, normalizedNextState);
+  }
+};
+
+const buildCommentsStateRebuildPlanFromVideoGraph = (graph) => {
+  const stateByCommentId = new Map();
+  graph.commentsStores.forEach(({ hypotheses }) => {
+    hypotheses.forEach((_, hypothesisId) => {
+      stateByCommentId.set(normalizeId(hypothesisId), VALIDATION_STATE_INCONCLUSIVE);
+    });
+  });
+
+  graph.nodes.forEach((node) => {
+    if (node?.mode !== MODE_VIDEO) return;
+    const videoState = normalizeValidationState(node?.validationState);
+    if (videoState === VALIDATION_STATE_INCONCLUSIVE) return;
+
+    const rootSet = getEquivalentClosureAcrossModes(graph, node.id, MODE_VIDEO);
+    const affectedNodeKeys = videoState === VALIDATION_STATE_INVALID
+      ? getDescendantsAcrossUnifiedGraph(graph, [...rootSet])
+      : rootSet;
+    const affectedIdsByMode = groupAffectedIdsByMode([...affectedNodeKeys]);
+    [...affectedIdsByMode[MODE_COMMENTS]].forEach((commentId) => {
+      assignCommentStateWithPriority(stateByCommentId, commentId, videoState);
+    });
+  });
+
+  return stateByCommentId;
+};
+
+const rebuildCommentsStatusFromVideo = async ({ graph }) => {
   const timestamp = new Date().toISOString();
-  const normalizedOriginId = normalizeId(originHypothesisId);
+  const targetStates = buildCommentsStateRebuildPlanFromVideoGraph(graph);
   const updatedIds = [];
 
   for (const [storageKey, entry] of graph.commentsStores.entries()) {
@@ -220,26 +259,21 @@ const updateCommentsStatus = async ({ graph, affectedCommentIds = [], nextState 
     let touched = false;
     const nextHypotheses = hypotheses.map((item) => {
       const itemId = normalizeId(item?.id);
-      if (!targetIds.has(itemId)) return item;
-      touched = true;
-      updatedIds.push(itemId);
-      if (normalizeValidationState(nextState) === VALIDATION_STATE_VALID) {
-        const nextItem = {
-          ...item,
-          validation_status: toCommentsValidationState(nextState),
-          updated_at: timestamp,
-        };
-        delete nextItem.invalidated_at;
-        delete nextItem.invalidated_from_hypothesis_id;
-        return nextItem;
-      }
-      return {
+      const nextState = targetStates.get(itemId) || VALIDATION_STATE_INCONCLUSIVE;
+      const nextItem = {
         ...item,
         validation_status: toCommentsValidationState(nextState),
-        updated_at: timestamp,
-        invalidated_at: timestamp,
-        invalidated_from_hypothesis_id: normalizedOriginId || itemId,
       };
+      delete nextItem.invalidated_at;
+      delete nextItem.invalidated_from_hypothesis_id;
+
+      const currentState = normalizeValidationState(item?.validation_status);
+      if (currentState !== nextState) {
+        touched = true;
+        updatedIds.push(itemId);
+        nextItem.updated_at = timestamp;
+      }
+      return nextItem;
     });
 
     if (!touched) continue;
@@ -311,16 +345,18 @@ export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '',
     : rootSet;
 
   const affectedIdsByMode = groupAffectedIdsByMode([...affectedNodeKeys]);
-  const updatedCommentIds = await updateCommentsStatus({
-    graph,
-    affectedCommentIds: [...affectedIdsByMode[MODE_COMMENTS]],
-    nextState,
-    originHypothesisId: normalizedVideoId,
-  });
   const updatedVideoIds = await updateVideoStatuses({
     affectedVideoIds: [...affectedIdsByMode[MODE_VIDEO]],
     nextState,
   });
+  [...affectedIdsByMode[MODE_VIDEO]].forEach((videoId) => {
+    const nodeKey = buildNodeKey(MODE_VIDEO, videoId);
+    const currentNode = graph.nodes.get(nodeKey);
+    if (!currentNode) return;
+    graph.nodes.set(nodeKey, { ...currentNode, validationState: nextState });
+  });
+
+  const updatedCommentIds = await rebuildCommentsStatusFromVideo({ graph });
   const updatedInterviewIds = await updateInterviewStatuses({
     affectedInterviewIds: [...affectedIdsByMode[MODE_INTERVIEWS]],
     nextState,
@@ -351,4 +387,5 @@ export const __crossModeValidationSyncTestUtils = {
   toInterviewValidationState,
   getValidationStateFromNode,
   shouldSyncVideoStateTransition,
+  buildCommentsStateRebuildPlanFromVideoGraph,
 };
