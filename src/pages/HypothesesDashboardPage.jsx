@@ -5,7 +5,6 @@ import { ArrowLeft, Brain, Edit, Lightbulb, MoreHorizontal, Network, Plus, Save,
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
-import { syncVideoHypothesisStateTransition } from '@/modules/hypotheses/services/crossModeValidationSync';
 import HypothesisMapModal from '@/components/hypotheses/HypothesisMapModal';
 
 const initialForm = {
@@ -434,16 +433,8 @@ const HypothesesDashboardPage = () => {
     if (!editingHypothesisId) return;
     const payload = buildPayload(editForm, { editingId: editingHypothesisId });
     if (!payload) { window.alert('La hipótesis debe respetar la cadena problema → segmento → mensajes → solucion → producto.'); return; }
-    const previousHypothesis = hypothesisById.get(String(editingHypothesisId)) || null;
     const result = await updateHypothesis(editingHypothesisId, payload);
     if (result) {
-      await syncVideoHypothesisStateTransition({
-        projectId,
-        campaignId,
-        videoHypothesisId: editingHypothesisId,
-        previousVideoStatus: previousHypothesis?.validation_status || previousHypothesis?.hypothesis_state || '',
-        nextVideoStatus: result?.validation_status || result?.hypothesis_state || payload?.validation_status || '',
-      });
       cancelEdit();
     }
   };
