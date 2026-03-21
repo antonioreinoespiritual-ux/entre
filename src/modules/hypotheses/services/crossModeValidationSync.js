@@ -7,8 +7,6 @@ import {
   createUnifiedGraph,
   addEquivalentEdge,
   addChildEdge,
-  getEquivalentClosureAcrossModes,
-  getDescendantsAcrossUnifiedGraph,
   groupAffectedIdsByMode,
   normalizeValidationState,
   toCommentsValidationState,
@@ -19,6 +17,7 @@ import {
   normalizeId,
   loadUnifiedCrossModeGraph,
 } from './crossModeGraph.js';
+import { createResolverContextFromGraph, resolveCrossModeBranchNodeKeys, resolveEquivalentNodeKeys } from './crossModeBranchResolver.js';
 import { updateCommentStatuses, updateInterviewStatuses, updateVideoStatuses } from './crossModeStateRepository.js';
 
 export const syncVideoHypothesisStateTransition = async ({
@@ -47,10 +46,10 @@ export const syncVideoHypothesisValidationAcrossModes = async ({ projectId = '',
   if (nextState === VALIDATION_STATE_INCONCLUSIVE) return { synced: false, skipped: true, reason: 'inconclusive_target_state' };
 
   const graph = await loadUnifiedCrossModeGraph({ projectId, campaignId });
-  const rootSet = getEquivalentClosureAcrossModes(graph, normalizedVideoId, MODE_VIDEO);
+  const resolverContext = createResolverContextFromGraph(graph);
   const affectedNodeKeys = nextState === VALIDATION_STATE_INVALID
-    ? getDescendantsAcrossUnifiedGraph(graph, [...rootSet])
-    : rootSet;
+    ? resolveCrossModeBranchNodeKeys(resolverContext, { mode: MODE_VIDEO, hypothesisId: normalizedVideoId }, { includeRoot: true })
+    : resolveEquivalentNodeKeys(resolverContext, { mode: MODE_VIDEO, hypothesisId: normalizedVideoId }, { includeSelf: true });
 
   const affectedIdsByMode = groupAffectedIdsByMode([...affectedNodeKeys]);
   const updatedVideoIds = await updateVideoStatuses({
@@ -89,8 +88,6 @@ export const __crossModeValidationSyncTestUtils = {
   createUnifiedGraph,
   addEquivalentEdge,
   addChildEdge,
-  getEquivalentClosureAcrossModes,
-  getDescendantsAcrossUnifiedGraph,
   groupAffectedIdsByMode,
   normalizeValidationState,
   toCommentsValidationState,
