@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit, RotateCcw, PanelsTopLeft } from 'lucide-react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
