@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowLeft, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
+import { syncVideoHypothesisValidationAcrossModes } from '@/modules/hypotheses/services/crossModeValidationSync';
 
 const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
@@ -63,6 +64,11 @@ const HypothesisAdvancedAnalysisPage = () => {
   const [results, setResults] = useState(null);
   const [volume, setVolume] = useState(null);
   const [audienceBreakdown, setAudienceBreakdown] = useState([]);
+  const [configHydrated, setConfigHydrated] = useState(false);
+
+  useEffect(() => {
+    setConfigHydrated(false);
+  }, [hypothesisId]);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -72,9 +78,6 @@ const HypothesisAdvancedAnalysisPage = () => {
       if (config.video_type) query.set('video_type', config.video_type);
       if (config.date_from) query.set('date_from', config.date_from);
       if (config.date_to) query.set('date_to', config.date_to);
-      if (config.primary_metric) query.set('primary_metric', config.primary_metric);
-      if (config.threshold_operator) query.set('threshold_operator', config.threshold_operator);
-      query.set('threshold_value', String(Number(config.threshold_value || 0)));
       const suffix = query.toString() ? `?${query.toString()}` : '';
       const data = await apiRequest(`/api/hypotheses/${hypothesisId}/analysis-data${suffix}`, { method: 'GET' });
       setHypothesis(data.hypothesis);
@@ -87,12 +90,26 @@ const HypothesisAdvancedAnalysisPage = () => {
         hypothesisId,
       }));
       setAudienceBreakdown(data.audience_breakdown || []);
+      if (!configHydrated) {
+        const effectiveConfig = data.effective_config || {};
+        setConfig((prev) => ({
+          ...prev,
+          primary_metric: effectiveConfig.primary_metric || data.hypothesis?.metrica_objetivo_y || prev.primary_metric || defaultConfig.primary_metric,
+          threshold_operator: effectiveConfig.threshold_operator || data.hypothesis?.umbral_operador || prev.threshold_operator || defaultConfig.threshold_operator,
+          threshold_value: Number.isFinite(Number(effectiveConfig.threshold_value))
+            ? Number(effectiveConfig.threshold_value)
+            : Number.isFinite(Number(data.hypothesis?.umbral_valor))
+              ? Number(data.hypothesis.umbral_valor)
+              : prev.threshold_value,
+        }));
+        setConfigHydrated(true);
+      }
     } catch (loadError) {
       setError(loadError.message);
     } finally {
       setLoading(false);
     }
-  }, [hypothesisId, config.video_type, config.date_from, config.date_to, config.primary_metric, config.threshold_operator, config.threshold_value]);
+  }, [hypothesisId, config.video_type, config.date_from, config.date_to, configHydrated]);
 
   useEffect(() => {
     loadData();
@@ -115,6 +132,12 @@ const HypothesisAdvancedAnalysisPage = () => {
       });
       setResults(response.results);
       setVolume(response.volume || null);
+      await syncVideoHypothesisValidationAcrossModes({
+        projectId,
+        campaignId,
+        videoHypothesisId: hypothesisId,
+        nextVideoStatus: response?.results?.verdict?.status || '',
+      });
       await loadData();
     } catch (runError) {
       setError(runError.message);

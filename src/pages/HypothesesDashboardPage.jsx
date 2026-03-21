@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Brain, Edit, Lightbulb, MoreHorizontal, Plus, Save, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Brain, Edit, Lightbulb, MoreHorizontal, Network, Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
+import HypothesisMapModal from '@/components/hypotheses/HypothesisMapModal';
 
 const initialForm = {
   title: '',
@@ -222,6 +223,7 @@ const HypothesesDashboardPage = () => {
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
+  const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
 
   useEffect(() => {
     fetchHypotheses(campaignId);
@@ -438,6 +440,7 @@ const HypothesesDashboardPage = () => {
   };
 
   return (
+    <>
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-6">
       <Helmet><title>Hypotheses Dashboard</title></Helmet>
       <div className="max-w-6xl mx-auto">
@@ -451,7 +454,10 @@ const HypothesesDashboardPage = () => {
         <div className="bg-white rounded-2xl shadow-xl p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-purple-600" />Hipótesis</h2>
-            <Button className="bg-purple-600 text-white" onClick={() => { setShowForm((v) => !v); cancelEdit(); }}><Plus className="w-4 h-4 mr-2" />Crear hipótesis</Button>
+            <div className="flex items-center gap-2">
+              <Button className="bg-white border text-slate-700" onClick={() => setHypothesisMapOpen(true)}><Network className="w-4 h-4 mr-2" />Mapa de hipótesis</Button>
+              <Button className="bg-purple-600 text-white" onClick={() => { setShowForm((v) => !v); cancelEdit(); }}><Plus className="w-4 h-4 mr-2" />Crear hipótesis</Button>
+            </div>
           </div>
 
           {showForm && (
@@ -571,6 +577,33 @@ const HypothesesDashboardPage = () => {
           )}
         </div>
       </div>
+
+        <HypothesisMapModal
+          open={hypothesisMapOpen}
+          onClose={() => setHypothesisMapOpen(false)}
+          title="Mapa de hipótesis"
+          description="Vista de grafo para la jerarquía de hipótesis del Modo Video."
+          hypotheses={sortedHypotheses}
+          getHypothesisId={(hypothesis) => String(hypothesis?.id || '').trim()}
+          getHypothesisTitle={(hypothesis) => getHypothesisDisplayTitle(hypothesis) || 'Hipótesis sin título'}
+          getParentId={(hypothesis) => getParentHypothesisId(hypothesis)}
+          getType={(hypothesis) => normalizeHypothesisType(hypothesis?.type)}
+          getTypeLabel={(value) => hypothesisTypeLabel(value)}
+          getFilterOptions={(items) => items.filter((hypothesis) => hypothesis.type === 'problema')}
+          getStatus={(hypothesis) => getHypothesisRawStatus(hypothesis)}
+          getStatusStyle={(hypothesis, status) => {
+            const validated = isValidatedStatus(status);
+            return {
+              label: status ? (validated ? 'VALIDADA' : 'NO VALIDADA') : 'SIN ESTADO',
+              color: validated ? '#047857' : '#be123c',
+              backgroundColor: validated ? '#d1fae5' : '#ffe4e6',
+            };
+          }}
+          getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: ${childHypotheses.length}`}
+          emptyStateText="No hay hipótesis para los filtros aplicados."
+          emptyWorkspaceText="No hay hipótesis en Modo Video todavía."
+        />
+
         <div className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 ${deleteEvolutionModal.open ? '' : 'pointer-events-none hidden'}`}>
           <div className="w-full max-w-lg rounded-2xl border bg-white p-6 shadow-2xl">
             <h3 className="text-lg font-semibold text-slate-900">Eliminar evolución</h3>
@@ -591,6 +624,7 @@ const HypothesesDashboardPage = () => {
           </div>
         </div>
     </div>
+    </>
   );
 };
 
