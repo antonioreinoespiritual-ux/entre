@@ -15,6 +15,11 @@ import {
   attachIdentityToGraphNodes,
   connectEquivalentNodesFromIdentityRegistry,
 } from './crossModeIdentityStore.js';
+import {
+  loadCrossModeTopologyRegistry,
+  attachTopologyToGraph,
+  connectParentChildTopologyToGraph,
+} from './crossModeTopologyStore.js';
 
 export * from './crossModeGraphCore.js';
 export {
@@ -22,19 +27,11 @@ export {
   listIdentityNodes,
   areHypothesesConceptuallyEquivalent,
 } from './crossModeIdentityStore.js';
-
-const extractJsonMetadataBlock = (value = '', tag = '') => {
-  const match = String(value || '').match(new RegExp(`\\[${tag}\\]([\\s\\S]*?)\\[\\/${tag}\\]`));
-  if (!match) return {};
-  try {
-    return JSON.parse(match[1]) || {};
-  } catch {
-    return {};
-  }
-};
-
-const extractVideoParentHypothesisId = (hypothesis = {}) => normalizeId(extractJsonMetadataBlock(hypothesis?.contexto_cualitativo || '', 'hierarchy_meta')?.parent_hypothesis_id);
-const extractInterviewParentHypothesisId = (hypothesis = {}) => normalizeId(extractJsonMetadataBlock(hypothesis?.observations || '', 'interview_hierarchy')?.parent_hypothesis_id);
+export {
+  resolveStructuralParent,
+  listStructuralChildren,
+  listStructuralDescendants,
+} from './crossModeTopologyStore.js';
 
 const ensureModeStoreEntry = (graph, mode, storageKey, store = null) => {
   const modeKey = `${String(mode || '').trim()}:${String(storageKey || '').trim()}`;
@@ -82,6 +79,12 @@ const loadUnifiedCrossModeGraph = async ({ projectId = '', campaignId = '' } = {
     videoRows,
     interviewRows,
   });
+  const topologyRegistry = await loadCrossModeTopologyRegistry({
+    projectId,
+    campaignId,
+    videoRows,
+    interviewRows,
+  });
 
   identityRegistry.syncStores.forEach(({ storageKey, store }) => {
     const hypotheses = Array.isArray(store?.hypotheses) ? store.hypotheses : [];
@@ -91,27 +94,8 @@ const loadUnifiedCrossModeGraph = async ({ projectId = '', campaignId = '' } = {
 
   attachIdentityToGraphNodes(graph, identityRegistry);
   connectEquivalentNodesFromIdentityRegistry(graph, addEquivalentEdge);
-
-  graph.modeStores.forEach(({ mode, hypotheses }) => {
-    if (mode !== MODE_COMMENTS) return;
-    hypotheses.forEach((hypothesis, hypothesisId) => {
-      const parentId = normalizeId(hypothesis?.parent_hypothesis_id);
-      if (!parentId) return;
-      addChildEdge(graph, buildNodeKey(MODE_COMMENTS, parentId), buildNodeKey(MODE_COMMENTS, hypothesisId));
-    });
-  });
-
-  (videoRows || []).forEach((row) => {
-    const parentId = extractVideoParentHypothesisId(row);
-    if (!parentId) return;
-    addChildEdge(graph, buildNodeKey(MODE_VIDEO, parentId), buildNodeKey(MODE_VIDEO, row.id));
-  });
-
-  (interviewRows || []).forEach((row) => {
-    const parentId = extractInterviewParentHypothesisId(row);
-    if (!parentId) return;
-    addChildEdge(graph, buildNodeKey(MODE_INTERVIEWS, parentId), buildNodeKey(MODE_INTERVIEWS, row.id));
-  });
+  attachTopologyToGraph(graph, topologyRegistry);
+  connectParentChildTopologyToGraph(graph, addChildEdge);
 
   return graph;
 };
