@@ -3,6 +3,8 @@ import React, { createContext, useContext, useState, useCallback } from 'react';
 import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
 import { useAuth } from '@/contexts/SupabaseAuthContext';
+import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, withCanonicalHypothesisState } from '../../shared/hypothesisState.js';
+import { syncVideoHypothesisStateTransition } from '@/modules/hypotheses/services/crossModeValidationSync';
 
 const HypothesisContext = createContext();
 
@@ -74,8 +76,9 @@ export const HypothesisProvider = ({ children }) => {
 
       if (error) throw error;
 
-      setHypotheses(data || []);
-      return data || [];
+      const normalizedData = (data || []).map((item) => withCanonicalHypothesisState(item, HYPOTHESIS_MODES.VIDEO));
+      setHypotheses(normalizedData);
+      return normalizedData;
     } catch (error) {
       toast({
         title: 'Error',
@@ -94,7 +97,7 @@ export const HypothesisProvider = ({ children }) => {
     try {
       const { data, error } = await supabase
         .from('hypotheses')
-        .insert([{ ...hypothesisData, validation_status: 'No Validada', user_id: currentUser.id }])
+.insert([{ ...hypothesisData, ...buildModeStatePatch(HYPOTHESIS_MODES.VIDEO, HYPOTHESIS_STATE.INCONCLUSIVE), user_id: currentUser.id }])
         .select()
         .single();
 
@@ -108,7 +111,7 @@ export const HypothesisProvider = ({ children }) => {
       if (hypothesisData.campaign_id) {
         await fetchHypotheses(hypothesisData.campaign_id);
       }
-      return data;
+      return withCanonicalHypothesisState(data, HYPOTHESIS_MODES.VIDEO);
     } catch (error) {
       toast({
         title: 'Error',
@@ -129,7 +132,21 @@ export const HypothesisProvider = ({ children }) => {
       delete sanitizedPayload.audiences_breakdown;
       delete sanitizedPayload.audience_breakdown;
       delete sanitizedPayload.breakdown_config;
+      if (
+        sanitizedPayload.validation_status != null
+        || sanitizedPayload.validation_result != null
+        || sanitizedPayload.hypothesis_state != null
+      ) {
+        Object.assign(
+          sanitizedPayload,
+          buildModeStatePatch(
+            HYPOTHESIS_MODES.VIDEO,
+            sanitizedPayload.validation_status ?? sanitizedPayload.validation_result ?? sanitizedPayload.hypothesis_state,
+          ),
+        );
+      }
 
+      const previousHypothesis = hypotheses.find((item) => String(item?.id) === String(id)) || null;
       const { data, error } = await supabase
         .from('hypotheses')
         .update(sanitizedPayload)
@@ -140,16 +157,35 @@ export const HypothesisProvider = ({ children }) => {
 
       if (error) throw error;
 
+      const normalizedRecord = withCanonicalHypothesisState(data, HYPOTHESIS_MODES.VIDEO);
+      const previousState = previousHypothesis?.validation_status || previousHypothesis?.hypothesis_state || '';
+      const nextState = normalizedRecord?.validation_status || normalizedRecord?.hypothesis_state || '';
+      if (normalizedRecord?.campaign_id) {
+        const { data: campaignRow } = await supabase
+          .from('campaigns')
+          .select('project_id')
+          .eq('id', normalizedRecord.campaign_id)
+          .eq('user_id', currentUser.id)
+          .single();
+        await syncVideoHypothesisStateTransition({
+          projectId: String(campaignRow?.project_id || '').trim(),
+          campaignId: normalizedRecord.campaign_id,
+          videoHypothesisId: normalizedRecord.id,
+          previousVideoStatus: previousState,
+          nextVideoStatus: nextState,
+        });
+      }
+
       toast({
         title: 'Success',
         description: 'Hypothesis updated successfully',
       });
 
-      if (data?.campaign_id) {
-        await fetchHypotheses(data.campaign_id);
+      if (normalizedRecord?.campaign_id) {
+        await fetchHypotheses(normalizedRecord.campaign_id);
       }
 
-      return data;
+      return normalizedRecord;
     } catch (error) {
       toast({
         title: 'Error',
@@ -160,7 +196,7 @@ export const HypothesisProvider = ({ children }) => {
     } finally {
       setLoading(false);
     }
-  }, [toast, currentUser, fetchHypotheses]);
+  }, [toast, currentUser, fetchHypotheses, hypotheses]);
 
   const deleteHypothesis = useCallback(async (id, campaignId) => {
     if (!currentUser) return false;

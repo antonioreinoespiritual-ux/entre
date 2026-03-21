@@ -147,6 +147,7 @@ test('db query allows interview_hypotheses with user scoping intact', async () =
     assert.equal(inserted.length, 1);
     assert.equal(inserted[0].campaign_id, campaignA);
     assert.ok(inserted[0].user_id);
+    assert.equal(inserted[0].validation_result, 'inconclusa');
 
     const selectedByOwner = await db(baseUrl, tokenA, {
       table: 'interview_hypotheses',

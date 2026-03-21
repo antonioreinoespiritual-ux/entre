@@ -4,7 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Activity, AlertTriangle, ArrowLeft, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { buildVolumeSnapshot } from '@/lib/analysis/volume';
-import { syncVideoHypothesisValidationAcrossModes } from '@/modules/hypotheses/services/crossModeValidationSync';
+import { syncVideoHypothesisStateTransition } from '@/modules/hypotheses/services/crossModeValidationSync';
 
 const apiBaseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
@@ -132,10 +132,11 @@ const HypothesisAdvancedAnalysisPage = () => {
       });
       setResults(response.results);
       setVolume(response.volume || null);
-      await syncVideoHypothesisValidationAcrossModes({
+      await syncVideoHypothesisStateTransition({
         projectId,
         campaignId,
         videoHypothesisId: hypothesisId,
+        previousVideoStatus: hypothesis?.validation_status || hypothesis?.hypothesis_state || '',
         nextVideoStatus: response?.results?.verdict?.status || '',
       });
       await loadData();

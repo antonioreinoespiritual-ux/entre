@@ -1,5 +1,6 @@
 import { interviewsApi } from '@/services/interviewsApi';
 import { createStableId } from '@/lib/stableId';
+import { HYPOTHESIS_MODES, buildModeStatePatch, withCanonicalHypothesisState } from '../../../../shared/hypothesisState.js';
 
 const createId = () => createStableId('q_');
 
@@ -32,6 +33,13 @@ export const normalizeForm = (form) => ({
   questions: (Array.isArray(form?.questions_json) ? form.questions_json : form?.questions || []).map(normalizeQuestion),
 });
 
+
+const normalizeInterviewHypothesis = (hypothesis) => withCanonicalHypothesisState(hypothesis, HYPOTHESIS_MODES.INTERVIEWS);
+const buildInterviewHypothesisPayload = (payload = {}) => ({
+  ...payload,
+  ...buildModeStatePatch(HYPOTHESIS_MODES.INTERVIEWS, payload.validation_result ?? payload.validation_status ?? payload.hypothesis_state ?? payload.status),
+});
+
 export const interviewsModuleApi = {
   listAudiences: interviewsApi.listAudiences,
 
@@ -40,9 +48,9 @@ export const interviewsModuleApi = {
   updateClient: interviewsApi.updateClient,
   deleteClient: interviewsApi.deleteClient,
 
-  listHypotheses: interviewsApi.listInterviewHypotheses,
-  createHypothesis: interviewsApi.createInterviewHypothesis,
-  updateHypothesis: interviewsApi.updateInterviewHypothesis,
+  listHypotheses: async (projectId, campaignId) => (await interviewsApi.listInterviewHypotheses(projectId, campaignId)).map(normalizeInterviewHypothesis),
+  createHypothesis: async (projectId, campaignId, payload) => normalizeInterviewHypothesis(await interviewsApi.createInterviewHypothesis(projectId, campaignId, buildInterviewHypothesisPayload(payload))),
+  updateHypothesis: async (id, payload) => normalizeInterviewHypothesis(await interviewsApi.updateInterviewHypothesis(id, buildInterviewHypothesisPayload(payload))),
   evaluateHypothesis: interviewsApi.evaluateInterviewHypothesis,
   deleteHypothesis: interviewsApi.deleteInterviewHypothesis,
 
