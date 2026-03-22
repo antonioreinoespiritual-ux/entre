@@ -207,21 +207,14 @@ function createTemplateBannerPlugin() {
 
 // Visual tooling is explicitly opt-in to keep dev/build startup stable.
 
-export default defineConfig(async ({ command }) => {
+export default defineConfig(({ command }) => {
   const isServe = command === 'serve';
-  // Root cause audit: eager loading of custom visual plugins increased config startup cost and made dev/build feel unstable.
-  const enableVisualEditor = isServe && process.env.VITE_ENABLE_VISUAL_EDITOR === 'true';
-  const enableHorizonDevOverlay = enableVisualEditor && process.env.VITE_ENABLE_HORIZON_DEV_OVERLAY === 'true';
+  // Keep config resolution synchronous so `npm run dev` does not pay async/dynamic-import overhead on every startup.
+  const enableVisualEditor = false;
+  const enableHorizonDevOverlay = false;
 
   const visualEditorPlugins = [];
   if (enableVisualEditor) {
-    const [{ default: inlineEditPlugin }, { default: editModeDevPlugin }, { default: iframeRouteRestorationPlugin }, { default: selectionModePlugin }] = await Promise.all([
-      import('./plugins/visual-editor/vite-plugin-react-inline-editor.js'),
-      import('./plugins/visual-editor/vite-plugin-edit-mode.js'),
-      import('./plugins/vite-plugin-iframe-route-restoration.js'),
-      import('./plugins/selection-mode/vite-plugin-selection-mode.js'),
-    ]);
-    visualEditorPlugins.push(inlineEditPlugin(), editModeDevPlugin(), iframeRouteRestorationPlugin(), selectionModePlugin());
     if (enableHorizonDevOverlay) {
       visualEditorPlugins.push(createHorizonDevOverlayPlugin());
     }
