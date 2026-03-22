@@ -516,8 +516,6 @@ const schemaSql = [
     FOREIGN KEY (source_input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
     UNIQUE(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)',
-  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)',
   `CREATE TABLE IF NOT EXISTS comment_mode_states (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -2078,6 +2076,130 @@ async function tableExists(tableName) {
   return rows.length > 0;
 }
 
+async function listTableIndexes(tableName) {
+  const [rows] = await pool.query(`PRAGMA index_list(${normalizeIdentifier(tableName)})`);
+  return rows;
+}
+
+async function listIndexColumns(indexName) {
+  const [rows] = await pool.query(`PRAGMA index_info(${normalizeIdentifier(indexName)})`);
+  return rows.map((row) => String(row.name || ''));
+}
+
+async function commentDatasetHasLegacyScopeUniqueConstraint() {
+  if (!(await tableExists('comment_dataset_comments'))) return false;
+  const indexes = await listTableIndexes('comment_dataset_comments');
+  for (const index of indexes) {
+    if (!index || Number(index.unique) !== 1) continue;
+    const indexName = String(index.name || '').trim();
+    if (!indexName) continue;
+    const columns = await listIndexColumns(indexName);
+    if (columns.join('|') === 'user_id|project_id|campaign_id|source|source_comment_id') {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function rebuildCommentDatasetCommentsTableWithWorkspaceScopedUniqueness() {
+  const staleLegacyTable = 'comment_dataset_comments_legacy_before_workspace_scope_fix';
+  if (!(await tableExists('comment_dataset_comments'))) return;
+
+  if (await tableExists(staleLegacyTable)) {
+    await pool.query(`DROP TABLE ${normalizeIdentifier(staleLegacyTable)}`);
+  }
+
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE comment_dataset_comments RENAME TO ${normalizeIdentifier(staleLegacyTable)}`);
+    await pool.query(`CREATE TABLE comment_dataset_comments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+      audience_id TEXT,
+      hypothesis_id TEXT,
+      source TEXT NOT NULL,
+      source_comment_id TEXT NOT NULL,
+      parent_comment_id TEXT,
+      video_id TEXT,
+      channel_id TEXT,
+      author_name TEXT,
+      author_channel_id TEXT,
+      text TEXT NOT NULL,
+      published_at TEXT,
+      like_count INTEGER DEFAULT 0,
+      reply_count INTEGER DEFAULT 0,
+      source_job TEXT,
+      source_run_id TEXT,
+      source_input_id TEXT,
+      source_query_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+      FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+      FOREIGN KEY (hypothesis_id) REFERENCES interview_hypotheses(id) ON DELETE SET NULL,
+      FOREIGN KEY (source_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL,
+      FOREIGN KEY (source_input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
+      UNIQUE(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)
+    )`);
+
+    await pool.query(
+      `INSERT INTO comment_dataset_comments (
+        id, user_id, project_id, campaign_id, workspace_id, audience_id, hypothesis_id, source, source_comment_id, parent_comment_id,
+        video_id, channel_id, author_name, author_channel_id, text, published_at, like_count, reply_count,
+        source_job, source_run_id, source_input_id, source_query_json, created_at, updated_at
+      )
+      SELECT
+        legacy.id,
+        legacy.user_id,
+        legacy.project_id,
+        legacy.campaign_id,
+        COALESCE(NULLIF(TRIM(legacy.workspace_id), ''), '__legacy_workspace__'),
+        legacy.audience_id,
+        legacy.hypothesis_id,
+        legacy.source,
+        legacy.source_comment_id,
+        legacy.parent_comment_id,
+        legacy.video_id,
+        legacy.channel_id,
+        legacy.author_name,
+        legacy.author_channel_id,
+        legacy.text,
+        legacy.published_at,
+        COALESCE(legacy.like_count, 0),
+        COALESCE(legacy.reply_count, 0),
+        legacy.source_job,
+        legacy.source_run_id,
+        legacy.source_input_id,
+        legacy.source_query_json,
+        COALESCE(legacy.created_at, CURRENT_TIMESTAMP),
+        COALESCE(legacy.updated_at, CURRENT_TIMESTAMP)
+      FROM ${normalizeIdentifier(staleLegacyTable)} AS legacy
+      WHERE legacy.rowid IN (
+        SELECT MAX(rowid)
+        FROM ${normalizeIdentifier(staleLegacyTable)}
+        GROUP BY user_id, project_id, campaign_id, COALESCE(NULLIF(TRIM(workspace_id), ''), '__legacy_workspace__'), source, source_comment_id
+      )`,
+    );
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign
+      ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)`);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)');
+    await pool.query(`DROP TABLE ${normalizeIdentifier(staleLegacyTable)}`);
+  } catch (error) {
+    if (!(await tableExists('comment_dataset_comments')) && (await tableExists(staleLegacyTable))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(staleLegacyTable)} RENAME TO comment_dataset_comments`);
+    }
+    throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
 async function rebuildVideosTableWithNullableContextColumns() {
   const staleLegacyTable = 'videos_legacy_before_nullable_context_fix';
   const hasVideosTable = await tableExists('videos');
@@ -2483,6 +2605,12 @@ async function ensureVideoHierarchyMigration() {
   }
 
   if (await tableExists('comment_dataset_comments')) {
+    if (await commentDatasetHasLegacyScopeUniqueConstraint()) {
+      await rebuildCommentDatasetCommentsTableWithWorkspaceScopedUniqueness();
+    }
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign
+      ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)`);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)');
     try {
       await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_comment_dataset_comments_scope_source
         ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)`);
