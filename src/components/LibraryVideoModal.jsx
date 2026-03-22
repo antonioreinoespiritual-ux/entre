@@ -4,6 +4,7 @@ import { useToast } from '@/components/ui/use-toast';
 import { useVideos } from '@/contexts/VideoContext';
 
 const tabs = ['paid', 'organic', 'live'];
+const funnelOptions = ['Reconocimiento', 'Consideracion', 'Decisión'];
 
 const globalFields = [
   'external_id',
@@ -18,6 +19,7 @@ const globalFields = [
   'organic_piece_type',
   'campaign_id_ref',
   'ad_set_id',
+  'funnel',
 ];
 
 const metricFields = [
@@ -60,6 +62,7 @@ const baseVideo = {
   organic_piece_type: '',
   campaign_id_ref: '',
   ad_set_id: '',
+  funnel: '',
   clicks: 0,
   views: 0,
   likes: 0,
@@ -98,6 +101,7 @@ const labels = {
   organic_piece_type: 'Organic piece type',
   campaign_id_ref: 'Campaign ID (ad platform)',
   ad_set_id: 'Ad set ID',
+  funnel: 'Funnel',
   clicks: 'Clicks',
   views: 'Views',
   likes: 'Likes',
@@ -156,6 +160,10 @@ const LibraryVideoModal = ({ isOpen, onClose, mode = 'create', projectId, initia
       project_id: projectId,
       video_type: activeTab,
     };
+    if (!isEdit && !String(payload.funnel || '').trim()) {
+      toast({ title: 'Error', description: 'Selecciona un funnel válido para crear el video.', variant: 'destructive' });
+      return;
+    }
     metricFields.forEach((field) => {
       if (field in payload) payload[field] = Number(payload[field] || 0);
     });
@@ -205,6 +213,16 @@ const LibraryVideoModal = ({ isOpen, onClose, mode = 'create', projectId, initia
                   <label className="block text-sm font-medium mb-1">{labels[field] || field}</label>
                   {field === 'contexto_cualitativo' ? (
                     <textarea className="w-full rounded-lg border p-2" rows="2" value={form[field]} onChange={(e) => setForm((c) => ({ ...c, [field]: e.target.value }))} />
+                  ) : field === 'funnel' ? (
+                    <select
+                      className="w-full rounded-lg border p-2"
+                      value={form[field] ?? ''}
+                      required={!isEdit}
+                      onChange={(e) => setForm((c) => ({ ...c, [field]: e.target.value }))}
+                    >
+                      <option value="">Selecciona funnel</option>
+                      {funnelOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
                   ) : (
                     <input
                       type="text"

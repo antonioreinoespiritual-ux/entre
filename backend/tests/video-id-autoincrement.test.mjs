@@ -676,6 +676,7 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
         video_type: 'organic',
         title: 'Original title',
         views: 10,
+        funnel: 'Reconocimiento',
       },
     });
     const videoId = created[0].id;
@@ -686,7 +687,7 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ hypothesis_ids: [hypothesisB[0].id] }),
+      body: JSON.stringify({ hypothesis_ids: [hypothesisA[0].id, hypothesisB[0].id] }),
     });
     assert.equal(linkRes.status, 200);
 
@@ -699,12 +700,14 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
       body: JSON.stringify({
         title: 'Edited title',
         views: 777,
+        funnel: 'Decisión',
       }),
     });
     assert.equal(patchRes.status, 200);
     const patchJson = await patchRes.json();
     assert.equal(patchJson.video.title, 'Edited title');
     assert.equal(patchJson.video.views, 777);
+    assert.equal(patchJson.video.funnel, 'Decisión');
 
     const inHypARes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisA[0].id}/videos`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -774,6 +777,7 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
     assert.equal(checkVideoRes.status, 200);
     const checkVideoJson = await checkVideoRes.json();
     assert.equal(checkVideoJson.video.views, 777);
+    assert.equal(checkVideoJson.video.funnel, 'Decisión');
 
     const forbiddenGlobalCreateRes = await fetch(`${baseUrl}/api/videos`, {
       method: 'POST',
@@ -786,12 +790,123 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
         title: 'bad payload',
         video_type: 'paid',
         audience_id: 'aud-legacy',
+        funnel: 'Reconocimiento',
       }),
     });
     assert.equal(forbiddenGlobalCreateRes.status, 400);
     const forbiddenGlobalCreateJson = await forbiddenGlobalCreateRes.json();
     assert.equal(forbiddenGlobalCreateJson.code, 'VIDEO_GLOBAL_FORBIDDEN_FIELDS');
     assert.deepEqual(forbiddenGlobalCreateJson.fields, ['audience_id']);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});
+
+test('video create validates funnel and preserves legacy videos without funnel', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-video-funnel-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4110;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const email = `videofunnel-${Date.now()}@example.com`;
+    const password = 'secret123';
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    assert.equal(signupRes.status, 200);
+    const signupJson = await signupRes.json();
+    const token = signupJson?.session?.access_token;
+    assert.ok(token);
+
+    const project = await api(baseUrl, token, {
+      table: 'projects',
+      operation: 'insert',
+      payload: { name: 'Proyecto funnel', description: 'D' },
+    });
+
+    const missingFunnelRes = await fetch(`${baseUrl}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        project_id: project[0].id,
+        title: 'Video sin funnel',
+        video_type: 'organic',
+      }),
+    });
+    assert.equal(missingFunnelRes.status, 400);
+    const missingFunnelJson = await missingFunnelRes.json();
+    assert.equal(missingFunnelJson.error, 'videos.funnel is required');
+
+    const invalidFunnelRes = await fetch(`${baseUrl}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        project_id: project[0].id,
+        title: 'Video funnel inválido',
+        video_type: 'organic',
+        funnel: 'Awareness',
+      }),
+    });
+    assert.equal(invalidFunnelRes.status, 400);
+
+    const legacyVideo = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: {
+        project_id: project[0].id,
+        title: 'Legacy video',
+        video_type: 'organic',
+        funnel: null,
+      },
+    });
+
+    const listRes = await fetch(`${baseUrl}/api/projects/${project[0].id}/videos`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(listRes.status, 200);
+    const listJson = await listRes.json();
+    const listedLegacy = (listJson.data || []).find((row) => row.id === legacyVideo[0].id);
+    assert.ok(listedLegacy);
+    assert.equal(listedLegacy.funnel ?? null, null);
+
+    const validRes = await fetch(`${baseUrl}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        project_id: project[0].id,
+        title: 'Video con funnel',
+        video_type: 'paid',
+        funnel: 'Consideracion',
+      }),
+    });
+    assert.equal(validRes.status, 200);
+    const validJson = await validRes.json();
+    assert.equal(validJson.data[0].funnel, 'Consideracion');
   } finally {
     server.kill('SIGTERM');
   }

@@ -234,6 +234,7 @@ const schemaSql = [
     likes INTEGER DEFAULT 0,
     shares INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
+    funnel TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
@@ -2134,6 +2135,7 @@ async function rebuildVideosTableWithNullableContextColumns() {
       likes INTEGER DEFAULT 0,
       shares INTEGER DEFAULT 0,
       comments INTEGER DEFAULT 0,
+      funnel TEXT,
       campaign_id TEXT,
       project_id TEXT,
       ad_id TEXT,
@@ -2153,7 +2155,7 @@ async function rebuildVideosTableWithNullableContextColumns() {
       'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'pico_viewers', 'viewers_prom',
       'duracion_min', 'nuevos_seguidores', 'saves', 'organic_piece_type', 'views_finish_pct', 'retencion_pct',
       'tiempo_prom_seg', 'duracion_seg', 'campaign_id_ref', 'ad_set_id', 'cpc', 'ctr', 'duracion_del_video_seg', 'views',
-      'engagement', 'likes', 'shares', 'comments', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
+      'engagement', 'likes', 'shares', 'comments', 'funnel', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
       'metrics_json', 'created_at', 'updated_at',
     ];
 
@@ -2363,6 +2365,7 @@ async function ensureVideoHierarchyMigration() {
     ['ctr', 'REAL DEFAULT 0'],
     ['duracion_del_video_seg', 'REAL DEFAULT 0'],
     ['metrics_json', 'TEXT'],
+    ['funnel', 'TEXT'],
   ];
 
   for (const [columnName, columnType] of optionalVideoColumns) {
@@ -2719,6 +2722,15 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+const VIDEO_FUNNEL_VALUES = ['Reconocimiento', 'Consideracion', 'Decisión'];
+
+function normalizeVideoFunnel(value, { allowEmpty = true } = {}) {
+  if (value == null) return allowEmpty ? null : undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return allowEmpty ? null : undefined;
+  return VIDEO_FUNNEL_VALUES.includes(normalized) ? normalized : undefined;
+}
+
 const bulkVideoAllowedFields = new Map([
   ['views', { column: 'views', type: 'int' }],
   ['clicks', { column: 'clicks', type: 'int' }],
@@ -2741,12 +2753,14 @@ const bulkVideoAllowedFields = new Map([
   ['ad_id', { column: 'ad_id', type: 'text' }],
   ['url', { column: 'url', type: 'text' }],
   ['video_type', { column: 'video_type', type: 'enum', enumValues: ['paid', 'organic', 'live'] }],
+  ['funnel', { column: 'funnel', type: 'video_funnel' }],
 ]);
 
 function parseTypedValue(value, type) {
   if (value == null || value === '') return null;
   if (type === 'text') return String(value);
   if (type === 'enum') return String(value).trim().toLowerCase();
+  if (type === 'video_funnel') return normalizeVideoFunnel(value);
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
   if (type === 'int') return Math.trunc(parsed);
@@ -6114,6 +6128,20 @@ const hypothesisContextOnlyFields = new Set(['audience_id']);
 
 const videoGlobalForbiddenFields = new Set(['audience_id', 'audience', 'hypothesis_id', 'campaign_id']);
 
+function sanitizeVideoMutablePayload(input = {}, { requireFunnel = false } = {}) {
+  const sanitized = { ...input };
+  if (Object.prototype.hasOwnProperty.call(sanitized, 'funnel')) {
+    const normalizedFunnel = normalizeVideoFunnel(sanitized.funnel, { allowEmpty: !requireFunnel });
+    if (normalizedFunnel === undefined) {
+      throw new Error(`videos.funnel must be one of: ${VIDEO_FUNNEL_VALUES.join(', ')}`);
+    }
+    sanitized.funnel = normalizedFunnel;
+  } else if (requireFunnel) {
+    throw new Error('videos.funnel is required');
+  }
+  return sanitized;
+}
+
 async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
   const hypothesis = await fetchOwnedHypothesisById(hypothesisId, userId);
   if (!hypothesis) throw new Error('Hypothesis not found');
@@ -6465,6 +6493,13 @@ async function executeCrudQuery(body, currentUserId) {
       if (!writeRow.video_type || !['paid', 'organic', 'live'].includes(String(writeRow.video_type))) {
         throw new Error("videos.video_type must be one of: paid, organic, live");
       }
+      if (Object.prototype.hasOwnProperty.call(writeRow, 'funnel')) {
+        const normalizedFunnel = normalizeVideoFunnel(writeRow.funnel);
+        if (normalizedFunnel === undefined) {
+          throw new Error(`videos.funnel must be one of: ${VIDEO_FUNNEL_VALUES.join(', ')}`);
+        }
+        writeRow.funnel = normalizedFunnel;
+      }
 
       if (writeRow.hypothesis_id) {
         const [ownershipRows] = await pool.query(
@@ -6612,6 +6647,13 @@ async function executeCrudQuery(body, currentUserId) {
 
   if (operation === 'update') {
     const normalizedPayload = normalizePersistedHypothesisPayload(table, payload || {});
+    if (table === 'videos' && Object.prototype.hasOwnProperty.call(normalizedPayload || {}, 'funnel')) {
+      const normalizedFunnel = normalizeVideoFunnel(normalizedPayload.funnel);
+      if (normalizedFunnel === undefined) {
+        throw new Error(`videos.funnel must be one of: ${VIDEO_FUNNEL_VALUES.join(', ')}`);
+      }
+      normalizedPayload.funnel = normalizedFunnel;
+    }
     const fields = Object.keys(normalizedPayload || {});
     if (!fields.length) throw new Error('Empty update payload');
     const setSql = fields.map((field) => `${normalizeIdentifier(field)} = ?`).join(', ');
@@ -9338,7 +9380,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       }
 
       const disallowed = new Set(['id', 'user_id', 'created_at', 'video_id', 'campaign_id', 'project_id']);
-      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key));
+      let sanitizedBody;
+      try {
+        sanitizedBody = sanitizeVideoMutablePayload(body || {});
+      } catch (error) {
+        sendJson(req, res, 400, { error: error?.message || String(error) });
+        return;
+      }
+      const entries = Object.entries(sanitizedBody || {}).filter(([key]) => !disallowed.has(key));
       if (!entries.length) {
         sendJson(req, res, 400, { error: 'No editable fields provided' });
         return;
@@ -9401,9 +9450,15 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         sendJson(req, res, 400, { error: 'project_id is required' });
         return;
       }
-      const payload = {
-        ...body,
-      };
+      let payload;
+      try {
+        payload = sanitizeVideoMutablePayload({
+          ...body,
+        }, { requireFunnel: true });
+      } catch (error) {
+        sendJson(req, res, 400, { error: error?.message || String(error) });
+        return;
+      }
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
       sendJson(req, res, 200, { data: rows });
       return;
@@ -9501,10 +9556,16 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
         return;
       }
-      const payload = {
-        ...body,
-        project_id: projectId,
-      };
+      let payload;
+      try {
+        payload = sanitizeVideoMutablePayload({
+          ...body,
+          project_id: projectId,
+        }, { requireFunnel: true });
+      } catch (error) {
+        sendJson(req, res, 400, { error: error?.message || String(error) });
+        return;
+      }
 
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
       sendJson(req, res, 200, { data: rows });
