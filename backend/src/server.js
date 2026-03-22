@@ -182,6 +182,7 @@ const schemaSql = [
     contexto_cualitativo TEXT,
     audience_id TEXT,
     condition TEXT,
+    hypothesis_score REAL,
     validation_status TEXT DEFAULT 'inconclusa',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -235,6 +236,7 @@ const schemaSql = [
     shares INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
     funnel TEXT,
+    video_score REAL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
@@ -2136,6 +2138,7 @@ async function rebuildVideosTableWithNullableContextColumns() {
       shares INTEGER DEFAULT 0,
       comments INTEGER DEFAULT 0,
       funnel TEXT,
+      video_score REAL,
       campaign_id TEXT,
       project_id TEXT,
       ad_id TEXT,
@@ -2155,7 +2158,7 @@ async function rebuildVideosTableWithNullableContextColumns() {
       'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'pico_viewers', 'viewers_prom',
       'duracion_min', 'nuevos_seguidores', 'saves', 'organic_piece_type', 'views_finish_pct', 'retencion_pct',
       'tiempo_prom_seg', 'duracion_seg', 'campaign_id_ref', 'ad_set_id', 'cpc', 'ctr', 'duracion_del_video_seg', 'views',
-      'engagement', 'likes', 'shares', 'comments', 'funnel', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
+      'engagement', 'likes', 'shares', 'comments', 'funnel', 'video_score', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
       'metrics_json', 'created_at', 'updated_at',
     ];
 
@@ -2366,6 +2369,7 @@ async function ensureVideoHierarchyMigration() {
     ['duracion_del_video_seg', 'REAL DEFAULT 0'],
     ['metrics_json', 'TEXT'],
     ['funnel', 'TEXT'],
+    ['video_score', 'REAL'],
   ];
 
   for (const [columnName, columnType] of optionalVideoColumns) {
@@ -2396,6 +2400,7 @@ async function ensureVideoHierarchyMigration() {
     ['volumen_unidad', 'TEXT'],
     ['canal_principal', 'TEXT'],
     ['contexto_cualitativo', 'TEXT'],
+    ['hypothesis_score', 'REAL'],
   ];
 
   for (const [columnName, columnType] of optionalHypothesisColumns) {
@@ -2715,6 +2720,7 @@ async function runMigrations() {
     await pool.query(statement);
   }
   await ensureVideoHierarchyMigration();
+  await recalculateAllVideoModeScores();
 }
 
 function toNumber(value, fallback = 0) {
@@ -6199,6 +6205,196 @@ function computeDerivedVideoMetrics(video) {
   };
 }
 
+function saturatingRatio(value, pivot) {
+  const safeValue = Math.max(safeNumber(value, 0), 0);
+  const safePivot = Math.max(safeNumber(pivot, 0), 0);
+  if (safeValue <= 0 || safePivot <= 0) return safeValue > 0 ? 1 : 0;
+  return safeValue / (safeValue + safePivot);
+}
+
+function roundScore(value) {
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  return Number(Number(value).toFixed(2));
+}
+
+function summarizeVideoSignals(video = {}) {
+  const views = Math.max(toNumber(video.views), 0);
+  const clicks = Math.max(toNumber(video.clicks), 0);
+  const likes = Math.max(toNumber(video.likes), 0);
+  const comments = Math.max(toNumber(video.comments), 0);
+  const shares = Math.max(toNumber(video.shares), 0);
+  const saves = Math.max(toNumber(video.saves), 0);
+  const purchases = Math.max(toNumber(video.purchase), 0);
+  const initiateCheckouts = Math.max(toNumber(video.initiate_checkouts), 0);
+  const viewContent = Math.max(toNumber(video.view_content), 0);
+  const leadForms = Math.max(toNumber(video.formulario_lead), 0);
+  const engagementActions = likes + (1.5 * comments) + (2.5 * shares) + (2 * saves);
+  const conversionActions = (1.2 * viewContent) + (1.5 * leadForms) + (1.8 * initiateCheckouts) + (3.2 * purchases);
+  const ctr = views > 0 ? (clicks / views) : Math.max(toNumber(video.ctr), 0);
+  const engagementRate = views > 0 ? (engagementActions / views) : 0;
+  const conversionRate = views > 0 ? (conversionActions / views) : 0;
+  const cpc = toNumber(video.cpc, 0);
+
+  return {
+    views,
+    clicks,
+    likes,
+    comments,
+    shares,
+    saves,
+    purchases,
+    initiateCheckouts,
+    viewContent,
+    leadForms,
+    engagementActions,
+    conversionActions,
+    ctr,
+    engagementRate,
+    conversionRate,
+    cpc,
+  };
+}
+
+function computeVideoPriorityScore(video = {}) {
+  const signals = summarizeVideoSignals(video);
+  const reachScore = saturatingRatio(signals.views, 5000);
+  const ctrScore = saturatingRatio(signals.ctr * 100, 2.5);
+  const engagementScore = saturatingRatio(signals.engagementRate * 100, 4);
+  const conversionRateScore = saturatingRatio(signals.conversionRate * 100, 2.2);
+  const conversionVolumeScore = saturatingRatio(signals.conversionActions, 25);
+  const costEfficiencyScore = signals.cpc > 0
+    ? clamp(0, 1 - saturatingRatio(signals.cpc, 2.5), 1)
+    : (signals.clicks > 0 ? 0.55 : 0.35);
+  const supportScore = clamp(
+    0,
+    (0.65 * saturatingRatio(signals.views, 3000))
+      + (0.2 * saturatingRatio(signals.clicks + signals.engagementActions, 70))
+      + (0.15 * saturatingRatio(signals.conversionActions, 14)),
+    1,
+  );
+  const compositeScore = clamp(
+    0,
+    (0.18 * reachScore)
+      + (0.22 * ctrScore)
+      + (0.2 * engagementScore)
+      + (0.22 * conversionRateScore)
+      + (0.1 * conversionVolumeScore)
+      + (0.08 * costEfficiencyScore),
+    1,
+  );
+
+  return roundScore(100 * compositeScore * (0.45 + (0.55 * supportScore)));
+}
+
+function average(values = []) {
+  const filtered = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (!filtered.length) return null;
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+}
+
+function standardDeviation(values = []) {
+  const mean = average(values);
+  if (mean == null) return null;
+  const filtered = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (filtered.length <= 1) return 0;
+  const variance = filtered.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / filtered.length;
+  return Math.sqrt(variance);
+}
+
+function computeHypothesisPriorityScore(videos = []) {
+  const usableVideos = Array.isArray(videos)
+    ? videos.filter((video) => Number.isFinite(Number(video?.video_score)))
+    : [];
+  if (!usableVideos.length) return null;
+
+  const scoredVideos = usableVideos.map((video) => {
+    const signals = summarizeVideoSignals(video);
+    const weight = Math.max(
+      0.15,
+      (0.6 * saturatingRatio(signals.views, 2500))
+        + (0.25 * saturatingRatio(signals.clicks + signals.engagementActions, 45))
+        + (0.15 * saturatingRatio(signals.conversionActions, 12)),
+    );
+    return { video, weight, score: Number(video.video_score) };
+  });
+
+  const totalWeight = scoredVideos.reduce((sum, item) => sum + item.weight, 0);
+  if (!totalWeight) return null;
+
+  const weightedAverageScore = scoredVideos.reduce((sum, item) => sum + (item.score * item.weight), 0) / totalWeight;
+  const totalViews = scoredVideos.reduce((sum, item) => sum + Math.max(toNumber(item.video.views), 0), 0);
+  const countSupport = saturatingRatio(scoredVideos.length, 4);
+  const volumeSupport = saturatingRatio(totalViews, 12000);
+  const sumSquaredWeights = scoredVideos.reduce((sum, item) => sum + (item.weight ** 2), 0);
+  const effectiveSampleSize = sumSquaredWeights > 0 ? ((totalWeight ** 2) / sumSquaredWeights) : 0;
+  const balanceScore = scoredVideos.length ? clamp(0, effectiveSampleSize / scoredVideos.length, 1) : 0;
+  const consistencyScore = scoredVideos.length <= 1
+    ? 0.65
+    : clamp(0, 1 - ((standardDeviation(scoredVideos.map((item) => item.score)) || 0) / 18), 1);
+  const robustnessScore = clamp(0, (0.4 * countSupport) + (0.4 * volumeSupport) + (0.2 * balanceScore), 1);
+
+  return roundScore(
+    weightedAverageScore
+      * (0.65 + (0.35 * robustnessScore))
+      * (0.85 + (0.15 * consistencyScore)),
+  );
+}
+
+async function recalculateHypothesisScore(userId, hypothesisId) {
+  if (!userId || !hypothesisId) return null;
+  const videos = await listVideosForHypothesis(hypothesisId, userId, {});
+  const nextScore = computeHypothesisPriorityScore(videos);
+  await pool.query(
+    'UPDATE hypotheses SET hypothesis_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+    [nextScore, hypothesisId, userId],
+  );
+  return nextScore;
+}
+
+async function recalculateVideoModeScoresForVideo(userId, videoId) {
+  if (!userId || !videoId) return { videoScore: null, hypothesisIds: [] };
+  const video = await fetchOwnedVideoById(videoId, userId);
+  if (!video) return { videoScore: null, hypothesisIds: [] };
+
+  const videoScore = computeVideoPriorityScore(video);
+  await pool.query(
+    'UPDATE videos SET video_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+    [videoScore, videoId, userId],
+  );
+
+  const [links] = await pool.query(
+    'SELECT DISTINCT hypothesis_id FROM hypothesis_videos WHERE video_id = ? AND user_id = ?',
+    [videoId, userId],
+  );
+  const hypothesisIds = [...new Set(links.map((row) => String(row.hypothesis_id || '').trim()).filter(Boolean))];
+  for (const hypothesisId of hypothesisIds) {
+    await recalculateHypothesisScore(userId, hypothesisId);
+  }
+  return { videoScore, hypothesisIds };
+}
+
+async function recalculateAllVideoModeScores() {
+  const [videos] = await pool.query('SELECT id, user_id FROM videos');
+  for (const video of videos) {
+    await recalculateVideoModeScoresForVideo(video.user_id, video.id);
+  }
+
+  const [hypothesesWithoutVideos] = await pool.query(
+    `SELECT h.id, h.user_id
+     FROM hypotheses h
+     WHERE NOT EXISTS (
+       SELECT 1 FROM hypothesis_videos hv
+       WHERE hv.hypothesis_id = h.id AND hv.user_id = h.user_id
+     )`,
+  );
+  for (const hypothesis of hypothesesWithoutVideos) {
+    await pool.query(
+      'UPDATE hypotheses SET hypothesis_score = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+      [hypothesis.id, hypothesis.user_id],
+    );
+  }
+}
+
 function compareVideosAB(videoA, videoB, config = {}) {
   const primaryMetric = config.primaryMetric || 'ctr';
   const alpha = Number(config.alpha || 0.05);
@@ -6635,6 +6831,7 @@ async function executeCrudQuery(body, currentUserId) {
           await pool.query('DELETE FROM videos WHERE id = ? AND user_id = ?', [created.id, currentUserId]);
           throw new Error('No se pudo crear carpeta canonical en Cloud para el video.');
         }
+        await recalculateVideoModeScoresForVideo(currentUserId, created.id);
         [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
       }
     }
@@ -6659,6 +6856,11 @@ async function executeCrudQuery(body, currentUserId) {
     const setSql = fields.map((field) => `${normalizeIdentifier(field)} = ?`).join(', ');
     await pool.query(`UPDATE ${quotedTable} SET ${setSql}${where}`, [...fields.map((field) => normalizedPayload[field]), ...whereValues]);
     const [updated] = await pool.query(`SELECT * FROM ${quotedTable}${where}`, whereValues);
+    if (table === 'videos') {
+      for (const row of updated) {
+        await recalculateVideoModeScoresForVideo(currentUserId, row.id);
+      }
+    }
     if (table === 'hypotheses' && Object.prototype.hasOwnProperty.call(payload || {}, 'audience_id')) {
       for (const hypothesis of updated) {
         await pool.query(
@@ -6674,7 +6876,26 @@ async function executeCrudQuery(body, currentUserId) {
   }
 
   if (operation === 'delete') {
+    let linkedHypothesisIds = [];
+    if (table === 'videos' && filters.some((entry) => entry?.field === 'id')) {
+      const targetVideoIds = filters.filter((entry) => entry?.field === 'id').map((entry) => entry.value);
+      if (targetVideoIds.length) {
+        const placeholders = targetVideoIds.map(() => '?').join(', ');
+        const [links] = await pool.query(
+          `SELECT DISTINCT hypothesis_id
+           FROM hypothesis_videos
+           WHERE user_id = ? AND video_id IN (${placeholders})`,
+          [currentUserId, ...targetVideoIds],
+        );
+        linkedHypothesisIds = [...new Set(links.map((row) => String(row.hypothesis_id || '').trim()).filter(Boolean))];
+      }
+    }
     await pool.query(`DELETE FROM ${quotedTable}${where}`, whereValues);
+    if (table === 'videos') {
+      for (const hypothesisId of linkedHypothesisIds) {
+        await recalculateHypothesisScore(currentUserId, hypothesisId);
+      }
+    }
     if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
@@ -9310,6 +9531,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
             const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
             const values = setEntries.map(([, value]) => value);
             await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.matchedVideoId, user.id]);
+            await recalculateVideoModeScoresForVideo(user.id, entry.matchedVideoId);
           }
           await pool.query('COMMIT');
         } catch (error) {
@@ -9396,6 +9618,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const setSql = entries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
       const values = entries.map(([, value]) => value);
       await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, existing.id, user.id]);
+      await recalculateVideoModeScoresForVideo(user.id, existing.id);
       const updated = await fetchOwnedVideoById(existing.id, user.id);
       sendJson(req, res, 200, { video: updated });
       return;
@@ -9412,6 +9635,11 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         sendJson(req, res, 404, { error: 'Video not found' });
         return;
       }
+      const [linkedHypothesisRows] = await pool.query(
+        'SELECT DISTINCT hypothesis_id FROM hypothesis_videos WHERE video_id = ? AND user_id = ?',
+        [existing.id, user.id],
+      );
+      const linkedHypothesisIds = [...new Set(linkedHypothesisRows.map((row) => String(row.hypothesis_id || '').trim()).filter(Boolean))];
 
       try {
         await purgeVideoCloudArtifacts(user.id, existing.id);
@@ -9427,6 +9655,9 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         }
 
         await syncCloudForUser(user.id);
+        for (const linkedHypothesisId of linkedHypothesisIds) {
+          await recalculateHypothesisScore(user.id, linkedHypothesisId);
+        }
         sendJson(req, res, 200, { ok: true, deleted_video_id: existing.id });
       } catch (error) {
         sendJson(req, res, 500, { error: error?.message || String(error) });
@@ -9628,6 +9859,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         linked.push(hyp.id);
       }
       await syncCloudForUser(user.id);
+      await recalculateVideoModeScoresForVideo(user.id, video.id);
       sendJson(req, res, 200, { ok: true, linked, already_linked, skipped });
       return;
     }
@@ -10255,6 +10487,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         'SELECT * FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
         [hypothesisId, videoId, user.id],
       );
+      await recalculateHypothesisScore(user.id, hypothesisId);
       sendJson(req, res, 200, { data: rows[0] || null });
       return;
     }
@@ -10323,6 +10556,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         await unlinkVideoFolderFromAudience(user.id, hypothesis.campaign_id, previousAudienceId, video);
       }
 
+      await recalculateHypothesisScore(user.id, targetHypothesisId);
       const videos = await listVideosForHypothesis(targetHypothesisId, user.id, {});
       const updated = videos.find((row) => String(row.id) === String(targetVideoId)) || null;
       sendJson(req, res, 200, { video: updated });
@@ -10400,6 +10634,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       }
 
       await syncCloudForUser(user.id);
+      await recalculateHypothesisScore(user.id, targetHypothesisId);
       sendJson(req, res, 200, {
         ok: true,
         linked,
@@ -10455,6 +10690,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         unlinked.push(video.id);
       }
 
+      await recalculateHypothesisScore(user.id, targetHypothesisId);
       sendJson(req, res, 200, { ok: true, unlinked, skipped });
       return;
     }

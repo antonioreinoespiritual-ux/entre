@@ -348,6 +348,7 @@ const HypothesisDetailPage = () => {
           <p className="mt-2">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
           <p className="text-sm text-gray-500 mt-2">X: {hypothesis.variable_x || '-'} · Umbral: {hypothesis.umbral_operador || ''} {hypothesis.umbral_valor ?? ''}</p>
           <p className="text-sm text-gray-500">Métrica objetivo (Y): {hypothesis.metrica_objetivo_y || '-'}</p>
+          <p className="text-sm text-gray-500">Score hipótesis: {hypothesis.hypothesis_score ?? '—'}</p>
           <p className="text-sm text-gray-500">Volumen mínimo: {volume.minimum} {volume.unit}</p>
           <p className="text-sm text-gray-500">Volumen actual: {volume.current} {volume.unit}</p>
           <p className="text-sm font-medium">
@@ -386,6 +387,7 @@ const HypothesisDetailPage = () => {
                     <p className="text-sm text-gray-600">Session #{video.session_id ?? video.external_id ?? '—'}</p>
                     {video.is_reused_for_hypothesis ? <p className="mt-1 text-xs inline-flex bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Reutilizado de: {video.source_hypothesis_name || '—'}</p> : null}
                     <p className="text-sm text-gray-600">Público: {audiencesById.get(String(video.audience_id || ''))?.name || 'Sin público'}</p>
+                    <p className="text-sm text-gray-600">Score: {video.video_score ?? '—'} · Funnel: {video.funnel || '—'}</p>
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
                   <div className="flex gap-2">
