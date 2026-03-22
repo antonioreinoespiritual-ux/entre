@@ -388,6 +388,7 @@ const HypothesisDetailPage = () => {
                     {video.is_reused_for_hypothesis ? <p className="mt-1 text-xs inline-flex bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full">Reutilizado de: {video.source_hypothesis_name || '—'}</p> : null}
                     <p className="text-sm text-gray-600">Público: {audiencesById.get(String(video.audience_id || ''))?.name || 'Sin público'}</p>
                     <p className="text-sm text-gray-600">Score: {video.video_score ?? '—'} · Funnel: {video.funnel || '—'}</p>
+                    <p className="text-sm text-gray-600">Formato: {video.content_format || '—'} · Objetivo: {video.content_objective || '—'}</p>
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Clicks: {video.clicks || 0} · CTR: {video.ctr || 0}</p>
                   </div>
                   <div className="flex gap-2">

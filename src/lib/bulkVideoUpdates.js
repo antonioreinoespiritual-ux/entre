@@ -21,6 +21,8 @@ const allowedFieldMap = new Map([
   ['url', { key: 'url', type: 'text' }],
   ['video_type', { key: 'video_type', type: 'enum', enumValues: ['paid', 'organic', 'live'] }],
   ['funnel', { key: 'funnel', type: 'enum', enumValues: ['Reconocimiento', 'Consideracion', 'Decisión'] }],
+  ['content_format', { key: 'content_format', type: 'enum', enumValues: ['El contenido comercial', 'El contenido de valor', 'El contenido informativo'] }],
+  ['content_objective', { key: 'content_objective', type: 'enum', enumValues: ['Los contenidos escritos.', 'Los contenidos escritos con elementos gráficos.', 'Los contenidos audiovisuales.', 'Los contenidos descargables.'] }],
 ]);
 
 function parseTypedValue(value, config) {

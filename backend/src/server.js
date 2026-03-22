@@ -236,6 +236,8 @@ const schemaSql = [
     shares INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
     funnel TEXT,
+    content_format TEXT,
+    content_objective TEXT,
     video_score REAL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -2138,6 +2140,8 @@ async function rebuildVideosTableWithNullableContextColumns() {
       shares INTEGER DEFAULT 0,
       comments INTEGER DEFAULT 0,
       funnel TEXT,
+      content_format TEXT,
+      content_objective TEXT,
       video_score REAL,
       campaign_id TEXT,
       project_id TEXT,
@@ -2158,7 +2162,7 @@ async function rebuildVideosTableWithNullableContextColumns() {
       'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'pico_viewers', 'viewers_prom',
       'duracion_min', 'nuevos_seguidores', 'saves', 'organic_piece_type', 'views_finish_pct', 'retencion_pct',
       'tiempo_prom_seg', 'duracion_seg', 'campaign_id_ref', 'ad_set_id', 'cpc', 'ctr', 'duracion_del_video_seg', 'views',
-      'engagement', 'likes', 'shares', 'comments', 'funnel', 'video_score', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
+      'engagement', 'likes', 'shares', 'comments', 'funnel', 'content_format', 'content_objective', 'video_score', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
       'metrics_json', 'created_at', 'updated_at',
     ];
 
@@ -2369,6 +2373,8 @@ async function ensureVideoHierarchyMigration() {
     ['duracion_del_video_seg', 'REAL DEFAULT 0'],
     ['metrics_json', 'TEXT'],
     ['funnel', 'TEXT'],
+    ['content_format', 'TEXT'],
+    ['content_objective', 'TEXT'],
     ['video_score', 'REAL'],
   ];
 
@@ -2729,12 +2735,37 @@ function toNumber(value, fallback = 0) {
 }
 
 const VIDEO_FUNNEL_VALUES = ['Reconocimiento', 'Consideracion', 'Decisión'];
+const VIDEO_CONTENT_FORMAT_VALUES = [
+  'El contenido comercial',
+  'El contenido de valor',
+  'El contenido informativo',
+];
+const VIDEO_CONTENT_OBJECTIVE_VALUES = [
+  'Los contenidos escritos.',
+  'Los contenidos escritos con elementos gráficos.',
+  'Los contenidos audiovisuales.',
+  'Los contenidos descargables.',
+];
 
 function normalizeVideoFunnel(value, { allowEmpty = true } = {}) {
   if (value == null) return allowEmpty ? null : undefined;
   const normalized = String(value).trim();
   if (!normalized) return allowEmpty ? null : undefined;
   return VIDEO_FUNNEL_VALUES.includes(normalized) ? normalized : undefined;
+}
+
+function normalizeVideoContentFormat(value, { allowEmpty = true } = {}) {
+  if (value == null) return allowEmpty ? null : undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return allowEmpty ? null : undefined;
+  return VIDEO_CONTENT_FORMAT_VALUES.includes(normalized) ? normalized : undefined;
+}
+
+function normalizeVideoContentObjective(value, { allowEmpty = true } = {}) {
+  if (value == null) return allowEmpty ? null : undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return allowEmpty ? null : undefined;
+  return VIDEO_CONTENT_OBJECTIVE_VALUES.includes(normalized) ? normalized : undefined;
 }
 
 const bulkVideoAllowedFields = new Map([
@@ -2760,6 +2791,8 @@ const bulkVideoAllowedFields = new Map([
   ['url', { column: 'url', type: 'text' }],
   ['video_type', { column: 'video_type', type: 'enum', enumValues: ['paid', 'organic', 'live'] }],
   ['funnel', { column: 'funnel', type: 'video_funnel' }],
+  ['content_format', { column: 'content_format', type: 'video_content_format' }],
+  ['content_objective', { column: 'content_objective', type: 'video_content_objective' }],
 ]);
 
 function parseTypedValue(value, type) {
@@ -2767,6 +2800,8 @@ function parseTypedValue(value, type) {
   if (type === 'text') return String(value);
   if (type === 'enum') return String(value).trim().toLowerCase();
   if (type === 'video_funnel') return normalizeVideoFunnel(value);
+  if (type === 'video_content_format') return normalizeVideoContentFormat(value);
+  if (type === 'video_content_objective') return normalizeVideoContentObjective(value);
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
   if (type === 'int') return Math.trunc(parsed);
@@ -6145,6 +6180,24 @@ function sanitizeVideoMutablePayload(input = {}, { requireFunnel = false } = {})
   } else if (requireFunnel) {
     throw new Error('videos.funnel is required');
   }
+  if (Object.prototype.hasOwnProperty.call(sanitized, 'content_format')) {
+    const normalizedContentFormat = normalizeVideoContentFormat(sanitized.content_format, { allowEmpty: !requireFunnel });
+    if (normalizedContentFormat === undefined) {
+      throw new Error(`videos.content_format must be one of: ${VIDEO_CONTENT_FORMAT_VALUES.join(', ')}`);
+    }
+    sanitized.content_format = normalizedContentFormat;
+  } else if (requireFunnel) {
+    throw new Error('videos.content_format is required');
+  }
+  if (Object.prototype.hasOwnProperty.call(sanitized, 'content_objective')) {
+    const normalizedContentObjective = normalizeVideoContentObjective(sanitized.content_objective, { allowEmpty: !requireFunnel });
+    if (normalizedContentObjective === undefined) {
+      throw new Error(`videos.content_objective must be one of: ${VIDEO_CONTENT_OBJECTIVE_VALUES.join(', ')}`);
+    }
+    sanitized.content_objective = normalizedContentObjective;
+  } else if (requireFunnel) {
+    throw new Error('videos.content_objective is required');
+  }
   return sanitized;
 }
 
@@ -6696,6 +6749,20 @@ async function executeCrudQuery(body, currentUserId) {
         }
         writeRow.funnel = normalizedFunnel;
       }
+      if (Object.prototype.hasOwnProperty.call(writeRow, 'content_format')) {
+        const normalizedContentFormat = normalizeVideoContentFormat(writeRow.content_format);
+        if (normalizedContentFormat === undefined) {
+          throw new Error(`videos.content_format must be one of: ${VIDEO_CONTENT_FORMAT_VALUES.join(', ')}`);
+        }
+        writeRow.content_format = normalizedContentFormat;
+      }
+      if (Object.prototype.hasOwnProperty.call(writeRow, 'content_objective')) {
+        const normalizedContentObjective = normalizeVideoContentObjective(writeRow.content_objective);
+        if (normalizedContentObjective === undefined) {
+          throw new Error(`videos.content_objective must be one of: ${VIDEO_CONTENT_OBJECTIVE_VALUES.join(', ')}`);
+        }
+        writeRow.content_objective = normalizedContentObjective;
+      }
 
       if (writeRow.hypothesis_id) {
         const [ownershipRows] = await pool.query(
@@ -6850,6 +6917,20 @@ async function executeCrudQuery(body, currentUserId) {
         throw new Error(`videos.funnel must be one of: ${VIDEO_FUNNEL_VALUES.join(', ')}`);
       }
       normalizedPayload.funnel = normalizedFunnel;
+    }
+    if (table === 'videos' && Object.prototype.hasOwnProperty.call(normalizedPayload || {}, 'content_format')) {
+      const normalizedContentFormat = normalizeVideoContentFormat(normalizedPayload.content_format);
+      if (normalizedContentFormat === undefined) {
+        throw new Error(`videos.content_format must be one of: ${VIDEO_CONTENT_FORMAT_VALUES.join(', ')}`);
+      }
+      normalizedPayload.content_format = normalizedContentFormat;
+    }
+    if (table === 'videos' && Object.prototype.hasOwnProperty.call(normalizedPayload || {}, 'content_objective')) {
+      const normalizedContentObjective = normalizeVideoContentObjective(normalizedPayload.content_objective);
+      if (normalizedContentObjective === undefined) {
+        throw new Error(`videos.content_objective must be one of: ${VIDEO_CONTENT_OBJECTIVE_VALUES.join(', ')}`);
+      }
+      normalizedPayload.content_objective = normalizedContentObjective;
     }
     const fields = Object.keys(normalizedPayload || {});
     if (!fields.length) throw new Error('Empty update payload');

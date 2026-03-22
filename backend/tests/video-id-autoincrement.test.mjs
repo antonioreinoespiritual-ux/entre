@@ -911,3 +911,122 @@ test('video create validates funnel and preserves legacy videos without funnel',
     server.kill('SIGTERM');
   }
 });
+
+test('video content format and objective fields persist, validate and remain compatible with legacy videos', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-video-content-types-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4114;
+  const baseUrl = `http://127.0.0.1:${port}`;
+
+  const server = spawn('node', ['backend/src/server.js'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      BACKEND_PORT: String(port),
+      SQLITE_PATH: dbPath,
+      CORS_ORIGIN: 'http://localhost:3000',
+    },
+    stdio: 'pipe',
+  });
+
+  try {
+    await waitForHealth(baseUrl);
+
+    const email = `videocontent-${Date.now()}@example.com`;
+    const password = 'secret123';
+    const signupRes = await fetch(`${baseUrl}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+    assert.equal(signupRes.status, 200);
+    const signupJson = await signupRes.json();
+    const token = signupJson?.session?.access_token;
+    assert.ok(token);
+
+    const project = await api(baseUrl, token, {
+      table: 'projects',
+      operation: 'insert',
+      payload: { name: 'Proyecto contenido', description: 'D' },
+    });
+
+    const invalidCreateRes = await fetch(`${baseUrl}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        project_id: project[0].id,
+        title: 'Video inválido',
+        video_type: 'organic',
+        funnel: 'Reconocimiento',
+        content_format: 'Texto libre',
+        content_objective: 'Los contenidos audiovisuales.',
+      }),
+    });
+    assert.equal(invalidCreateRes.status, 400);
+
+    const createRes = await fetch(`${baseUrl}/api/videos`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        project_id: project[0].id,
+        title: 'Video estructural',
+        video_type: 'organic',
+        funnel: 'Consideracion',
+        content_format: 'El contenido comercial',
+        content_objective: 'Los contenidos audiovisuales.',
+      }),
+    });
+    assert.equal(createRes.status, 200);
+    const createJson = await createRes.json();
+    const createdVideoId = createJson.data[0].id;
+    assert.equal(createJson.data[0].content_format, 'El contenido comercial');
+    assert.equal(createJson.data[0].content_objective, 'Los contenidos audiovisuales.');
+
+    const patchRes = await fetch(`${baseUrl}/api/videos/${createdVideoId}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        content_format: 'El contenido informativo',
+        content_objective: 'Los contenidos descargables.',
+      }),
+    });
+    assert.equal(patchRes.status, 200);
+    const patchJson = await patchRes.json();
+    assert.equal(patchJson.video.content_format, 'El contenido informativo');
+    assert.equal(patchJson.video.content_objective, 'Los contenidos descargables.');
+
+    const legacyVideo = await api(baseUrl, token, {
+      table: 'videos',
+      operation: 'insert',
+      payload: {
+        project_id: project[0].id,
+        title: 'Legacy content video',
+        video_type: 'organic',
+        funnel: null,
+        content_format: null,
+        content_objective: null,
+      },
+    });
+
+    const listRes = await fetch(`${baseUrl}/api/projects/${project[0].id}/videos`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(listRes.status, 200);
+    const listJson = await listRes.json();
+    const listedLegacy = (listJson.data || []).find((row) => row.id === legacyVideo[0].id);
+    assert.ok(listedLegacy);
+    assert.equal(listedLegacy.content_format ?? null, null);
+    assert.equal(listedLegacy.content_objective ?? null, null);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});
