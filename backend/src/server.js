@@ -790,6 +790,103 @@ function normalizeCommentModeStructuralPayload(payload = {}, { storageKey = '' }
   };
 }
 
+function commentStoreTimestamp(value) {
+  if (value == null || value === '') return 0;
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function commentStoreEntityKey(entity = {}, fallbackPrefix = 'entity') {
+  if (fallbackPrefix === 'evolution-link') {
+    const sourceId = String(entity?.source_hypothesis_id || '').trim();
+    const destinationMode = String(entity?.destination_mode || '').trim();
+    const destinationId = String(entity?.destination_hypothesis_id || '').trim();
+    if (sourceId || destinationMode || destinationId) return `${sourceId}|${destinationMode}|${destinationId}`;
+  }
+  if (fallbackPrefix === 'topology') {
+    const parentId = String(entity?.parent?.hypothesis_id || entity?.parent_hypothesis_id || '').trim();
+    const childId = String(entity?.child?.hypothesis_id || entity?.hypothesis_id || entity?.id || '').trim();
+    if (parentId || childId) return `${parentId}|${childId}`;
+  }
+  if (fallbackPrefix === 'identity') {
+    const identityId = String(entity?.identity_id || '').trim();
+    if (identityId) return identityId;
+    const nodes = Array.isArray(entity?.nodes) ? entity.nodes : [];
+    if (nodes.length) return nodes.map((node) => `${node?.mode || ''}:${node?.hypothesis_id || ''}`).sort().join('|');
+  }
+  return String(
+    entity?.id
+    ?? entity?.hypothesis_id
+    ?? entity?.identity_id
+    ?? entity?.link_id
+    ?? entity?.slug
+    ?? entity?.code
+    ?? entity?.profile_id
+    ?? entity?.comment_id
+    ?? entity?.source_comment_id
+    ?? `${fallbackPrefix}:${JSON.stringify(entity)}`,
+  ).trim();
+}
+
+function mergeCommentStoreEntityArrays(baseItems = [], incomingItems = [], fallbackPrefix = 'entity') {
+  const merged = new Map();
+  for (const item of [...baseItems, ...incomingItems]) {
+    if (!item || typeof item !== 'object') continue;
+    const key = commentStoreEntityKey(item, fallbackPrefix);
+    if (!key) continue;
+    const current = merged.get(key) || null;
+    if (!current) {
+      merged.set(key, item);
+      continue;
+    }
+    const currentTimestamp = Math.max(commentStoreTimestamp(current?.updated_at), commentStoreTimestamp(current?.created_at));
+    const nextTimestamp = Math.max(commentStoreTimestamp(item?.updated_at), commentStoreTimestamp(item?.created_at));
+    if (nextTimestamp > currentTimestamp) {
+      merged.set(key, item);
+    } else if (nextTimestamp === currentTimestamp) {
+      merged.set(key, { ...current, ...item });
+    }
+  }
+  return [...merged.values()];
+}
+
+function mergeCommentStoreObjectMaps(baseValue = {}, incomingValue = {}) {
+  const base = baseValue && typeof baseValue === 'object' ? baseValue : {};
+  const incoming = incomingValue && typeof incomingValue === 'object' ? incomingValue : {};
+  const result = {};
+  for (const key of new Set([...Object.keys(base), ...Object.keys(incoming)])) {
+    const baseEntry = base[key];
+    const incomingEntry = incoming[key];
+    if (
+      baseEntry && typeof baseEntry === 'object' && !Array.isArray(baseEntry)
+      && incomingEntry && typeof incomingEntry === 'object' && !Array.isArray(incomingEntry)
+    ) {
+      result[key] = { ...baseEntry, ...incomingEntry };
+      continue;
+    }
+    result[key] = incomingEntry === undefined ? baseEntry : incomingEntry;
+  }
+  return result;
+}
+
+function mergeCommentModeStructuralPayload(basePayload = {}, incomingPayload = {}, { storageKey = '' } = {}) {
+  const base = normalizeCommentModeStructuralPayload(basePayload, { storageKey });
+  const incoming = normalizeCommentModeStructuralPayload(incomingPayload, { storageKey });
+  return {
+    fragments: mergeCommentStoreEntityArrays(base.fragments, incoming.fragments, 'fragment'),
+    codes: mergeCommentStoreEntityArrays(base.codes, incoming.codes, 'code'),
+    codeProposals: mergeCommentStoreEntityArrays(base.codeProposals, incoming.codeProposals, 'proposal'),
+    hypotheses: mergeCommentStoreEntityArrays(base.hypotheses, incoming.hypotheses, 'hypothesis'),
+    hypothesisEvolutionLinks: mergeCommentStoreEntityArrays(base.hypothesisEvolutionLinks, incoming.hypothesisEvolutionLinks, 'evolution-link'),
+    hypothesisCrossModeIdentities: mergeCommentStoreEntityArrays(base.hypothesisCrossModeIdentities, incoming.hypothesisCrossModeIdentities, 'identity'),
+    hypothesisTopology: mergeCommentStoreEntityArrays(base.hypothesisTopology, incoming.hypothesisTopology, 'topology'),
+    codeMapLayoutsByHypothesis: mergeCommentStoreObjectMaps(base.codeMapLayoutsByHypothesis, incoming.codeMapLayoutsByHypothesis),
+    codeMapAnalysisSessions: mergeCommentStoreObjectMaps(base.codeMapAnalysisSessions, incoming.codeMapAnalysisSessions),
+    codeMapVisualProfilesByScope: mergeCommentStoreObjectMaps(base.codeMapVisualProfilesByScope, incoming.codeMapVisualProfilesByScope),
+    hypothesisMapLayout: mergeCommentStoreObjectMaps(base.hypothesisMapLayout, incoming.hypothesisMapLayout),
+  };
+}
+
 function createCommentLineageIndex(payload = {}) {
   const lineageByCommentId = new Map();
   const identities = Array.isArray(payload?.hypothesisCrossModeIdentities) ? payload.hypothesisCrossModeIdentities : [];
@@ -927,7 +1024,8 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
   if (!campaign) throw new Error('Campaign not found');
 
   const workspace = await ensureCommentWorkspaceRecord(userId, parsedKey.projectId, parsedKey.campaignId, parsedKey.workspaceId);
-  const normalizedPayload = normalizeCommentModeStructuralPayload(payload, { storageKey: parsedKey.storageKey });
+  const existingPayload = await readCommentModeStructuralState(userId, parsedKey.storageKey);
+  const normalizedPayload = mergeCommentModeStructuralPayload(existingPayload || {}, payload, { storageKey: parsedKey.storageKey });
   const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
   const now = nowIso();
 

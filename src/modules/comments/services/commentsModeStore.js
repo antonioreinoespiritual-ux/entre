@@ -3,6 +3,149 @@ const STORE_NAME = 'states';
 const DB_VERSION = 1;
 const configuredApiBaseUrl = (import.meta.env && import.meta.env.VITE_BACKEND_URL) || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
+const commentsModeBroadcastPrefix = 'comments-mode:sync:';
+const commentsModeStorageEventPrefix = 'comments-mode:event:';
+
+const createEmptyCommentsStore = () => ({
+  fragments: [],
+  codes: [],
+  codeProposals: [],
+  hypotheses: [],
+  hypothesisEvolutionLinks: [],
+  hypothesisCrossModeIdentities: [],
+  hypothesisTopology: [],
+  codeMapLayoutsByHypothesis: {},
+  codeMapAnalysisSessions: {},
+  codeMapVisualProfilesByScope: {},
+  hypothesisMapLayout: {},
+});
+
+const normalizeCommentsModeStorePayload = (payload = {}) => {
+  const safe = payload && typeof payload === 'object' ? payload : {};
+  return {
+    fragments: Array.isArray(safe.fragments) ? safe.fragments : [],
+    codes: Array.isArray(safe.codes) ? safe.codes : [],
+    codeProposals: Array.isArray(safe.codeProposals) ? safe.codeProposals : [],
+    hypotheses: Array.isArray(safe.hypotheses) ? safe.hypotheses : [],
+    hypothesisEvolutionLinks: Array.isArray(safe.hypothesisEvolutionLinks) ? safe.hypothesisEvolutionLinks : [],
+    hypothesisCrossModeIdentities: Array.isArray(safe.hypothesisCrossModeIdentities) ? safe.hypothesisCrossModeIdentities : [],
+    hypothesisTopology: Array.isArray(safe.hypothesisTopology) ? safe.hypothesisTopology : [],
+    codeMapLayoutsByHypothesis: safe.codeMapLayoutsByHypothesis && typeof safe.codeMapLayoutsByHypothesis === 'object'
+      ? safe.codeMapLayoutsByHypothesis
+      : {},
+    codeMapAnalysisSessions: safe.codeMapAnalysisSessions && typeof safe.codeMapAnalysisSessions === 'object'
+      ? safe.codeMapAnalysisSessions
+      : {},
+    codeMapVisualProfilesByScope: safe.codeMapVisualProfilesByScope && typeof safe.codeMapVisualProfilesByScope === 'object'
+      ? safe.codeMapVisualProfilesByScope
+      : {},
+    hypothesisMapLayout: safe.hypothesisMapLayout && typeof safe.hypothesisMapLayout === 'object'
+      ? safe.hypothesisMapLayout
+      : {},
+  };
+};
+
+const normalizeTimestamp = (value) => {
+  if (value == null || value === '') return 0;
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+};
+
+const normalizeEntityId = (entity = {}, fallbackPrefix = 'entity') => {
+  if (fallbackPrefix === 'evolution-link') {
+    const sourceId = String(entity?.source_hypothesis_id || '').trim();
+    const destinationMode = String(entity?.destination_mode || '').trim();
+    const destinationId = String(entity?.destination_hypothesis_id || '').trim();
+    if (sourceId || destinationMode || destinationId) return `${sourceId}|${destinationMode}|${destinationId}`;
+  }
+  if (fallbackPrefix === 'topology') {
+    const parentId = String(entity?.parent?.hypothesis_id || entity?.parent_hypothesis_id || '').trim();
+    const childId = String(entity?.child?.hypothesis_id || entity?.hypothesis_id || entity?.id || '').trim();
+    if (parentId || childId) return `${parentId}|${childId}`;
+  }
+  if (fallbackPrefix === 'identity') {
+    const identityId = String(entity?.identity_id || '').trim();
+    if (identityId) return identityId;
+    const nodes = Array.isArray(entity?.nodes) ? entity.nodes : [];
+    if (nodes.length) return nodes.map((node) => `${node?.mode || ''}:${node?.hypothesis_id || ''}`).sort().join('|');
+  }
+  return String(
+    entity?.id
+    ?? entity?.hypothesis_id
+    ?? entity?.identity_id
+    ?? entity?.link_id
+    ?? entity?.slug
+    ?? entity?.code
+    ?? entity?.profile_id
+    ?? entity?.comment_id
+    ?? entity?.source_comment_id
+    ?? `${fallbackPrefix}:${JSON.stringify(entity)}`,
+  ).trim();
+};
+
+const pickLatestEntity = (current, candidate) => {
+  if (!current) return candidate;
+  const currentTimestamp = Math.max(
+    normalizeTimestamp(current?.updated_at),
+    normalizeTimestamp(current?.created_at),
+  );
+  const candidateTimestamp = Math.max(
+    normalizeTimestamp(candidate?.updated_at),
+    normalizeTimestamp(candidate?.created_at),
+  );
+  if (candidateTimestamp > currentTimestamp) return candidate;
+  if (candidateTimestamp < currentTimestamp) return current;
+  return { ...current, ...candidate };
+};
+
+const mergeEntityArrays = (baseItems = [], incomingItems = [], fallbackPrefix = 'entity') => {
+  const merged = new Map();
+  [...baseItems, ...incomingItems].forEach((item) => {
+    if (!item || typeof item !== 'object') return;
+    const key = normalizeEntityId(item, fallbackPrefix);
+    if (!key) return;
+    merged.set(key, pickLatestEntity(merged.get(key), item));
+  });
+  return [...merged.values()];
+};
+
+const mergeObjectMaps = (baseValue = {}, incomingValue = {}) => {
+  const base = baseValue && typeof baseValue === 'object' ? baseValue : {};
+  const incoming = incomingValue && typeof incomingValue === 'object' ? incomingValue : {};
+  const keys = new Set([...Object.keys(base), ...Object.keys(incoming)]);
+  const result = {};
+  keys.forEach((key) => {
+    const baseEntry = base[key];
+    const incomingEntry = incoming[key];
+    if (
+      baseEntry && typeof baseEntry === 'object' && !Array.isArray(baseEntry)
+      && incomingEntry && typeof incomingEntry === 'object' && !Array.isArray(incomingEntry)
+    ) {
+      result[key] = { ...baseEntry, ...incomingEntry };
+      return;
+    }
+    result[key] = incomingEntry === undefined ? baseEntry : incomingEntry;
+  });
+  return result;
+};
+
+export const mergeCommentsModeStorePayloads = (basePayload = {}, incomingPayload = {}) => {
+  const base = normalizeCommentsModeStorePayload(basePayload);
+  const incoming = normalizeCommentsModeStorePayload(incomingPayload);
+  return {
+    fragments: mergeEntityArrays(base.fragments, incoming.fragments, 'fragment'),
+    codes: mergeEntityArrays(base.codes, incoming.codes, 'code'),
+    codeProposals: mergeEntityArrays(base.codeProposals, incoming.codeProposals, 'proposal'),
+    hypotheses: mergeEntityArrays(base.hypotheses, incoming.hypotheses, 'hypothesis'),
+    hypothesisEvolutionLinks: mergeEntityArrays(base.hypothesisEvolutionLinks, incoming.hypothesisEvolutionLinks, 'evolution-link'),
+    hypothesisCrossModeIdentities: mergeEntityArrays(base.hypothesisCrossModeIdentities, incoming.hypothesisCrossModeIdentities, 'identity'),
+    hypothesisTopology: mergeEntityArrays(base.hypothesisTopology, incoming.hypothesisTopology, 'topology'),
+    codeMapLayoutsByHypothesis: mergeObjectMaps(base.codeMapLayoutsByHypothesis, incoming.codeMapLayoutsByHypothesis),
+    codeMapAnalysisSessions: mergeObjectMaps(base.codeMapAnalysisSessions, incoming.codeMapAnalysisSessions),
+    codeMapVisualProfilesByScope: mergeObjectMaps(base.codeMapVisualProfilesByScope, incoming.codeMapVisualProfilesByScope),
+    hypothesisMapLayout: mergeObjectMaps(base.hypothesisMapLayout, incoming.hypothesisMapLayout),
+  };
+};
 
 const openCommentsModeDb = () => new Promise((resolve, reject) => {
   try {
@@ -79,12 +222,75 @@ const readCachedCommentsModeStore = async (storageKey) => {
 };
 
 const writeCachedCommentsModeStore = async (storageKey, payload) => {
-  if (!storageKey || typeof window === 'undefined' || !window.indexedDB) return;
+  if (!storageKey || typeof window === 'undefined' || !window.indexedDB) return normalizeCommentsModeStorePayload(payload);
+  const normalizedPayload = normalizeCommentsModeStorePayload(payload);
+  const existing = await readCachedCommentsModeStore(storageKey);
+  const mergedPayload = mergeCommentsModeStorePayloads(existing || createEmptyCommentsStore(), normalizedPayload);
   const db = await openCommentsModeDb();
   const tx = db.transaction(STORE_NAME, 'readwrite');
   const store = tx.objectStore(STORE_NAME);
-  await runIdbRequest(store.put(payload, storageKey));
+  await runIdbRequest(store.put(mergedPayload, storageKey));
   db.close();
+  return mergedPayload;
+};
+
+const broadcastCommentsModeStoreUpdate = (storageKey, payload) => {
+  if (!storageKey || typeof window === 'undefined') return;
+  const normalizedPayload = normalizeCommentsModeStorePayload(payload);
+  try {
+    if (typeof window.BroadcastChannel === 'function') {
+      const channel = new window.BroadcastChannel(`${commentsModeBroadcastPrefix}${storageKey}`);
+      channel.postMessage({ storageKey, payload: normalizedPayload, emitted_at: new Date().toISOString() });
+      channel.close();
+    }
+  } catch {}
+
+  try {
+    localStorage.setItem(`${commentsModeStorageEventPrefix}${storageKey}`, JSON.stringify({
+      storageKey,
+      payload: normalizedPayload,
+      emitted_at: new Date().toISOString(),
+    }));
+  } catch {}
+};
+
+export const subscribeCommentsModeStore = (storageKey, onChange) => {
+  if (!storageKey || typeof window === 'undefined' || typeof onChange !== 'function') return () => {};
+
+  let isDisposed = false;
+  let channel = null;
+
+  const notify = async (payload) => {
+    if (isDisposed) return;
+    const latestCached = await readCachedCommentsModeStore(storageKey);
+    const mergedPayload = mergeCommentsModeStorePayloads(latestCached || createEmptyCommentsStore(), payload || {});
+    onChange(mergedPayload);
+  };
+
+  const handleStorage = (event) => {
+    if (event.key !== `${commentsModeStorageEventPrefix}${storageKey}` || !event.newValue) return;
+    try {
+      const parsed = JSON.parse(event.newValue);
+      notify(parsed?.payload || {});
+    } catch {}
+  };
+
+  window.addEventListener('storage', handleStorage);
+
+  try {
+    if (typeof window.BroadcastChannel === 'function') {
+      channel = new window.BroadcastChannel(`${commentsModeBroadcastPrefix}${storageKey}`);
+      channel.onmessage = (event) => {
+        notify(event?.data?.payload || {});
+      };
+    }
+  } catch {}
+
+  return () => {
+    isDisposed = true;
+    window.removeEventListener('storage', handleStorage);
+    if (channel) channel.close();
+  };
 };
 
 export const listCommentsModeStores = async ({ projectId = '', campaignId = '' } = {}) => {
@@ -95,27 +301,33 @@ export const listCommentsModeStores = async ({ projectId = '', campaignId = '' }
 
 export const loadCommentsModeStore = async (storageKey) => {
   if (!storageKey) return null;
+  const cached = await readCachedCommentsModeStore(storageKey);
   try {
     const response = await requestBackend(`/api/comment-mode/state?${new URLSearchParams({ storageKey }).toString()}`, { method: 'GET' });
     const payload = response?.data?.payload || null;
     if (payload) {
-      await writeCachedCommentsModeStore(storageKey, payload);
-      return payload;
+      const mergedPayload = mergeCommentsModeStorePayloads(cached || createEmptyCommentsStore(), payload);
+      await writeCachedCommentsModeStore(storageKey, mergedPayload);
+      return mergedPayload;
     }
   } catch {
     // fallback to cached state below
   }
 
-  return readCachedCommentsModeStore(storageKey);
+  return cached;
 };
 
 export const saveCommentsModeStore = async (storageKey, payload) => {
-  if (!storageKey) return;
-  await writeCachedCommentsModeStore(storageKey, payload);
-  await requestBackend('/api/comment-mode/state', {
+  if (!storageKey) return normalizeCommentsModeStorePayload(payload);
+  const mergedLocalPayload = await writeCachedCommentsModeStore(storageKey, payload);
+  const response = await requestBackend('/api/comment-mode/state', {
     method: 'POST',
-    body: JSON.stringify({ storageKey, payload }),
+    body: JSON.stringify({ storageKey, payload: mergedLocalPayload }),
   });
+  const mergedRemotePayload = mergeCommentsModeStorePayloads(mergedLocalPayload, response?.data?.payload || {});
+  await writeCachedCommentsModeStore(storageKey, mergedRemotePayload);
+  broadcastCommentsModeStoreUpdate(storageKey, mergedRemotePayload);
+  return mergedRemotePayload;
 };
 
 export const updateCommentHypothesisManualState = async ({ storageKey = '', hypothesisId = '', nextState = '' } = {}) => {
@@ -125,7 +337,10 @@ export const updateCommentHypothesisManualState = async ({ storageKey = '', hypo
     body: JSON.stringify({ storageKey, hypothesisId, nextState }),
   });
   const payload = response?.data?.payload || null;
-  if (payload) await writeCachedCommentsModeStore(storageKey, payload);
+  if (payload) {
+    const mergedPayload = await writeCachedCommentsModeStore(storageKey, payload);
+    broadcastCommentsModeStoreUpdate(storageKey, mergedPayload);
+  }
   return response?.data || null;
 };
 
@@ -135,3 +350,5 @@ export const migrateLocalCommentsModeStoreToBackend = async (storageKey) => {
   await saveCommentsModeStore(storageKey, cached);
   return cached;
 };
+
+export { createEmptyCommentsStore, normalizeCommentsModeStorePayload };

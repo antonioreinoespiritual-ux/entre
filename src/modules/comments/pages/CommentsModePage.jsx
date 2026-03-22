@@ -5,7 +5,15 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
-import { loadCommentsModeStore, saveCommentsModeStore, updateCommentHypothesisManualState } from '@/modules/comments/services/commentsModeStore';
+import {
+  createEmptyCommentsStore,
+  loadCommentsModeStore,
+  mergeCommentsModeStorePayloads,
+  normalizeCommentsModeStorePayload,
+  saveCommentsModeStore,
+  subscribeCommentsModeStore,
+  updateCommentHypothesisManualState,
+} from '@/modules/comments/services/commentsModeStore';
 import { listAvailableCommentHypothesisProfiles, normalizeCommentHypothesisLinkedProfileIds } from '@/modules/comments/services/commentHypothesisProfiles';
 import { markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 import { useHypotheses } from '@/contexts/HypothesisContext';
@@ -292,40 +300,10 @@ const buildCodeMapInitialAssistantReport = (analysis = {}, subject = {}, targetT
   ].join('\n');
 };
 
-const createEmptyCommentsStore = () => ({
-  fragments: [],
-  codes: [],
-  codeProposals: [],
-  hypotheses: [],
-  hypothesisEvolutionLinks: [],
-  codeMapLayoutsByHypothesis: {},
-  codeMapAnalysisSessions: {},
-  codeMapVisualProfilesByScope: {},
-  hypothesisMapLayout: {},
-});
-
 const loadCommentsStoreFromLocalStorage = (storageKey = '') => {
   try {
     const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
-    return {
-      fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
-      codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-      codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
-      hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
-      hypothesisEvolutionLinks: Array.isArray(parsed.hypothesisEvolutionLinks) ? parsed.hypothesisEvolutionLinks : [],
-      codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
-        ? parsed.codeMapLayoutsByHypothesis
-        : {},
-      codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
-        ? parsed.codeMapAnalysisSessions
-        : {},
-      codeMapVisualProfilesByScope: parsed.codeMapVisualProfilesByScope && typeof parsed.codeMapVisualProfilesByScope === 'object'
-        ? parsed.codeMapVisualProfilesByScope
-        : {},
-      hypothesisMapLayout: parsed.hypothesisMapLayout && typeof parsed.hypothesisMapLayout === 'object'
-        ? parsed.hypothesisMapLayout
-        : {},
-    };
+    return normalizeCommentsModeStorePayload(parsed);
   } catch {
     return createEmptyCommentsStore();
   }
@@ -546,15 +524,23 @@ const CommentsModePage = () => {
   const readerTextContainerRef = useRef(null);
 
   const [store, setStore] = useState(() => loadCommentsStoreFromLocalStorage(storageKey));
+  const storeRef = useRef(store);
+
+  useEffect(() => {
+    storeRef.current = store;
+  }, [store]);
 
   const persist = (next) => {
-    setStore(next);
+    const normalizedNext = mergeCommentsModeStorePayloads(storeRef.current, next);
+    setStore(normalizedNext);
     try {
-      localStorage.setItem(storageKey, JSON.stringify(next));
+      localStorage.setItem(storageKey, JSON.stringify(normalizedNext));
     } catch {
       // Fallback para datasets grandes: el guardado principal vive en IndexedDB.
     }
-    saveCommentsModeStore(storageKey, next).catch(() => {
+    saveCommentsModeStore(storageKey, normalizedNext).then((savedPayload) => {
+      setStore((current) => mergeCommentsModeStorePayloads(current, savedPayload));
+    }).catch(() => {
       // Silencio controlado: no bloquear UX si IndexedDB falla en navegador restringido.
     });
   };
@@ -698,6 +684,18 @@ const CommentsModePage = () => {
     return () => {
       cancelled = true;
     };
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey) return undefined;
+    return subscribeCommentsModeStore(storageKey, (incomingPayload) => {
+      setStore((current) => mergeCommentsModeStorePayloads(current, incomingPayload));
+      try {
+        const currentStored = loadCommentsStoreFromLocalStorage(storageKey);
+        const mergedLocal = mergeCommentsModeStorePayloads(currentStored, incomingPayload);
+        localStorage.setItem(storageKey, JSON.stringify(mergedLocal));
+      } catch {}
+    });
   }, [storageKey]);
 
   const fragments = store.fragments || [];

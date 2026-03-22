@@ -324,3 +324,78 @@ test('manual comment-mode state changes are blocked by active evolutions in the 
     server.kill('SIGTERM');
   }
 });
+
+test('comment mode state persistence merges concurrent partial saves instead of overwriting entities from another tab', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-comment-mode-merge-safe-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4117;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: String(port), SQLITE_PATH: dbPath }, stdio: 'pipe' });
+
+  try {
+    await waitForHealth(baseUrl);
+    const token = await createSession(baseUrl);
+    const { projectId, campaignId } = await setupEntities(baseUrl, token);
+
+    const workspaceRes = await fetch(`${baseUrl}/api/comment-base/workspaces`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, campaign_id: campaignId, name: 'Merge-safe Workspace', description: '', status: 'active' }),
+    });
+    assert.equal(workspaceRes.status, 200);
+    const workspaceId = (await workspaceRes.json())?.data?.id;
+    assert.ok(workspaceId);
+
+    const storageKey = `comments-mode:${projectId}:${campaignId}:workspace:${workspaceId}`;
+
+    const saveFromTabA = await fetch(`${baseUrl}/api/comment-mode/state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storageKey,
+        payload: {
+          hypotheses: [
+            { id: 'hyp-a', title: 'Hipótesis A', validation_status: 'inconclusa', updated_at: '2026-01-01T00:00:00.000Z' },
+          ],
+          codes: [
+            { id: 'code-a', slug: 'code-a', label: 'Código A', updated_at: '2026-01-01T00:00:00.000Z' },
+          ],
+        },
+      }),
+    });
+    assert.equal(saveFromTabA.status, 200);
+
+    const saveFromTabB = await fetch(`${baseUrl}/api/comment-mode/state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        storageKey,
+        payload: {
+          hypotheses: [
+            { id: 'hyp-b', title: 'Hipótesis B', validation_status: 'validada', updated_at: '2026-01-02T00:00:00.000Z' },
+          ],
+          codeProposals: [
+            { id: 'proposal-b', updated_at: '2026-01-02T00:00:00.000Z', name: 'Propuesta B' },
+          ],
+        },
+      }),
+    });
+    assert.equal(saveFromTabB.status, 200);
+    const saveFromTabBJson = await saveFromTabB.json();
+    assert.equal(saveFromTabBJson?.data?.payload?.hypotheses?.length, 2);
+    assert.equal(saveFromTabBJson?.data?.payload?.codes?.length, 1);
+    assert.equal(saveFromTabBJson?.data?.payload?.codeProposals?.length, 1);
+
+    const getRes = await fetch(`${baseUrl}/api/comment-mode/state?${new URLSearchParams({ storageKey }).toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(getRes.status, 200);
+    const getJson = await getRes.json();
+    const hypotheses = Array.isArray(getJson?.data?.payload?.hypotheses) ? getJson.data.payload.hypotheses : [];
+    assert.deepEqual(hypotheses.map((item) => String(item.id)).sort(), ['hyp-a', 'hyp-b']);
+    assert.equal(getJson?.data?.payload?.codes?.length, 1);
+    assert.equal(getJson?.data?.payload?.codeProposals?.length, 1);
+  } finally {
+    server.kill('SIGTERM');
+  }
+});
