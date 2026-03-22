@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 import { loadCommentsModeStore, saveCommentsModeStore, updateCommentHypothesisManualState } from '@/modules/comments/services/commentsModeStore';
+import { listAvailableCommentHypothesisProfiles, normalizeCommentHypothesisLinkedProfileIds } from '@/modules/comments/services/commentHypothesisProfiles';
 import { markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
@@ -3633,43 +3634,10 @@ const CommentsModePage = () => {
   ];
 
 
-  const availableHypothesisProfiles = useMemo(() => {
-    const aggregated = new Map();
-    Object.values(codeMapVisualProfilesByScope || {}).forEach((scopeData) => {
-      const profiles = Array.isArray(scopeData?.profiles) ? scopeData.profiles : [];
-      const assignments = scopeData?.assignments && typeof scopeData.assignments === 'object' ? scopeData.assignments : {};
-      const assignmentCountByProfile = Object.values(assignments).reduce((acc, profileId) => {
-        const normalizedProfileId = String(profileId || '').trim();
-        if (!normalizedProfileId) return acc;
-        acc.set(normalizedProfileId, (acc.get(normalizedProfileId) || 0) + 1);
-        return acc;
-      }, new Map());
-
-      profiles.forEach((profile) => {
-        const id = String(profile?.id || '').trim();
-        if (!id) return;
-        const previous = aggregated.get(id);
-        const nextAssignmentCount = Number(assignmentCountByProfile.get(id) || 0);
-        if (!previous) {
-          aggregated.set(id, {
-            id,
-            name: String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
-            description: String(profile?.description || '').trim(),
-            assignmentCount: nextAssignmentCount,
-          });
-          return;
-        }
-        aggregated.set(id, {
-          ...previous,
-          name: previous.name || String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
-          description: previous.description || String(profile?.description || '').trim(),
-          assignmentCount: Number(previous.assignmentCount || 0) + nextAssignmentCount,
-        });
-      });
-    });
-
-    return Array.from(aggregated.values()).sort((a, b) => a.name.localeCompare(b.name, 'es'));
-  }, [codeMapVisualProfilesByScope]);
+  const availableHypothesisProfiles = useMemo(
+    () => listAvailableCommentHypothesisProfiles(codeMapVisualProfilesByScope, codeMapScopeKey),
+    [codeMapScopeKey, codeMapVisualProfilesByScope],
+  );
 
   const profileById = useMemo(
     () => new Map(availableHypothesisProfiles.map((profile) => [String(profile.id), profile])),
@@ -4252,7 +4220,7 @@ const CommentsModePage = () => {
       type: normalizeCommentHypothesisType(hypothesis.type) || 'problema',
       parentHypothesisId: String(hypothesis.parent_hypothesis_id || ''),
       context_note: String(hypothesis.context_note || ''),
-      linkedProfileIds: Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids.map((profileId) => String(profileId)) : [],
+      linkedProfileIds: normalizeCommentHypothesisLinkedProfileIds(hypothesis),
       profileQuery: '',
     });
   };
@@ -4268,9 +4236,9 @@ const CommentsModePage = () => {
     const parentHypothesisId = String(hypothesisEditor.parentHypothesisId || '').trim();
     const parentHypothesis = parentHypothesisId ? hypothesisById.get(parentHypothesisId) : null;
     const contextNote = String(hypothesisEditor.context_note || '').trim();
-    const linkedProfileIds = Array.from(new Set((Array.isArray(hypothesisEditor.linkedProfileIds) ? hypothesisEditor.linkedProfileIds : [])
-      .map((profileId) => String(profileId).trim())
-      .filter((profileId) => profileById.has(profileId))));
+    const linkedProfileIds = Array.from(new Set(normalizeCommentHypothesisLinkedProfileIds({
+      linked_profile_ids: hypothesisEditor.linkedProfileIds,
+    }).filter((profileId) => profileById.has(profileId))));
 
     if (!title || !description || !hypothesisType) {
       window.alert('Título, descripción y tipo son obligatorios para crear/editar hipótesis.');

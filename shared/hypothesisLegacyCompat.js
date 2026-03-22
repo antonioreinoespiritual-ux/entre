@@ -161,6 +161,10 @@ export function normalizeLegacyCommentHypothesis(hypothesis = {}) {
     ...toArray(safeHypothesis.linkedProfiles),
     ...toArray(safeHypothesis.profile_ids),
     ...toArray(safeHypothesis.profileIds),
+    safeHypothesis.linked_profile_id,
+    safeHypothesis.linkedProfileId,
+    safeHypothesis.profile_id,
+    safeHypothesis.profileId,
   ].map((value) => normalizeText(value)).filter(Boolean);
 
   return {
