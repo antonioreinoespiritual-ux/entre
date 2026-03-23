@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { ArrowLeft, BookOpenText, MessageSquareText, Tags, Network, Scissors, Search, MoreHorizontal, Plus, ChevronRight, ChevronDown, Eye, BarChart3, Sparkles, Trash2, Activity, GitBranch, CalendarClock, Lightbulb, BrainCircuit, RotateCcw, PanelsTopLeft } from 'lucide-react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
 import { loadCommentsModeStore, saveCommentsModeStore } from '@/modules/comments/services/commentsModeStore';
+import { markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
+import { useHypotheses } from '@/contexts/HypothesisContext';
+import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
 
 const defaultCodeEditor = {
   mode: 'create',
@@ -29,6 +32,105 @@ const defaultIngestionDraft = {
   includeReplies: true,
   order: 'time',
 };
+
+
+const defaultEvolutionInterviewDraft = {
+  title: '',
+  description: '',
+  type: 'problema',
+  status: 'exploracion',
+  audience_id: '',
+  segment: '',
+  related_client_id: '',
+  interview_form_id: '',
+  min_interviews: 5,
+  experiment_notes: '',
+  observations: '',
+  next_actions: '',
+  validation_metric_config: {
+    selected_metrics: ['problem_score_avg', 'solution_interest_avg'],
+    threshold_value: 3.5,
+    comparison_operator: '>=',
+    outcome_if_true: 'validada',
+    outcome_if_false: 'refutada',
+    evaluation_type: 'average_selected_metrics',
+  },
+};
+
+const defaultEvolutionVideoDraft = {
+  type: 'problema',
+  hypothesis_statement: '',
+  variable_x: '',
+  metrica_objetivo_y: 'views',
+  umbral_operador: '>=',
+  umbral_tipo: 'entero',
+  umbral_valor: 1000,
+  volumen_minimo: 100,
+  volumen_unidad: 'views',
+  canal_principal: 'organic',
+  contexto_cualitativo: '',
+};
+
+const normalizeVideoEvolutionDisplayTitle = (value = '') => String(value || '').replace(/\s+/g, ' ').trim();
+
+const resolveVideoEvolutionDisplayTitle = ({ explicitTitle = '', fallbackTitle = '', statement = '' } = {}) => {
+  const normalizedStatement = normalizeVideoEvolutionDisplayTitle(statement);
+  const candidates = [explicitTitle, fallbackTitle]
+    .map((candidate) => normalizeVideoEvolutionDisplayTitle(candidate))
+    .filter(Boolean)
+    .filter((candidate, index, array) => array.indexOf(candidate) === index);
+  const shortCandidate = candidates.find((candidate) => candidate.length <= 120 && candidate !== normalizedStatement);
+  return shortCandidate || candidates[0] || normalizedStatement;
+};
+
+const buildCommentHypothesisTraceBlock = ({ sourceHypothesis = {}, destinationMode = '', workspaceId = '', evolvedAt = '', destinationHypothesisId = '' } = {}) => {
+  const sourceId = String(sourceHypothesis?.id || '').trim();
+  const sourceTitle = String(sourceHypothesis?.title || '').trim();
+  const routeType = destinationMode === 'interviews' ? 'comentarios → entrevistas' : 'comentarios → video';
+  return [
+    'TRAZABILIDAD DE EVOLUCIÓN',
+    `origen_modo: comentarios`,
+    `origen_workspace_id: ${workspaceId || '__legacy_workspace__'}`,
+    `origen_hypothesis_id: ${sourceId || 'sin_id'}`,
+    `origen_hypothesis_title: ${sourceTitle || 'Hipótesis comentarios'}`,
+    `destino_modo: ${destinationMode || 'sin_destino'}`,
+    `tipo_evolucion: ${routeType}`,
+    `evolved_at: ${evolvedAt || new Date().toISOString()}`,
+    `destino_hypothesis_id: ${destinationHypothesisId || 'pendiente_asignacion'}`,
+  ].join('\n');
+};
+
+
+const COMMENT_HYPOTHESIS_TYPE_OPTIONS = [
+  { value: 'problema', label: 'Problema' },
+  { value: 'segmento', label: 'Segmento' },
+  { value: 'mensajes', label: 'Mensajes' },
+  { value: 'solucion', label: 'Solución' },
+  { value: 'producto', label: 'Producto' },
+];
+
+const COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD = {
+  problema: '',
+  segmento: 'problema',
+  mensajes: 'segmento',
+  solucion: 'mensajes',
+  producto: 'solucion',
+};
+
+const COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT = {
+  problema: 'segmento',
+  segmento: 'mensajes',
+  mensajes: 'solucion',
+  solucion: 'producto',
+  producto: '',
+};
+
+const normalizeCommentHypothesisType = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return COMMENT_HYPOTHESIS_TYPE_OPTIONS.some((option) => option.value === normalized) ? normalized : '';
+};
+
+const commentHypothesisTypeLabel = (value = '') => COMMENT_HYPOTHESIS_TYPE_OPTIONS.find((option) => option.value === normalizeCommentHypothesisType(value))?.label || 'Sin tipo';
 
 const parseYouTubeVideoId = (value = '') => {
   const input = String(value || '').trim();
@@ -139,6 +241,7 @@ const createEmptyCommentsStore = () => ({
   codes: [],
   codeProposals: [],
   hypotheses: [],
+  hypothesisEvolutionLinks: [],
   codeMapLayoutsByHypothesis: {},
   codeMapAnalysisSessions: {},
   codeMapVisualProfilesByScope: {},
@@ -152,6 +255,7 @@ const loadCommentsStoreFromLocalStorage = (storageKey = '') => {
       codes: Array.isArray(parsed.codes) ? parsed.codes : [],
       codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
       hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
+      hypothesisEvolutionLinks: Array.isArray(parsed.hypothesisEvolutionLinks) ? parsed.hypothesisEvolutionLinks : [],
       codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
         ? parsed.codeMapLayoutsByHypothesis
         : {},
@@ -207,6 +311,8 @@ const normalizeGeneratedProposalDescription = (description = '', name = '') => {
 
 const CommentsModePage = () => {
   const { projectId, campaignId } = useParams();
+  const navigate = useNavigate();
+  const { createHypothesis: createVideoHypothesis, deleteHypothesis: deleteVideoHypothesis, updateHypothesis: updateVideoHypothesis, fetchHypotheses: fetchVideoHypotheses } = useHypotheses();
   const workspacePreferenceKey = `comments-mode:workspace-selection:${projectId}:${campaignId}`;
   const legacyStorageKey = `comments-mode:${projectId}:${campaignId}`;
 
@@ -286,14 +392,36 @@ const CommentsModePage = () => {
   const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
   const [hypothesisQuery, setHypothesisQuery] = useState('');
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [hypothesisEvolutionModal, setHypothesisEvolutionModal] = useState({
+    open: false,
+    saving: false,
+    error: '',
+    destinationMode: '',
+    sourceHypothesisId: '',
+    scope: 'single',
+  });
+  const [hypothesisEvolutionSupport, setHypothesisEvolutionSupport] = useState({ loading: false, error: '', audiences: [], clients: [], forms: [] });
+  const [hypothesisEvolutionDeleteModal, setHypothesisEvolutionDeleteModal] = useState({
+    open: false,
+    deleting: false,
+    error: '',
+    sourceHypothesisId: '',
+    selectedEvolutionId: '',
+    deleteMode: 'branch',
+  });
+  const [hypothesisEvolutionInterviewDraft, setHypothesisEvolutionInterviewDraft] = useState(defaultEvolutionInterviewDraft);
+  const [hypothesisEvolutionVideoDraft, setHypothesisEvolutionVideoDraft] = useState(defaultEvolutionVideoDraft);
   const [hypothesisEditor, setHypothesisEditor] = useState({
     open: false,
     mode: 'create',
     id: '',
     title: '',
     description: '',
+    type: 'problema',
+    parentHypothesisId: '',
     context_note: '',
-    linkedCodeSlugs: [],
+    linkedProfileIds: [],
+    profileQuery: '',
   });
   const [codeMapOpen, setCodeMapOpen] = useState(false);
   const [codeMapZoom, setCodeMapZoom] = useState(1);
@@ -473,6 +601,7 @@ const CommentsModePage = () => {
           codes: Array.isArray(indexedState.codes) ? indexedState.codes : [],
           codeProposals: Array.isArray(indexedState.codeProposals) ? indexedState.codeProposals : [],
           hypotheses: Array.isArray(indexedState.hypotheses) ? indexedState.hypotheses : [],
+          hypothesisEvolutionLinks: Array.isArray(indexedState.hypothesisEvolutionLinks) ? indexedState.hypothesisEvolutionLinks : [],
           codeMapLayoutsByHypothesis: indexedState.codeMapLayoutsByHypothesis && typeof indexedState.codeMapLayoutsByHypothesis === 'object'
             ? indexedState.codeMapLayoutsByHypothesis
             : {},
@@ -497,6 +626,7 @@ const CommentsModePage = () => {
   const codes = store.codes || [];
   const codeProposals = store.codeProposals || [];
   const hypotheses = store.hypotheses || [];
+  const hypothesisEvolutionLinks = Array.isArray(store.hypothesisEvolutionLinks) ? store.hypothesisEvolutionLinks : [];
   const codeMapLayoutsByHypothesis = store.codeMapLayoutsByHypothesis && typeof store.codeMapLayoutsByHypothesis === 'object'
     ? store.codeMapLayoutsByHypothesis
     : {};
@@ -3278,6 +3408,63 @@ const CommentsModePage = () => {
   ];
 
 
+  const availableHypothesisProfiles = useMemo(() => {
+    const aggregated = new Map();
+    Object.values(codeMapVisualProfilesByScope || {}).forEach((scopeData) => {
+      const profiles = Array.isArray(scopeData?.profiles) ? scopeData.profiles : [];
+      const assignments = scopeData?.assignments && typeof scopeData.assignments === 'object' ? scopeData.assignments : {};
+      const assignmentCountByProfile = Object.values(assignments).reduce((acc, profileId) => {
+        const normalizedProfileId = String(profileId || '').trim();
+        if (!normalizedProfileId) return acc;
+        acc.set(normalizedProfileId, (acc.get(normalizedProfileId) || 0) + 1);
+        return acc;
+      }, new Map());
+
+      profiles.forEach((profile) => {
+        const id = String(profile?.id || '').trim();
+        if (!id) return;
+        const previous = aggregated.get(id);
+        const nextAssignmentCount = Number(assignmentCountByProfile.get(id) || 0);
+        if (!previous) {
+          aggregated.set(id, {
+            id,
+            name: String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
+            description: String(profile?.description || '').trim(),
+            assignmentCount: nextAssignmentCount,
+          });
+          return;
+        }
+        aggregated.set(id, {
+          ...previous,
+          name: previous.name || String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
+          description: previous.description || String(profile?.description || '').trim(),
+          assignmentCount: Number(previous.assignmentCount || 0) + nextAssignmentCount,
+        });
+      });
+    });
+
+    return Array.from(aggregated.values()).sort((a, b) => a.name.localeCompare(b.name, 'es'));
+  }, [codeMapVisualProfilesByScope]);
+
+  const profileById = useMemo(
+    () => new Map(availableHypothesisProfiles.map((profile) => [String(profile.id), profile])),
+    [availableHypothesisProfiles],
+  );
+
+  const hypothesisById = useMemo(
+    () => new Map(hypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
+    [hypotheses],
+  );
+
+  const childHypothesesByParentId = useMemo(() => hypotheses.reduce((acc, hypothesis) => {
+    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
+    if (!parentId) return acc;
+    const current = acc.get(parentId) || [];
+    current.push(hypothesis);
+    acc.set(parentId, current);
+    return acc;
+  }, new Map()), [hypotheses]);
+
   const filteredHypotheses = useMemo(() => {
     const q = String(hypothesisQuery || '').trim().toLowerCase();
     if (!q) return hypotheses;
@@ -3285,9 +3472,425 @@ const CommentsModePage = () => {
       const title = String(item.title || '').toLowerCase();
       const description = String(item.description || '').toLowerCase();
       const contextNote = String(item.context_note || '').toLowerCase();
-      return title.includes(q) || description.includes(q) || contextNote.includes(q);
+      const typeLabel = commentHypothesisTypeLabel(item.type).toLowerCase();
+      const linkedProfilesText = (Array.isArray(item.linked_profile_ids) ? item.linked_profile_ids : [])
+        .map((profileId) => profileById.get(String(profileId))?.name || '')
+        .join(' ')
+        .toLowerCase();
+      return title.includes(q) || description.includes(q) || contextNote.includes(q) || linkedProfilesText.includes(q) || typeLabel.includes(q);
     });
-  }, [hypotheses, hypothesisQuery]);
+  }, [hypotheses, hypothesisQuery, profileById]);
+
+  const allowedParentHypothesesForEditor = useMemo(() => {
+    const childType = normalizeCommentHypothesisType(hypothesisEditor.type);
+    const requiredParentType = COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[childType] || '';
+    if (!requiredParentType) return [];
+    return hypotheses.filter((hypothesis) => String(hypothesis.id) !== String(hypothesisEditor.id || '') && normalizeCommentHypothesisType(hypothesis.type) === requiredParentType);
+  }, [hypotheses, hypothesisEditor.id, hypothesisEditor.type]);
+
+  const evolutionLinksBySourceId = useMemo(() => hypothesisEvolutionLinks.reduce((acc, link) => {
+    if (link?.deleted_at) return acc;
+    const sourceId = String(link?.source_hypothesis_id || '').trim();
+    if (!sourceId) return acc;
+    const current = acc.get(sourceId) || [];
+    current.push(link);
+    acc.set(sourceId, current);
+    return acc;
+  }, new Map()), [hypothesisEvolutionLinks]);
+
+  const activeEvolutionSourceHypothesis = useMemo(
+    () => hypotheses.find((item) => String(item.id) === String(hypothesisEvolutionModal.sourceHypothesisId || '')) || null,
+    [hypotheses, hypothesisEvolutionModal.sourceHypothesisId],
+  );
+
+  const activeEvolutionDeletionSourceHypothesis = useMemo(
+    () => hypotheses.find((item) => String(item.id) === String(hypothesisEvolutionDeleteModal.sourceHypothesisId || '')) || null,
+    [hypotheses, hypothesisEvolutionDeleteModal.sourceHypothesisId],
+  );
+
+  const activeSourceEvolutionOptions = useMemo(
+    () => (evolutionLinksBySourceId.get(String(hypothesisEvolutionDeleteModal.sourceHypothesisId || '')) || []).filter((link) => !link?.deleted_at),
+    [evolutionLinksBySourceId, hypothesisEvolutionDeleteModal.sourceHypothesisId],
+  );
+
+  const selectedEvolutionToDelete = useMemo(
+    () => activeSourceEvolutionOptions.find((link) => String(link.id) === String(hypothesisEvolutionDeleteModal.selectedEvolutionId || '')) || null,
+    [activeSourceEvolutionOptions, hypothesisEvolutionDeleteModal.selectedEvolutionId],
+  );
+
+  const stripVideoHierarchyMetadata = (value = '') => String(value || '').replace(/\s*\[hierarchy_meta\][\s\S]*?\[\/hierarchy_meta\]\s*/g, '').trim();
+  const extractVideoHierarchyMetadata = (value = '') => {
+    const match = String(value || '').match(/\[hierarchy_meta\]([\s\S]*?)\[\/hierarchy_meta\]/);
+    if (!match) return {};
+    try {
+      return JSON.parse(match[1]);
+    } catch {
+      return {};
+    }
+  };
+  const getVideoParentHypothesisId = (hypothesis = {}) => String(extractVideoHierarchyMetadata(hypothesis?.contexto_cualitativo || '').parent_hypothesis_id || '').trim();
+  const stripInterviewHierarchyMetadata = (value = '') => String(value || '').replace(/\s*\[interview_hierarchy\][\s\S]*?\[\/interview_hierarchy\]\s*/g, '').trim();
+  const extractInterviewHierarchyMetadata = (value = '') => {
+    const match = String(value || '').match(/\[interview_hierarchy\]([\s\S]*?)\[\/interview_hierarchy\]/);
+    if (!match) return {};
+    try {
+      return JSON.parse(match[1]);
+    } catch {
+      return {};
+    }
+  };
+  const getInterviewParentHypothesisId = (hypothesis = {}) => String(extractInterviewHierarchyMetadata(hypothesis?.observations || '').parent_hypothesis_id || '').trim();
+
+  const collectEvolutionBranchIds = (items = [], rootId = '', getParentId = () => '') => {
+    const normalizedRootId = String(rootId || '').trim();
+    if (!normalizedRootId) return [];
+    const pending = [normalizedRootId];
+    const collected = new Set();
+    while (pending.length) {
+      const currentId = pending.shift();
+      if (!currentId || collected.has(currentId)) continue;
+      collected.add(currentId);
+      items.forEach((item) => {
+        if (String(getParentId(item) || '').trim() === currentId) pending.push(String(item.id || '').trim());
+      });
+    }
+    return [...collected];
+  };
+
+  const openHypothesisEvolutionDeleteModal = (hypothesis) => {
+    const sourceHypothesisId = String(hypothesis?.id || '').trim();
+    const sourceEvolutions = (evolutionLinksBySourceId.get(sourceHypothesisId) || []).filter((link) => !link?.deleted_at);
+    if (!sourceEvolutions.length) return;
+    setHypothesisMenuId('');
+    setHypothesisEvolutionDeleteModal({
+      open: true,
+      deleting: false,
+      error: '',
+      sourceHypothesisId,
+      selectedEvolutionId: String(sourceEvolutions[0]?.id || ''),
+      deleteMode: 'branch',
+    });
+  };
+
+  const closeHypothesisEvolutionDeleteModal = () => {
+    setHypothesisEvolutionDeleteModal({ open: false, deleting: false, error: '', sourceHypothesisId: '', selectedEvolutionId: '', deleteMode: 'branch' });
+  };
+
+  const saveHypothesisEvolutionDeletion = async () => {
+    const evolution = selectedEvolutionToDelete;
+    const deleteMode = String(hypothesisEvolutionDeleteModal.deleteMode || 'branch');
+    if (!evolution) {
+      setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, error: 'Selecciona una evolución para eliminar.' }));
+      return;
+    }
+    setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleting: true, error: '' }));
+    try {
+      const destinationMode = String(evolution.destination_mode || '').trim();
+      const rootDestinationId = String(evolution.destination_hypothesis_id || '').trim();
+      let destinationHypotheses = [];
+      let destinationIdsToDelete = [rootDestinationId];
+
+      if (destinationMode === 'interviews') {
+        destinationHypotheses = await interviewsModuleApi.listHypotheses(projectId, campaignId);
+        const branchIds = collectEvolutionBranchIds(destinationHypotheses, rootDestinationId, getInterviewParentHypothesisId);
+        destinationIdsToDelete = deleteMode === 'branch' ? branchIds : [rootDestinationId];
+        const idsToDetach = branchIds.filter((id) => !destinationIdsToDelete.includes(id));
+        for (const childId of idsToDetach) {
+          const child = destinationHypotheses.find((item) => String(item.id) === childId);
+          if (!child) continue;
+          await interviewsModuleApi.updateHypothesis(childId, { observations: stripInterviewHierarchyMetadata(child.observations || '') || null });
+        }
+        for (const hypothesisId of [...destinationIdsToDelete].reverse()) {
+          await interviewsModuleApi.deleteHypothesis(hypothesisId);
+        }
+      } else if (destinationMode === 'video') {
+        destinationHypotheses = await fetchVideoHypotheses(campaignId);
+        const branchIds = collectEvolutionBranchIds(destinationHypotheses, rootDestinationId, getVideoParentHypothesisId);
+        destinationIdsToDelete = deleteMode === 'branch' ? branchIds : [rootDestinationId];
+        const idsToDetach = branchIds.filter((id) => !destinationIdsToDelete.includes(id));
+        for (const childId of idsToDetach) {
+          const child = destinationHypotheses.find((item) => String(item.id) === childId);
+          if (!child) continue;
+          await updateVideoHypothesis(childId, { contexto_cualitativo: stripVideoHierarchyMetadata(child.contexto_cualitativo || '') || null });
+        }
+        for (const hypothesisId of [...destinationIdsToDelete].reverse()) {
+          const deleted = await deleteVideoHypothesis(hypothesisId, campaignId);
+          if (!deleted) throw new Error('No se pudo eliminar una hipótesis evolucionada en Modo Video.');
+        }
+      } else {
+        throw new Error('La evolución seleccionada no tiene un modo destino válido.');
+      }
+
+      await markHypothesisEvolutionLinksDeleted({
+        projectId,
+        campaignId,
+        destinationMode,
+        destinationHypothesisIds: destinationIdsToDelete,
+        deletionContext: {
+          source_mode: 'comments',
+          source_hypothesis_id: evolution.source_hypothesis_id,
+          destination_mode: destinationMode,
+          deleted_from_comments_menu: true,
+          delete_mode: deleteMode,
+        },
+      });
+
+      const nextEvolutionLinks = hypothesisEvolutionLinks.map((link) => (destinationIdsToDelete.includes(String(link?.destination_hypothesis_id || ''))
+        ? {
+          ...link,
+          deleted_at: new Date().toISOString(),
+          deletion_context: {
+            ...link?.deletion_context,
+            source_mode: 'comments',
+            source_hypothesis_id: evolution.source_hypothesis_id,
+            destination_mode: destinationMode,
+            deleted_from_comments_menu: true,
+            delete_mode: deleteMode,
+          },
+        }
+        : link));
+      persist({ ...store, hypothesisEvolutionLinks: nextEvolutionLinks });
+      closeHypothesisEvolutionDeleteModal();
+    } catch (error) {
+      setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleting: false, error: error?.message || 'No se pudo eliminar la evolución seleccionada.' }));
+      return;
+    }
+    setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleting: false }));
+  };
+
+  const hydrateEvolutionDrafts = (hypothesis = null) => {
+    const sourceTitle = String(hypothesis?.title || '').trim() || 'Hipótesis evolucionada';
+    const sourceDescription = String(hypothesis?.description || '').trim();
+    const sourceContext = String(hypothesis?.context_note || '').trim();
+    setHypothesisEvolutionInterviewDraft({
+      ...defaultEvolutionInterviewDraft,
+      title: sourceTitle,
+      description: [sourceDescription, sourceContext].filter(Boolean).join('\n\n'),
+      type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionInterviewDraft.type,
+      experiment_notes: `Adaptar esta hipótesis al flujo de entrevistas para validar su señal cualitativa.` ,
+      observations: sourceContext,
+      next_actions: 'Diseñar entrevistas y ejecutar validación con muestra mínima.',
+    });
+    setHypothesisEvolutionVideoDraft({
+      ...defaultEvolutionVideoDraft,
+      type: normalizeCommentHypothesisType(hypothesis?.type) || defaultEvolutionVideoDraft.type,
+      hypothesis_statement: sourceDescription || sourceTitle,
+      variable_x: sourceTitle,
+      contexto_cualitativo: sourceContext,
+    });
+  };
+
+  const buildVideoEvolutionContext = (context = '', parentHypothesisId = '') => {
+    const clean = stripVideoHierarchyMetadata(context);
+    const normalizedParentId = String(parentHypothesisId || '').trim();
+    if (!normalizedParentId) return clean;
+    return [clean, `[hierarchy_meta]${JSON.stringify({ parent_hypothesis_id: normalizedParentId })}[/hierarchy_meta]`].filter(Boolean).join('\n\n');
+  };
+
+  const buildInterviewEvolutionObservations = (observations = '', parentHypothesisId = '') => {
+    const clean = stripInterviewHierarchyMetadata(observations);
+    const normalizedParentId = String(parentHypothesisId || '').trim();
+    if (!normalizedParentId) return clean;
+    return [clean, `[interview_hierarchy]${JSON.stringify({ parent_hypothesis_id: normalizedParentId })}[/interview_hierarchy]`].filter(Boolean).join('\n\n');
+  };
+
+  const buildEvolutionBranchHypotheses = (sourceHypothesis = null, scope = 'single') => {
+    if (!sourceHypothesis) return [];
+    if (scope !== 'branch') return [sourceHypothesis];
+
+    const lineage = [];
+    const seen = new Set();
+    let current = sourceHypothesis;
+    while (current) {
+      lineage.unshift(current);
+      seen.add(String(current.id || ''));
+      const parentId = String(current.parent_hypothesis_id || '').trim();
+      current = parentId ? hypothesisById.get(parentId) || null : null;
+    }
+
+    const queue = [sourceHypothesis];
+    while (queue.length) {
+      const item = queue.shift();
+      const itemId = String(item?.id || '').trim();
+      if (!itemId) continue;
+      if (!seen.has(itemId)) {
+        lineage.push(item);
+        seen.add(itemId);
+      }
+      const children = childHypothesesByParentId.get(itemId) || [];
+      children.forEach((child) => queue.push(child));
+    }
+
+    return lineage;
+  };
+
+  const openHypothesisEvolutionModal = async (hypothesis) => {
+    if (!hypothesis) return;
+    setHypothesisMenuId('');
+    hydrateEvolutionDrafts(hypothesis);
+    setHypothesisEvolutionModal({
+      open: true,
+      saving: false,
+      error: '',
+      destinationMode: '',
+      sourceHypothesisId: String(hypothesis.id || ''),
+      scope: 'single',
+    });
+    setHypothesisEvolutionSupport((prev) => ({ ...prev, loading: true, error: '' }));
+    try {
+      const [audiences, clients, forms] = await Promise.all([
+        interviewsModuleApi.listAudiences(campaignId),
+        interviewsModuleApi.listClients(projectId, campaignId),
+        interviewsModuleApi.listForms(projectId, campaignId),
+      ]);
+      setHypothesisEvolutionSupport({ loading: false, error: '', audiences, clients, forms });
+    } catch (error) {
+      setHypothesisEvolutionSupport({ loading: false, error: error?.message || 'No se pudo preparar la evolución hacia entrevistas.', audiences: [], clients: [], forms: [] });
+    }
+  };
+
+  const closeHypothesisEvolutionModal = () => {
+    setHypothesisEvolutionModal({ open: false, saving: false, error: '', destinationMode: '', sourceHypothesisId: '', scope: 'single' });
+  };
+
+  const buildEvolutionLinkRecord = ({ sourceHypothesis, destinationMode, destinationHypothesis, destinationRoute, adapterSnapshot }) => ({
+    id: `hyp_evolution_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+    source_mode: 'comments',
+    source_hypothesis_id: String(sourceHypothesis?.id || ''),
+    source_hypothesis_title: String(sourceHypothesis?.title || ''),
+    source_workspace_id: workspaceContext.workspaceId || LEGACY_WORKSPACE_ID,
+    destination_mode: destinationMode,
+    destination_hypothesis_id: String(destinationHypothesis?.id || ''),
+    destination_hypothesis_title: String(destinationHypothesis?.title || destinationHypothesis?.hypothesis_statement || destinationHypothesis?.condition || ''),
+    destination_route: destinationRoute,
+    evolution_type: `comments_to_${destinationMode}`,
+    evolved_at: new Date().toISOString(),
+    adapter_snapshot: adapterSnapshot,
+  });
+
+  const persistHypothesisEvolutionLinks = (records = []) => {
+    if (!records.length) return;
+    persist({
+      ...store,
+      hypothesisEvolutionLinks: [...records, ...hypothesisEvolutionLinks],
+    });
+  };
+
+  const saveHypothesisEvolution = async () => {
+    const sourceHypothesis = activeEvolutionSourceHypothesis;
+    const destinationMode = String(hypothesisEvolutionModal.destinationMode || '').trim();
+    const evolutionScope = String(hypothesisEvolutionModal.scope || 'single').trim() || 'single';
+    if (!sourceHypothesis || !destinationMode) {
+      setHypothesisEvolutionModal((prev) => ({ ...prev, error: 'Selecciona una hipótesis origen y un modo destino.' }));
+      return;
+    }
+
+    setHypothesisEvolutionModal((prev) => ({ ...prev, saving: true, error: '' }));
+    try {
+      const sourceBranch = buildEvolutionBranchHypotheses(sourceHypothesis, evolutionScope);
+      if (!sourceBranch.length) throw new Error('No se encontró la rama de hipótesis a evolucionar.');
+
+      if (destinationMode === 'interviews') {
+        const draft = hypothesisEvolutionInterviewDraft;
+        if (!String(draft.title || '').trim()) throw new Error('La evolución a Entrevistas requiere un título.');
+        const createdBySourceId = new Map();
+        const createdRecords = [];
+        for (const branchHypothesis of sourceBranch) {
+          const sourceId = String(branchHypothesis.id || '').trim();
+          const parentDestinationId = createdBySourceId.get(String(branchHypothesis.parent_hypothesis_id || '').trim()) || '';
+          const isRoot = sourceId === String(sourceHypothesis.id || '');
+          const created = await interviewsModuleApi.createHypothesis(projectId, campaignId, {
+            title: isRoot ? String(draft.title || '').trim() : String(branchHypothesis.title || '').trim() || 'Hipótesis evolucionada',
+            description: isRoot
+              ? (String(draft.description || '').trim() || null)
+              : ([String(branchHypothesis.description || '').trim(), String(branchHypothesis.context_note || '').trim()].filter(Boolean).join('\n\n') || null),
+            type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || 'problema').trim() : 'problema'),
+            status: String(draft.status || 'exploracion').trim() || 'exploracion',
+            audience_id: String(draft.audience_id || '').trim() || null,
+            segment: String(draft.segment || '').trim() || null,
+            related_client_id: String(draft.related_client_id || '').trim() || null,
+            interview_form_id: String(draft.interview_form_id || '').trim() || null,
+            min_interviews: Number(draft.min_interviews || 0) || null,
+            experiment_notes: [
+              isRoot ? String(draft.experiment_notes || '').trim() : `Hipótesis de rama evolucionada desde Comentarios: ${String(branchHypothesis.title || '').trim() || 'Hipótesis'}.`,
+              buildCommentHypothesisTraceBlock({ sourceHypothesis: branchHypothesis, destinationMode: 'interviews', workspaceId: workspaceContext.workspaceId }),
+            ].filter(Boolean).join('\n\n'),
+            observations: buildInterviewEvolutionObservations(isRoot ? String(draft.observations || '').trim() : String(branchHypothesis.context_note || '').trim(), parentDestinationId) || null,
+            next_actions: isRoot ? (String(draft.next_actions || '').trim() || null) : null,
+            validation_metric_config: draft.validation_metric_config,
+          });
+          createdBySourceId.set(sourceId, String(created?.id || ''));
+          createdRecords.push(buildEvolutionLinkRecord({
+            sourceHypothesis: branchHypothesis,
+            destinationMode: 'interviews',
+            destinationHypothesis: created,
+            destinationRoute: `/projects/${projectId}/campaigns/${campaignId}/interviews`,
+            adapterSnapshot: { ...draft, scope: evolutionScope },
+          }));
+        }
+        persistHypothesisEvolutionLinks(createdRecords);
+        closeHypothesisEvolutionModal();
+        window.alert(evolutionScope === 'branch' ? 'Rama de hipótesis evolucionada a Modo Entrevistas con trazabilidad registrada.' : 'Hipótesis evolucionada a Modo Entrevistas con trazabilidad registrada.');
+        return;
+      }
+
+      const draft = hypothesisEvolutionVideoDraft;
+      if (!String(draft.type || '').trim() || !String(draft.hypothesis_statement || '').trim() || !String(draft.metrica_objetivo_y || '').trim() || !String(draft.volumen_unidad || '').trim()) {
+        throw new Error('Completa los campos clave para evolucionar la hipótesis a Modo Video.');
+      }
+      const thresholdSuffix = draft.umbral_tipo === '%' ? '%' : '';
+      const createdBySourceId = new Map();
+      const createdRecords = [];
+      for (const branchHypothesis of sourceBranch) {
+        const sourceId = String(branchHypothesis.id || '').trim();
+        const parentDestinationId = createdBySourceId.get(String(branchHypothesis.parent_hypothesis_id || '').trim()) || '';
+        const isRoot = sourceId === String(sourceHypothesis.id || '');
+        const created = await createVideoHypothesis({
+          type: normalizeCommentHypothesisType(branchHypothesis.type) || (isRoot ? String(draft.type || '').trim() : 'problema'),
+          hypothesis_statement: isRoot ? String(draft.hypothesis_statement || '').trim() : (String(branchHypothesis.description || '').trim() || String(branchHypothesis.title || '').trim()),
+          variable_x: isRoot
+            ? resolveVideoEvolutionDisplayTitle({
+              explicitTitle: String(draft.variable_x || '').trim(),
+              fallbackTitle: String(sourceHypothesis?.title || '').trim(),
+              statement: String(draft.hypothesis_statement || '').trim(),
+            })
+            : resolveVideoEvolutionDisplayTitle({
+              explicitTitle: String(branchHypothesis.title || '').trim(),
+              fallbackTitle: String(branchHypothesis.description || '').trim(),
+              statement: String(branchHypothesis.description || '').trim(),
+            }),
+          metrica_objetivo_y: String(draft.metrica_objetivo_y || '').trim(),
+          umbral_operador: String(draft.umbral_operador || '>=').trim() || '>=',
+          umbral_valor: Number(draft.umbral_valor || 0),
+          volumen_minimo: Number(draft.volumen_minimo || 0),
+          volumen_unidad: String(draft.volumen_unidad || '').trim(),
+          canal_principal: String(draft.canal_principal || 'organic').trim() || 'organic',
+          contexto_cualitativo: [
+            buildVideoEvolutionContext(isRoot ? String(draft.contexto_cualitativo || '').trim() : String(branchHypothesis.context_note || '').trim(), parentDestinationId),
+            buildCommentHypothesisTraceBlock({ sourceHypothesis: branchHypothesis, destinationMode: 'video', workspaceId: workspaceContext.workspaceId }),
+          ].filter(Boolean).join('\n\n'),
+          campaign_id: campaignId,
+          condition: `${draft.metrica_objetivo_y} ${draft.umbral_operador} ${draft.umbral_valor}${thresholdSuffix}`,
+        });
+        if (!created) throw new Error('No se pudo crear una hipótesis de la rama en Modo Video.');
+        createdBySourceId.set(sourceId, String(created?.id || ''));
+        createdRecords.push(buildEvolutionLinkRecord({
+          sourceHypothesis: branchHypothesis,
+          destinationMode: 'video',
+          destinationHypothesis: created,
+          destinationRoute: `/projects/${projectId}/campaigns/${campaignId}/hypotheses/${created.id}`,
+          adapterSnapshot: { ...draft, scope: evolutionScope },
+        }));
+      }
+      persistHypothesisEvolutionLinks(createdRecords);
+      closeHypothesisEvolutionModal();
+      window.alert(evolutionScope === 'branch' ? 'Rama de hipótesis evolucionada a Modo Video con trazabilidad registrada.' : 'Hipótesis evolucionada a Modo Video con trazabilidad registrada.');
+    } catch (error) {
+      setHypothesisEvolutionModal((prev) => ({ ...prev, saving: false, error: error?.message || 'No se pudo evolucionar la hipótesis.' }));
+      return;
+    }
+    setHypothesisEvolutionModal((prev) => ({ ...prev, saving: false }));
+  };
 
   const openHypothesisEditor = (hypothesis = null) => {
     if (!hypothesis) {
@@ -3297,8 +3900,11 @@ const CommentsModePage = () => {
         id: '',
         title: '',
         description: '',
+        type: 'problema',
+        parentHypothesisId: '',
         context_note: '',
-        linkedCodeSlugs: [],
+        linkedProfileIds: [],
+        profileQuery: '',
       });
       return;
     }
@@ -3308,8 +3914,11 @@ const CommentsModePage = () => {
       id: String(hypothesis.id || ''),
       title: String(hypothesis.title || ''),
       description: String(hypothesis.description || ''),
+      type: normalizeCommentHypothesisType(hypothesis.type) || 'problema',
+      parentHypothesisId: String(hypothesis.parent_hypothesis_id || ''),
       context_note: String(hypothesis.context_note || ''),
-      linkedCodeSlugs: Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs.map((slug) => String(slug)) : [],
+      linkedProfileIds: Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids.map((profileId) => String(profileId)) : [],
+      profileQuery: '',
     });
   };
 
@@ -3320,13 +3929,38 @@ const CommentsModePage = () => {
   const saveHypothesisEditor = () => {
     const title = String(hypothesisEditor.title || '').trim();
     const description = String(hypothesisEditor.description || '').trim();
+    const hypothesisType = normalizeCommentHypothesisType(hypothesisEditor.type);
+    const parentHypothesisId = String(hypothesisEditor.parentHypothesisId || '').trim();
+    const parentHypothesis = parentHypothesisId ? hypothesisById.get(parentHypothesisId) : null;
     const contextNote = String(hypothesisEditor.context_note || '').trim();
-    const linkedCodeSlugs = Array.from(new Set((Array.isArray(hypothesisEditor.linkedCodeSlugs) ? hypothesisEditor.linkedCodeSlugs : [])
-      .map((slug) => String(slug).trim())
-      .filter((slug) => codes.some((code) => String(code.slug) === slug))));
+    const linkedProfileIds = Array.from(new Set((Array.isArray(hypothesisEditor.linkedProfileIds) ? hypothesisEditor.linkedProfileIds : [])
+      .map((profileId) => String(profileId).trim())
+      .filter((profileId) => profileById.has(profileId))));
 
-    if (!title || !description) {
-      window.alert('Título y descripción son obligatorios para crear/editar hipótesis.');
+    if (!title || !description || !hypothesisType) {
+      window.alert('Título, descripción y tipo son obligatorios para crear/editar hipótesis.');
+      return;
+    }
+
+    const requiredParentType = COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[hypothesisType] || '';
+    if (hypothesisType === 'problema' && parentHypothesisId) {
+      window.alert('Una hipótesis de tipo problema no puede tener hipótesis padre.');
+      return;
+    }
+    if (parentHypothesis && normalizeCommentHypothesisType(parentHypothesis.type) !== requiredParentType) {
+      window.alert(`La relación es inválida: una hipótesis ${commentHypothesisTypeLabel(hypothesisType).toLowerCase()} solo puede depender de una hipótesis ${commentHypothesisTypeLabel(requiredParentType).toLowerCase()}.`);
+      return;
+    }
+
+    const currentChildren = childHypothesesByParentId.get(String(hypothesisEditor.id || '')) || [];
+    const allowedChildType = COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[hypothesisType] || '';
+    const hasInvalidChildren = currentChildren.some((child) => normalizeCommentHypothesisType(child.type) !== allowedChildType);
+    if (hasInvalidChildren) {
+      window.alert(`No puedes guardar esta hipótesis como ${commentHypothesisTypeLabel(hypothesisType).toLowerCase()} porque rompería la jerarquía de sus hipótesis hijas.`);
+      return;
+    }
+    if (!allowedChildType && currentChildren.length) {
+      window.alert('Una hipótesis de tipo producto no puede tener hipótesis hijas.');
       return;
     }
 
@@ -3335,8 +3969,10 @@ const CommentsModePage = () => {
         id: `comment_hypothesis_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
         title,
         description,
+        type: hypothesisType,
+        parent_hypothesis_id: parentHypothesisId || '',
         context_note: contextNote,
-        linked_code_slugs: linkedCodeSlugs,
+        linked_profile_ids: linkedProfileIds,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       };
@@ -3347,12 +3983,15 @@ const CommentsModePage = () => {
 
     const nextHypotheses = hypotheses.map((item) => {
       if (String(item.id) !== String(hypothesisEditor.id)) return item;
+      const { linked_code_slugs, ...rest } = item || {};
       return {
-        ...item,
+        ...rest,
         title,
         description,
+        type: hypothesisType,
+        parent_hypothesis_id: parentHypothesisId || '',
         context_note: contextNote,
-        linked_code_slugs: linkedCodeSlugs,
+        linked_profile_ids: linkedProfileIds,
         updated_at: new Date().toISOString(),
       };
     });
@@ -4957,7 +5596,7 @@ const CommentsModePage = () => {
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="font-semibold text-slate-900">Hipótesis</h2>
-                  <p className="text-xs text-slate-500">Entidad conceptual puente nacida desde códigos del Modo Comentarios.</p>
+                  <p className="text-xs text-slate-500">Entidad conceptual del Modo Comentarios estructurada únicamente por perfiles vinculados.</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <label className="relative block">
@@ -4973,10 +5612,13 @@ const CommentsModePage = () => {
               {!filteredHypotheses.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay hipótesis creadas.</p> : (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {filteredHypotheses.map((hypothesis) => {
-                    const linkedCodeSlugs = Array.isArray(hypothesis.linked_code_slugs) ? hypothesis.linked_code_slugs : [];
-                    const linkedCodes = linkedCodeSlugs
-                      .map((slug) => codes.find((code) => String(code.slug) === String(slug)))
+                    const linkedProfileIds = Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids : [];
+                    const linkedProfiles = linkedProfileIds
+                      .map((profileId) => profileById.get(String(profileId)))
                       .filter(Boolean);
+                    const parentHypothesis = hypothesisById.get(String(hypothesis.parent_hypothesis_id || '')) || null;
+                    const childHypotheses = childHypothesesByParentId.get(String(hypothesis.id)) || [];
+                    const evolutions = evolutionLinksBySourceId.get(String(hypothesis.id)) || [];
                     return (
                       <article key={hypothesis.id} className="relative rounded-xl border bg-white p-4 shadow-sm">
                         <div className="flex items-start justify-between gap-2">
@@ -4991,6 +5633,8 @@ const CommentsModePage = () => {
                             {hypothesisMenuId === String(hypothesis.id) ? (
                               <div className="absolute right-0 top-9 z-40 w-44 rounded-lg border bg-white p-1.5 shadow-lg">
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEditor(hypothesis)}>Editar</button>
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionModal(hypothesis)}>Evolucionar hipótesis</button>
+                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionDeleteModal(hypothesis)} disabled={!evolutions.length}>Eliminar evoluciones</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => deleteHypothesis(hypothesis.id)}>Eliminar</button>
                               </div>
                             ) : null}
@@ -4998,13 +5642,50 @@ const CommentsModePage = () => {
                         </div>
 
                         {hypothesis.context_note ? <p className="mt-2 rounded border bg-slate-50 px-2 py-1 text-xs text-slate-600">{hypothesis.context_note}</p> : null}
-                        <p className="mt-3 text-xs text-slate-500">Códigos vinculados: {linkedCodes.length}</p>
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {!linkedCodes.length ? <span className="text-xs text-slate-400">Sin códigos vinculados</span> : linkedCodes.slice(0, 6).map((code) => (
-                            <button key={`${hypothesis.id}_${code.slug}`} type="button" className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100" onClick={() => { setTab('codes'); setSelectedCodeSlug(String(code.slug)); }}>
-                              {code.name}
-                            </button>
-                          ))}
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-500">
+                          <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-1 text-indigo-700">Tipo: {commentHypothesisTypeLabel(hypothesis.type)}</span>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Padre: {parentHypothesis ? parentHypothesis.title : 'Sin padre'}</span>
+                          <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-1">Hijas: {childHypotheses.length}</span>
+                          <span className="rounded-full border border-teal-200 bg-teal-50 px-2 py-1 text-teal-700">Perfiles: {linkedProfiles.length}</span>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                            <p><span className="font-semibold text-slate-700">Padre jerárquico:</span> {parentHypothesis ? `${parentHypothesis.title} · ${commentHypothesisTypeLabel(parentHypothesis.type)}` : 'Sin padre asignado'}</p>
+                            <p className="mt-1"><span className="font-semibold text-slate-700">Capa hija permitida:</span> {COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[normalizeCommentHypothesisType(hypothesis.type)] ? commentHypothesisTypeLabel(COMMENT_HYPOTHESIS_CHILD_TYPE_BY_PARENT[normalizeCommentHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
+                            <p className="mt-1"><span className="font-semibold text-slate-700">Hipótesis hijas:</span> {childHypotheses.length ? childHypotheses.map((child) => child.title).join(' · ') : 'Sin hijas'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Perfiles vinculados</p>
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {!linkedProfiles.length ? <span className="text-xs text-slate-400">Sin perfiles vinculados</span> : linkedProfiles.slice(0, 6).map((profile) => (
+                                <span key={`${hypothesis.id}_${profile.id}`} className="rounded-full border border-teal-200 bg-teal-50 px-2 py-0.5 text-[11px] text-teal-700">
+                                  {profile.name}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="rounded-lg border border-indigo-100 bg-indigo-50/70 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700">Genealogía de evolución</p>
+                              <span className="rounded-full border border-indigo-200 bg-white px-2 py-0.5 text-[11px] text-indigo-700">{evolutions.length} evoluciones</span>
+                            </div>
+                            <div className="mt-2 space-y-1.5">
+                              {!evolutions.length ? <p className="text-xs text-indigo-700/70">Aún no se evolucionó esta hipótesis hacia otros modos.</p> : evolutions.slice(0, 3).map((evolution) => (
+                                <button
+                                  key={evolution.id}
+                                  type="button"
+                                  className="flex w-full items-center justify-between rounded-lg border border-indigo-100 bg-white px-2 py-1.5 text-left text-xs text-slate-700 hover:bg-indigo-50"
+                                  onClick={() => navigate(evolution.destination_route || (evolution.destination_mode === 'interviews' ? `/projects/${projectId}/campaigns/${campaignId}/interviews` : `/projects/${projectId}/campaigns/${campaignId}/hypotheses/${evolution.destination_hypothesis_id}`))}
+                                >
+                                  <span>
+                                    <span className="block font-medium text-slate-800">{evolution.destination_mode === 'interviews' ? 'Modo Entrevistas' : 'Modo Video'}</span>
+                                    <span className="block text-[11px] text-slate-500">{evolution.destination_hypothesis_title || evolution.destination_hypothesis_id || 'Hipótesis derivada'}</span>
+                                  </span>
+                                  <span className="text-[11px] text-slate-400">{new Date(evolution.evolved_at).toLocaleDateString()}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
                       </article>
                     );
@@ -5016,6 +5697,311 @@ const CommentsModePage = () => {
 
 
 
+          {hypothesisEvolutionDeleteModal.open ? (
+            <div className="fixed inset-0 z-[73] overflow-y-auto bg-slate-950/55 p-4">
+              <div className="mx-auto my-10 w-full max-w-2xl rounded-[28px] border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
+                <div className="border-b border-slate-200 bg-[linear-gradient(135deg,#f8fafc_0%,#fff7ed_50%,#fef2f2_100%)] px-6 py-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-rose-600">Eliminar evoluciones</p>
+                      <h3 className="mt-1 text-xl font-semibold text-slate-900">Eliminar una evolución desde Modo Comentarios</h3>
+                      <p className="mt-2 text-sm text-slate-600">Selecciona cuál evolución borrar y decide si quieres eliminar solo esa hipótesis destino o toda su rama derivada en el modo destino.</p>
+                    </div>
+                    <button type="button" className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-500 hover:text-slate-900" onClick={closeHypothesisEvolutionDeleteModal}>✕</button>
+                  </div>
+                </div>
+
+                <div className="space-y-5 p-6">
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hipótesis origen</p>
+                    <h4 className="mt-1 text-base font-semibold text-slate-900">{activeEvolutionDeletionSourceHypothesis?.title || 'Hipótesis comentarios'}</h4>
+                    <p className="mt-1 text-sm text-slate-600">{activeEvolutionDeletionSourceHypothesis?.description || 'Sin descripción conceptual.'}</p>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Evoluciones disponibles</p>
+                    <div className="mt-2 space-y-2">
+                      {activeSourceEvolutionOptions.map((evolution) => {
+                        const checked = String(hypothesisEvolutionDeleteModal.selectedEvolutionId) === String(evolution.id);
+                        return (
+                          <label key={evolution.id} className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 text-sm transition ${checked ? 'border-rose-300 bg-rose-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                            <input
+                              type="radio"
+                              name="selected-evolution"
+                              checked={checked}
+                              onChange={() => setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, selectedEvolutionId: String(evolution.id), error: '' }))}
+                            />
+                            <span className="min-w-0">
+                              <span className="block font-semibold text-slate-900">{evolution.destination_mode === 'interviews' ? 'Modo Entrevistas' : 'Modo Video'}</span>
+                              <span className="mt-0.5 block text-slate-600">{evolution.destination_hypothesis_title || evolution.destination_hypothesis_id || 'Hipótesis destino'}</span>
+                              <span className="mt-1 block text-xs text-slate-500">{new Date(evolution.evolved_at).toLocaleString()}</span>
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Modo de eliminación</p>
+                    <div className="mt-2 grid gap-2 md:grid-cols-2">
+                      <button
+                        type="button"
+                        className={`rounded-2xl border px-4 py-3 text-left transition ${hypothesisEvolutionDeleteModal.deleteMode === 'branch' ? 'border-rose-400 bg-rose-600 text-white shadow-lg shadow-rose-200' : 'border-slate-200 bg-white text-slate-700 hover:border-rose-200 hover:bg-rose-50'}`}
+                        onClick={() => setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleteMode: 'branch', error: '' }))}
+                      >
+                        <span className="block text-sm font-semibold">Eliminar evolución de rama completa</span>
+                        <span className={`mt-1 block text-xs ${hypothesisEvolutionDeleteModal.deleteMode === 'branch' ? 'text-rose-100' : 'text-slate-500'}`}>Elimina la hipótesis destino seleccionada y todas sus hijas en el modo destino.</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={`rounded-2xl border px-4 py-3 text-left transition ${hypothesisEvolutionDeleteModal.deleteMode === 'single' ? 'border-amber-400 bg-amber-500 text-white shadow-lg shadow-amber-200' : 'border-slate-200 bg-white text-slate-700 hover:border-amber-200 hover:bg-amber-50'}`}
+                        onClick={() => setHypothesisEvolutionDeleteModal((prev) => ({ ...prev, deleteMode: 'single', error: '' }))}
+                      >
+                        <span className="block text-sm font-semibold">Eliminar evolución de esta hipótesis</span>
+                        <span className={`mt-1 block text-xs ${hypothesisEvolutionDeleteModal.deleteMode === 'single' ? 'text-amber-100' : 'text-slate-500'}`}>Elimina solo la hipótesis destino elegida y desacopla sus hijas directas para no romper la jerarquía restante.</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                    <p><span className="font-semibold text-slate-900">La hipótesis origen queda intacta.</span></p>
+                    <p className="mt-1">Se eliminará el vínculo activo de evolución y no se borrarán perfiles, códigos ni fragmentos del origen.</p>
+                  </div>
+
+                  {hypothesisEvolutionDeleteModal.error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{hypothesisEvolutionDeleteModal.error}</div> : null}
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
+                  <div className="text-xs text-slate-500">La eliminación se ejecuta desde la hipótesis de Comentarios para mantener el control del origen conceptual.</div>
+                  <div className="flex items-center gap-2">
+                    <Button className="bg-white border text-slate-700" onClick={closeHypothesisEvolutionDeleteModal}>Cancelar</Button>
+                    <Button className="bg-rose-600 text-white" onClick={saveHypothesisEvolutionDeletion} disabled={hypothesisEvolutionDeleteModal.deleting || !hypothesisEvolutionDeleteModal.selectedEvolutionId}>
+                      {hypothesisEvolutionDeleteModal.deleting ? 'Eliminando…' : 'Eliminar evolución'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {hypothesisEvolutionModal.open ? (
+            <div className="fixed inset-0 z-[72] overflow-y-auto bg-slate-950/55 p-4">
+              <div className="mx-auto my-6 w-full max-w-4xl rounded-[28px] border border-slate-200 bg-white shadow-2xl shadow-slate-900/20">
+                <div className="border-b border-slate-200 bg-[linear-gradient(135deg,#eef2ff_0%,#f8fafc_55%,#ecfeff_100%)] px-6 py-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.25em] text-indigo-600">Evolución de hipótesis</p>
+                      <h3 className="mt-1 text-xl font-semibold text-slate-900">Evolucionar hipótesis desde Modo Comentarios</h3>
+                      <p className="mt-2 text-sm text-slate-600">La hipótesis destino se adapta al nuevo modo sin copiar perfiles ni códigos, manteniendo trazabilidad explícita con la hipótesis madre.</p>
+                    </div>
+                    <button type="button" className="rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-500 hover:text-slate-900" onClick={closeHypothesisEvolutionModal}>✕</button>
+                  </div>
+                </div>
+
+                <div className="grid gap-6 p-6 lg:grid-cols-[1.1fr,1.7fr]">
+                  <aside className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hipótesis origen</p>
+                      <h4 className="mt-1 text-base font-semibold text-slate-900">{activeEvolutionSourceHypothesis?.title || 'Hipótesis comentarios'}</h4>
+                      <p className="mt-2 text-sm text-slate-600">{activeEvolutionSourceHypothesis?.description || 'Sin descripción conceptual.'}</p>
+                      {activeEvolutionSourceHypothesis?.context_note ? <p className="mt-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">{activeEvolutionSourceHypothesis.context_note}</p> : null}
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Alcance de evolución</p>
+                      <div className="mt-3 grid gap-2">
+                        {[
+                          ['single', 'Evolucionar solo esta hipótesis', 'Crea una única hipótesis destino a partir de la hipótesis seleccionada.'],
+                          ['branch', 'Evolucionar toda la rama', 'Migra la cadena completa asociada a esta hipótesis: ancestros necesarios y descendientes de su rama hasta producto.'],
+                        ].map(([value, label, description]) => {
+                          const active = hypothesisEvolutionModal.scope === value;
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              className={`rounded-2xl border px-4 py-3 text-left transition ${active ? 'border-slate-900 bg-slate-900 text-white shadow-lg shadow-slate-200' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50'}`}
+                              onClick={() => setHypothesisEvolutionModal((prev) => ({ ...prev, scope: value, error: '' }))}
+                            >
+                              <span className="block text-sm font-semibold">{label}</span>
+                              <span className={`mt-1 block text-xs ${active ? 'text-slate-200' : 'text-slate-500'}`}>{description}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-indigo-100 bg-white p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-indigo-600">Modo destino</p>
+                      <div className="mt-3 grid gap-2">
+                        {[
+                          ['interviews', 'Modo Entrevistas', 'Convierte la hipótesis en un experimento cualitativo con audiencia, formulario y umbrales de entrevistas.'],
+                          ['video', 'Modo Video', 'Convierte la hipótesis en una hipótesis operativa para validación con métricas, canal y volumen.'],
+                        ].map(([value, label, description]) => {
+                          const active = hypothesisEvolutionModal.destinationMode === value;
+                          return (
+                            <button
+                              key={value}
+                              type="button"
+                              className={`rounded-2xl border px-4 py-3 text-left transition ${active ? 'border-indigo-500 bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50'}`}
+                              onClick={() => setHypothesisEvolutionModal((prev) => ({ ...prev, destinationMode: value, error: '' }))}
+                            >
+                              <span className="block text-sm font-semibold">{label}</span>
+                              <span className={`mt-1 block text-xs ${active ? 'text-indigo-100' : 'text-slate-500'}`}>{description}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs text-slate-600">
+                      <p className="font-semibold uppercase tracking-wide text-slate-500">Trazabilidad obligatoria</p>
+                      <ul className="mt-2 space-y-1 list-disc pl-4">
+                        <li>Origen: comentarios</li>
+                        <li>Destino: entrevistas o video</li>
+                        <li>IDs y timestamp de evolución persistidos</li>
+                        <li>Sin duplicar perfiles ni códigos</li>
+                      </ul>
+                    </div>
+                  </aside>
+
+                  <section className="space-y-4">
+                    {!hypothesisEvolutionModal.destinationMode ? (
+                      <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-5 py-10 text-center text-sm text-slate-500">Selecciona un modo destino para completar los campos de adaptación de la hipótesis.</div>
+                    ) : null}
+
+                    {hypothesisEvolutionModal.destinationMode === 'interviews' ? (
+                      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+                        <div>
+                          <h4 className="text-sm font-semibold text-slate-900">Adaptador hacia Modo Entrevistas</h4>
+                          <p className="mt-1 text-sm text-slate-500">Completa la ficha mínima para que la hipótesis pueda vivir correctamente en el módulo de entrevistas.</p>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Título" value={hypothesisEvolutionInterviewDraft.title} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, title: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.type} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, type: e.target.value }))}>
+                            {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_interview_${option.value}`} value={option.value}>{option.label}</option>)}
+                          </select>
+                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Descripción" value={hypothesisEvolutionInterviewDraft.description} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, description: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.status} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, status: e.target.value }))}>
+                            <option value="exploracion">exploración</option><option value="en_prueba">en prueba</option><option value="validada">validada</option><option value="refutada">refutada</option>
+                          </select>
+                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Segmento" value={hypothesisEvolutionInterviewDraft.segment} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, segment: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.audience_id} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, audience_id: e.target.value }))}>
+                            <option value="">Audiencia objetivo</option>
+                            {hypothesisEvolutionSupport.audiences.map((audience) => <option key={audience.id} value={audience.id}>{audience.name}</option>)}
+                          </select>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.related_client_id} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, related_client_id: e.target.value }))}>
+                            <option value="">Cliente relacionado</option>
+                            {hypothesisEvolutionSupport.clients.map((client) => <option key={client.id} value={client.id}>{client.name}</option>)}
+                          </select>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.interview_form_id} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, interview_form_id: e.target.value }))}>
+                            <option value="">Formulario asociado</option>
+                            {hypothesisEvolutionSupport.forms.map((form) => <option key={form.id} value={form.id}>{form.title}</option>)}
+                          </select>
+                          <input className="rounded-xl border px-3 py-2 text-sm" type="number" min="1" placeholder="Min entrevistas" value={hypothesisEvolutionInterviewDraft.min_interviews} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, min_interviews: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.validation_metric_config.comparison_operator} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, comparison_operator: e.target.value } }))}>
+                            <option value=">=">Promedio métricas ≥ umbral</option><option value=">">Promedio métricas &gt; umbral</option><option value="<=">Promedio métricas ≤ umbral</option><option value="<">Promedio métricas &lt; umbral</option>
+                          </select>
+                          <input className="rounded-xl border px-3 py-2 text-sm" type="number" min="1" max="5" step="0.1" placeholder="Umbral" value={hypothesisEvolutionInterviewDraft.validation_metric_config.threshold_value} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, threshold_value: e.target.value } }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.validation_metric_config.outcome_if_true} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_true: e.target.value } }))}>
+                            <option value="validada">Si cumple → validada</option><option value="refutada">Si cumple → refutada</option><option value="señal fuerte">Si cumple → señal fuerte</option><option value="señal moderada">Si cumple → señal moderada</option><option value="señal débil">Si cumple → señal débil</option>
+                          </select>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionInterviewDraft.validation_metric_config.outcome_if_false} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, validation_metric_config: { ...prev.validation_metric_config, outcome_if_false: e.target.value } }))}>
+                            <option value="refutada">Si no cumple → refutada</option><option value="validada">Si no cumple → validada</option><option value="señal fuerte">Si no cumple → señal fuerte</option><option value="señal moderada">Si no cumple → señal moderada</option><option value="señal débil">Si no cumple → señal débil</option><option value="no evaluada">Si no cumple → no evaluada</option>
+                          </select>
+                          <div className="md:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Métricas de validación</p>
+                            <div className="mt-2 grid gap-2 md:grid-cols-2">
+                              {[
+                                ['problem_score_avg', 'Problema promedio'],
+                                ['solution_interest_avg', 'Interés en solución'],
+                                ['problem_frequency_avg', 'Frecuencia del problema'],
+                                ['problem_urgency_avg', 'Urgencia'],
+                              ].map(([value, label]) => {
+                                const selected = hypothesisEvolutionInterviewDraft.validation_metric_config.selected_metrics.includes(value);
+                                return (
+                                  <label key={value} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700">
+                                    <input
+                                      type="checkbox"
+                                      checked={selected}
+                                      onChange={(event) => setHypothesisEvolutionInterviewDraft((prev) => {
+                                        const current = prev.validation_metric_config.selected_metrics || [];
+                                        const next = event.target.checked ? [...new Set([...current, value])] : current.filter((item) => item !== value);
+                                        return { ...prev, validation_metric_config: { ...prev.validation_metric_config, selected_metrics: next } };
+                                      })}
+                                    />
+                                    <span>{label}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <textarea className="rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Notas del experimento" value={hypothesisEvolutionInterviewDraft.experiment_notes} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, experiment_notes: e.target.value }))} />
+                          <textarea className="rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Observaciones" value={hypothesisEvolutionInterviewDraft.observations} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, observations: e.target.value }))} />
+                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Próximas acciones" value={hypothesisEvolutionInterviewDraft.next_actions} onChange={(e) => setHypothesisEvolutionInterviewDraft((prev) => ({ ...prev, next_actions: e.target.value }))} />
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {hypothesisEvolutionModal.destinationMode === 'video' ? (
+                      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5">
+                        <div>
+                          <h4 className="text-sm font-semibold text-slate-900">Adaptador hacia Modo Video</h4>
+                          <p className="mt-1 text-sm text-slate-500">Completa la hipótesis operativa con statement, variable, métrica, umbral, volumen y canal.</p>
+                        </div>
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                            <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500">Título de la hipótesis a evolucionar</span>
+                            <span className="mt-1 block font-medium text-slate-900">{activeEvolutionSourceHypothesis?.title || 'Hipótesis comentarios'}</span>
+                          </div>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.type} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, type: e.target.value }))}>
+                            {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={`evolution_video_${option.value}`} value={option.value}>{option.label}</option>)}
+                          </select>
+                          <input className="rounded-xl border px-3 py-2 text-sm" placeholder="Variable X" value={hypothesisEvolutionVideoDraft.variable_x} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, variable_x: e.target.value }))} />
+                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Hypothesis statement (Si X entonces Y)" value={hypothesisEvolutionVideoDraft.hypothesis_statement} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, hypothesis_statement: e.target.value }))} />
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.metrica_objetivo_y} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, metrica_objetivo_y: e.target.value }))}>
+                            <option value="ctr">CTR</option><option value="cpc">CPC</option><option value="clicks">Clicks</option><option value="views">Views</option><option value="likes">Likes</option><option value="comments">Comments</option><option value="shares">Shares</option><option value="retencion_pct">Retention %</option>
+                          </select>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.canal_principal} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, canal_principal: e.target.value }))}>
+                            <option value="paid">paid</option><option value="organic">organic</option><option value="live">live</option>
+                          </select>
+                          <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.umbral_operador} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, umbral_operador: e.target.value }))}>
+                            <option value=">=">&gt;=</option><option value=">">&gt;</option><option value="<=">&lt;=</option><option value="<">&lt;</option>
+                          </select>
+                          <div className="grid grid-cols-[1fr,120px] gap-3">
+                            <input className="rounded-xl border px-3 py-2 text-sm" type="number" placeholder="Umbral" value={hypothesisEvolutionVideoDraft.umbral_valor} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, umbral_valor: e.target.value }))} />
+                            <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.umbral_tipo} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, umbral_tipo: e.target.value }))}>
+                              <option value="entero">entero</option><option value="decimal">decimal</option><option value="%">%</option>
+                            </select>
+                          </div>
+                          <div className="grid grid-cols-[1fr,160px] gap-3">
+                            <input className="rounded-xl border px-3 py-2 text-sm" type="number" placeholder="Volumen mínimo" value={hypothesisEvolutionVideoDraft.volumen_minimo} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, volumen_minimo: e.target.value }))} />
+                            <select className="rounded-xl border px-3 py-2 text-sm" value={hypothesisEvolutionVideoDraft.volumen_unidad} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, volumen_unidad: e.target.value }))}>
+                              <option value="views">Views</option><option value="clicks">Clicks</option><option value="ctr">CTR</option><option value="cpc">CPC</option><option value="purchase_rate">Purchase Rate</option>
+                            </select>
+                          </div>
+                          <textarea className="md:col-span-2 rounded-xl border px-3 py-2 text-sm" rows={3} placeholder="Contexto cualitativo" value={hypothesisEvolutionVideoDraft.contexto_cualitativo} onChange={(e) => setHypothesisEvolutionVideoDraft((prev) => ({ ...prev, contexto_cualitativo: e.target.value }))} />
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {hypothesisEvolutionSupport.loading ? <p className="text-sm text-slate-500">Preparando opciones del adaptador…</p> : null}
+                    {hypothesisEvolutionSupport.error ? <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">{hypothesisEvolutionSupport.error}</div> : null}
+                    {hypothesisEvolutionModal.error ? <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{hypothesisEvolutionModal.error}</div> : null}
+                  </section>
+                </div>
+
+                <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-6 py-4">
+                  <div className="text-xs text-slate-500">La evolución crea una nueva hipótesis destino y conserva la original en Comentarios.</div>
+                  <div className="flex items-center gap-2">
+                    <Button className="bg-white border text-slate-700" onClick={closeHypothesisEvolutionModal}>Cancelar</Button>
+                    <Button className="bg-indigo-600 text-white" onClick={saveHypothesisEvolution} disabled={!hypothesisEvolutionModal.destinationMode || hypothesisEvolutionModal.saving}>
+                      {hypothesisEvolutionModal.saving ? 'Evolucionando…' : 'Confirmar evolución'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           {hypothesisEditor.open ? (
             <div className="fixed inset-0 z-[70] overflow-y-auto bg-slate-900/40 p-4">
               <div className="mx-auto my-6 w-full max-w-2xl rounded-xl border bg-white shadow-xl">
@@ -5026,29 +6012,90 @@ const CommentsModePage = () => {
                 <div className="grid max-h-[calc(100vh-13rem)] gap-3 overflow-y-auto p-5">
                   <input className="rounded-lg border px-3 py-2 text-sm" placeholder="Título de la hipótesis" value={hypothesisEditor.title} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, title: e.target.value }))} />
                   <textarea className="h-24 rounded-lg border px-3 py-2 text-sm" placeholder="Descripción conceptual" value={hypothesisEditor.description} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, description: e.target.value }))} />
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Tipo de hipótesis</p>
+                      <select className="mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm" value={hypothesisEditor.type} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, type: e.target.value, parentHypothesisId: '' }))}>
+                        {COMMENT_HYPOTHESIS_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                      </select>
+                      <p className="mt-2 text-[11px] text-slate-500">Cadena válida: problema → segmento → mensajes → solución → producto.</p>
+                    </div>
+                    <div className="rounded-lg border bg-slate-50 p-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Hipótesis padre</p>
+                      <select className="mt-2 w-full rounded-lg border bg-white px-3 py-2 text-sm" value={hypothesisEditor.parentHypothesisId} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, parentHypothesisId: e.target.value }))} disabled={!COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[normalizeCommentHypothesisType(hypothesisEditor.type)]}>
+                        <option value="">{COMMENT_HYPOTHESIS_PARENT_TYPE_BY_CHILD[normalizeCommentHypothesisType(hypothesisEditor.type)] ? 'Sin padre' : 'Este tipo no admite padre'}</option>
+                        {allowedParentHypothesesForEditor.map((hypothesis) => <option key={hypothesis.id} value={hypothesis.id}>{hypothesis.title} · {commentHypothesisTypeLabel(hypothesis.type)}</option>)}
+                      </select>
+                      <p className="mt-2 text-[11px] text-slate-500">Solo puedes vincular esta hipótesis con padres del tipo inmediatamente anterior en la jerarquía.</p>
+                    </div>
+                  </div>
                   <textarea className="h-20 rounded-lg border px-3 py-2 text-sm" placeholder="Contexto o nota conceptual (opcional)" value={hypothesisEditor.context_note} onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, context_note: e.target.value }))} />
 
-                  <div className="rounded-lg border bg-slate-50 p-3">
-                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Códigos vinculados</p>
-                    <div className="mt-2 max-h-56 space-y-1 overflow-auto">
-                      {!codes.length ? <p className="text-xs text-slate-500">No hay códigos disponibles aún.</p> : codes.map((code) => {
-                        const checked = hypothesisEditor.linkedCodeSlugs.includes(String(code.slug));
+                  <div className="rounded-lg border border-teal-100 bg-teal-50/60 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-teal-700">Perfiles vinculados</p>
+                        <p className="text-[11px] text-teal-700/80">Agrupan y estructuran la hipótesis dentro del Modo Comentarios.</p>
+                      </div>
+                      <label className="relative block min-w-[220px] flex-1">
+                        <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-teal-500" />
+                        <input
+                          className="w-full rounded-lg border border-teal-200 bg-white py-2 pl-9 pr-3 text-sm"
+                          placeholder="Buscar perfiles existentes"
+                          value={hypothesisEditor.profileQuery}
+                          onChange={(e) => setHypothesisEditor((prev) => ({ ...prev, profileQuery: e.target.value }))}
+                        />
+                      </label>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {!hypothesisEditor.linkedProfileIds.length ? <span className="text-xs text-slate-500">Sin perfiles vinculados todavía.</span> : hypothesisEditor.linkedProfileIds.map((profileId) => {
+                        const profile = profileById.get(String(profileId));
+                        if (!profile) return null;
                         return (
-                          <label key={`hyp-code-${code.slug}`} className="flex items-start gap-2 rounded border bg-white px-2 py-1.5 text-xs text-slate-700">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => setHypothesisEditor((prev) => ({
-                                ...prev,
-                                linkedCodeSlugs: e.target.checked
-                                  ? [...prev.linkedCodeSlugs, String(code.slug)]
-                                  : prev.linkedCodeSlugs.filter((slug) => String(slug) !== String(code.slug)),
-                              }))}
-                            />
-                            <span>{code.name}</span>
-                          </label>
+                          <button
+                            key={`hyp-profile-chip-${profile.id}`}
+                            type="button"
+                            className="rounded-full border border-teal-200 bg-white px-2 py-1 text-[11px] text-teal-700 hover:bg-teal-100"
+                            onClick={() => setHypothesisEditor((prev) => ({
+                              ...prev,
+                              linkedProfileIds: prev.linkedProfileIds.filter((item) => String(item) !== String(profile.id)),
+                            }))}
+                          >
+                            {profile.name} <span aria-hidden="true">×</span>
+                          </button>
                         );
                       })}
+                    </div>
+
+                    <div className="mt-3 max-h-56 space-y-1 overflow-auto">
+                      {!availableHypothesisProfiles.length ? <p className="text-xs text-slate-500">No hay perfiles disponibles aún en este workspace del Modo Comentarios.</p> : availableHypothesisProfiles
+                        .filter((profile) => {
+                          const q = String(hypothesisEditor.profileQuery || '').trim().toLowerCase();
+                          if (!q) return true;
+                          return String(profile.name || '').toLowerCase().includes(q) || String(profile.description || '').toLowerCase().includes(q);
+                        })
+                        .map((profile) => {
+                          const checked = hypothesisEditor.linkedProfileIds.includes(String(profile.id));
+                          return (
+                            <label key={`hyp-profile-${profile.id}`} className="flex items-start gap-2 rounded border border-teal-100 bg-white px-2 py-1.5 text-xs text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => setHypothesisEditor((prev) => ({
+                                  ...prev,
+                                  linkedProfileIds: e.target.checked
+                                    ? [...prev.linkedProfileIds, String(profile.id)]
+                                    : prev.linkedProfileIds.filter((profileId) => String(profileId) !== String(profile.id)),
+                                }))}
+                              />
+                              <span>
+                                <span className="font-medium text-slate-800">{profile.name}</span>
+                                <span className="mt-0.5 block text-[11px] text-slate-500">{profile.description || 'Perfil conceptual disponible para agrupar códigos.'}{profile.assignmentCount ? ` · ${profile.assignmentCount} códigos asignados` : ''}</span>
+                              </span>
+                            </label>
+                          );
+                        })}
                     </div>
                   </div>
                 </div>

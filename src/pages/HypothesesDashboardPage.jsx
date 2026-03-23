@@ -1,12 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Brain, Edit, Lightbulb, Plus, Save, X } from 'lucide-react';
+import { ArrowLeft, Brain, Edit, Lightbulb, MoreHorizontal, Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
+import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 
 const initialForm = {
-  type: '',
+  title: '',
+  type: 'problema',
+  parent_hypothesis_id: '',
   hypothesis_statement: '',
   variable_x: '',
   metrica_objetivo_y: '',
@@ -20,24 +23,87 @@ const initialForm = {
 };
 
 const hypothesisTypeOptions = [
-  { value: '', label: '-- seleccionar --' },
-  { value: '__fundacional__', label: '--- Validación Fundacional ---', disabled: true },
-  { value: 'Problema', label: 'Problema' },
-  { value: 'Cliente / Segmento', label: 'Cliente / Segmento' },
-  { value: 'Activación', label: 'Activación' },
-  { value: '__solucion__', label: '--- Validación de Solución ---', disabled: true },
-  { value: 'Solución', label: 'Solución' },
-  { value: 'Valor', label: 'Valor' },
-  { value: 'Message-Market Fit', label: 'Message-Market Fit' },
-  { value: '__escalamiento__', label: '--- Escalamiento ---', disabled: true },
-  { value: 'Acquisition', label: 'Acquisition' },
-  { value: 'Retention', label: 'Retention' },
-  { value: 'Monetization', label: 'Monetization' },
-  { value: 'Channel Fit', label: 'Channel Fit' },
-  { value: 'Pricing', label: 'Pricing' },
-  { value: 'Funnel Friction', label: 'Funnel Friction' },
-  { value: 'Trust / Credibility', label: 'Trust / Credibility' },
+  { value: 'problema', label: 'Problema' },
+  { value: 'segmento', label: 'Segmento' },
+  { value: 'mensajes', label: 'Mensajes' },
+  { value: 'solucion', label: 'Solución' },
+  { value: 'producto', label: 'Producto' },
 ];
+
+const parentTypeByChild = {
+  problema: '',
+  segmento: 'problema',
+  mensajes: 'segmento',
+  solucion: 'mensajes',
+  producto: 'solucion',
+};
+
+const childTypeByParent = {
+  problema: 'segmento',
+  segmento: 'mensajes',
+  mensajes: 'solucion',
+  solucion: 'producto',
+  producto: '',
+};
+
+const hierarchyMetaPrefix = '[hierarchy_meta]';
+const hierarchyMetaSuffix = '[/hierarchy_meta]';
+
+const normalizeHypothesisType = (value = '') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return hypothesisTypeOptions.some((option) => option.value === normalized) ? normalized : '';
+};
+
+const hypothesisTypeLabel = (value = '') => hypothesisTypeOptions.find((option) => option.value === normalizeHypothesisType(value))?.label || 'Sin tipo';
+
+const stripHierarchyMetadata = (value = '') => String(value || '').replace(/\s*\[hierarchy_meta\][\s\S]*?\[\/hierarchy_meta\]\s*/g, '').trim();
+
+const extractHierarchyMetadata = (value = '') => {
+  const match = String(value || '').match(/\[hierarchy_meta\]([\s\S]*?)\[\/hierarchy_meta\]/);
+  if (!match) return {};
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return {};
+  }
+};
+
+const buildHierarchyContext = (context = '', parentHypothesisId = '') => {
+  const clean = stripHierarchyMetadata(context);
+  const normalizedParentId = String(parentHypothesisId || '').trim();
+  if (!normalizedParentId) return clean;
+  const metadata = `${hierarchyMetaPrefix}${JSON.stringify({ parent_hypothesis_id: normalizedParentId })}${hierarchyMetaSuffix}`;
+  return [clean, metadata].filter(Boolean).join('\n\n');
+};
+
+const getParentHypothesisId = (hypothesis = {}) => String(extractHierarchyMetadata(hypothesis?.contexto_cualitativo || '').parent_hypothesis_id || '').trim();
+
+const extractEvolutionTraceMetadata = (value = '') => {
+  const normalized = String(value || '');
+  if (!normalized.includes('TRAZABILIDAD DE EVOLUCIÓN')) return {};
+  const lines = normalized.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const metadata = {};
+  lines.forEach((line) => {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex <= 0) return;
+    const key = line.slice(0, separatorIndex).trim();
+    const rawValue = line.slice(separatorIndex + 1).trim();
+    if (!key) return;
+    metadata[key] = rawValue;
+  });
+  return metadata;
+};
+
+const getHypothesisDisplayTitle = (hypothesis = {}) => {
+  const trace = extractEvolutionTraceMetadata(hypothesis?.contexto_cualitativo || '');
+  return String(hypothesis?.title || hypothesis?.variable_x || trace.origen_hypothesis_title || hypothesis?.condition || hypothesis?.hypothesis_statement || '').trim();
+};
+
+const getEvolutionTraceLabel = (hypothesis = {}, evolutionLink = null) => {
+  if (evolutionLink) return 'Evolucionada desde Comentarios';
+  const trace = extractEvolutionTraceMetadata(hypothesis?.contexto_cualitativo || '');
+  return trace.origen_modo === 'comentarios' ? 'Evolucionada desde Comentarios' : 'Sin evolución trazada';
+};
 
 const metricObjectiveOptions = [
   { value: '', label: '-- seleccionar --' },
@@ -125,10 +191,13 @@ const parseThresholdValue = (hypothesis) => {
   return parsed ? Number(parsed[2]) : 0;
 };
 
-const HypothesisFormFields = ({ form, setForm, projectId }) => (
+const HypothesisFormFields = ({ form, setForm, projectId, availableParents = [], requiredParentType = '', allowedChildType = '' }) => (
   <>
     <div><label className="block text-sm font-medium mb-1">Project ID</label><input disabled className="w-full rounded-lg border p-2 bg-gray-100" value={projectId} /></div>
-    <div><label className="block text-sm font-medium mb-1">Tipo de hipótesis</label><select required className="w-full rounded-lg border p-2" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>{hypothesisTypeOptions.map((option) => <option key={option.value || option.label} value={option.value} disabled={option.disabled}>{option.label}</option>)}</select></div>
+    <div><label className="block text-sm font-medium mb-1">Título</label><input required className="w-full rounded-lg border p-2" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></div>
+    <div><label className="block text-sm font-medium mb-1">Tipo de hipótesis</label><select required className="w-full rounded-lg border p-2" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value, parent_hypothesis_id: '' })}>{hypothesisTypeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
+    <div><label className="block text-sm font-medium mb-1">Hipótesis padre</label><select className="w-full rounded-lg border p-2" value={form.parent_hypothesis_id || ''} onChange={(e) => setForm({ ...form, parent_hypothesis_id: e.target.value })} disabled={!requiredParentType}><option value="">{requiredParentType ? 'Sin padre' : 'Este tipo no admite padre'}</option>{availableParents.map((hypothesis) => <option key={hypothesis.id} value={hypothesis.id}>{hypothesis.hypothesis_statement || hypothesis.condition || hypothesis.id} · {hypothesisTypeLabel(hypothesis.type)}</option>)}</select><p className="mt-1 text-xs text-gray-500">{requiredParentType ? `Solo puede depender de hipótesis tipo ${hypothesisTypeLabel(requiredParentType).toLowerCase()}.` : 'Las hipótesis de tipo problema no tienen padre.'}</p></div>
+    <div className="md:col-span-2 rounded-lg border bg-gray-50 p-3 text-xs text-gray-600">Siguiente capa válida: <span className="font-semibold text-gray-700">{allowedChildType ? hypothesisTypeLabel(allowedChildType) : 'No admite hijas'}</span>.</div>
     <div className="md:col-span-2"><label className="block text-sm font-medium mb-1">Hypothesis statement (Si X entonces Y)</label><textarea required className="w-full rounded-lg border p-2" rows="2" value={form.hypothesis_statement} onChange={(e) => setForm({ ...form, hypothesis_statement: e.target.value })} /></div>
     <div><label className="block text-sm font-medium mb-1">Variable X</label><input className="w-full rounded-lg border p-2" value={form.variable_x} onChange={(e) => setForm({ ...form, variable_x: e.target.value })} /></div>
     <div><label className="block text-sm font-medium mb-1">Métrica objetivo Y</label><select required className="w-full rounded-lg border p-2" value={form.metrica_objetivo_y} onChange={(e) => setForm({ ...form, metrica_objetivo_y: e.target.value })}>{metricObjectiveOptions.map((option) => <option key={option.value || option.label} value={option.value}>{option.label}</option>)}</select></div>
@@ -142,7 +211,7 @@ const HypothesisFormFields = ({ form, setForm, projectId }) => (
 const HypothesesDashboardPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
-  const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis } = useHypotheses();
+  const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis, deleteHypothesis } = useHypotheses();
   const [showForm, setShowForm] = useState(false);
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
@@ -150,12 +219,110 @@ const HypothesesDashboardPage = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [validationFilter, setValidationFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
+  const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
 
   useEffect(() => {
     fetchHypotheses(campaignId);
   }, [campaignId, fetchHypotheses]);
 
   const sortedHypotheses = useMemo(() => hypotheses || [], [hypotheses]);
+
+  const hypothesisById = useMemo(
+    () => new Map(sortedHypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
+    [sortedHypotheses],
+  );
+
+  const childHypothesesByParentId = useMemo(() => sortedHypotheses.reduce((acc, hypothesis) => {
+    const parentId = getParentHypothesisId(hypothesis);
+    if (!parentId) return acc;
+    const current = acc.get(parentId) || [];
+    current.push(hypothesis);
+    acc.set(parentId, current);
+    return acc;
+  }, new Map()), [sortedHypotheses]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadEvolutionLinks = async () => {
+      const links = await listActiveEvolutionLinksForDestinationMode({ projectId, campaignId, destinationMode: 'video' });
+      if (cancelled) return;
+      const next = links.reduce((acc, entry) => {
+        const destinationId = String(entry?.link?.destination_hypothesis_id || '').trim();
+        if (!destinationId) return acc;
+        acc.set(destinationId, entry.link);
+        return acc;
+      }, new Map());
+      setActiveEvolutionLinksByDestinationId(next);
+    };
+    loadEvolutionLinks();
+    return () => { cancelled = true; };
+  }, [projectId, campaignId, sortedHypotheses]);
+
+  const collectVideoEvolutionBranchIds = (rootHypothesisId = '') => {
+    const pending = [String(rootHypothesisId || '').trim()].filter(Boolean);
+    const collected = new Set();
+    while (pending.length) {
+      const currentId = pending.shift();
+      if (!currentId || collected.has(currentId)) continue;
+      collected.add(currentId);
+      const children = childHypothesesByParentId.get(currentId) || [];
+      children.forEach((child) => pending.push(String(child.id || '').trim()));
+    }
+    return [...collected];
+  };
+
+  const openDeleteEvolutionModal = (hypothesis) => {
+    const hypothesisId = String(hypothesis?.id || '').trim();
+    if (!hypothesisId) return;
+    const link = activeEvolutionLinksByDestinationId.get(hypothesisId) || null;
+    setHypothesisMenuId('');
+    setDeleteEvolutionModal({
+      open: true,
+      hypothesisId,
+      deleting: false,
+      error: '',
+      link,
+      branchIds: collectVideoEvolutionBranchIds(hypothesisId),
+    });
+  };
+
+  const closeDeleteEvolutionModal = () => setDeleteEvolutionModal({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
+
+  const confirmDeleteEvolution = async () => {
+    const rootHypothesisId = String(deleteEvolutionModal.hypothesisId || '').trim();
+    const link = deleteEvolutionModal.link;
+    const branchIds = deleteEvolutionModal.branchIds || [];
+    if (!rootHypothesisId || !link || !branchIds.length) return;
+    setDeleteEvolutionModal((prev) => ({ ...prev, deleting: true, error: '' }));
+    try {
+      for (const hypothesisId of [...branchIds].reverse()) {
+        const ok = await deleteHypothesis(hypothesisId, campaignId);
+        if (!ok) throw new Error('No se pudo eliminar una hipótesis de la rama evolucionada.');
+      }
+      await markHypothesisEvolutionLinksDeleted({
+        projectId,
+        campaignId,
+        destinationMode: 'video',
+        destinationHypothesisIds: branchIds,
+        deletionContext: {
+          source_mode: 'comments',
+          destination_mode: 'video',
+          deleted_root_hypothesis_id: rootHypothesisId,
+          deleted_branch_ids: branchIds,
+        },
+      });
+      setActiveEvolutionLinksByDestinationId((prev) => {
+        const next = new Map(prev);
+        branchIds.forEach((hypothesisId) => next.delete(String(hypothesisId)));
+        return next;
+      });
+      closeDeleteEvolutionModal();
+    } catch (error) {
+      setDeleteEvolutionModal((prev) => ({ ...prev, deleting: false, error: error?.message || 'No se pudo eliminar la evolución.' }));
+    }
+  };
 
   const availableStatuses = useMemo(() => {
     const values = new Set();
@@ -178,23 +345,42 @@ const HypothesesDashboardPage = () => {
 
       if (!q) return true;
       const haystack = [
-        hypothesis.type,
+        hypothesisTypeLabel(hypothesis.type),
         hypothesis.hypothesis_statement,
         hypothesis.condition,
         hypothesis.variable_x,
-        hypothesis.contexto_cualitativo,
+        stripHierarchyMetadata(hypothesis.contexto_cualitativo),
       ].join(' ').toLowerCase();
       return haystack.includes(q);
     });
   }, [sortedHypotheses, searchTerm, statusFilter, validationFilter]);
 
-  const buildPayload = (currentForm) => {
-    if (!currentForm.type || !currentForm.metrica_objetivo_y || !currentForm.volumen_unidad || !currentForm.umbral_operador || !currentForm.umbral_tipo) {
+  const createAllowedParents = (currentType, editingId = '') => {
+    const requiredParentType = parentTypeByChild[normalizeHypothesisType(currentType)] || '';
+    if (!requiredParentType) return [];
+    return sortedHypotheses.filter((hypothesis) => String(hypothesis.id) !== String(editingId || '') && normalizeHypothesisType(hypothesis.type) === requiredParentType);
+  };
+
+  const buildPayload = (currentForm, options = {}) => {
+    const currentType = normalizeHypothesisType(currentForm.type);
+    const editingId = String(options.editingId || '');
+    if (!currentType || !String(currentForm.title || '').trim() || !currentForm.metrica_objetivo_y || !currentForm.volumen_unidad || !currentForm.umbral_operador || !currentForm.umbral_tipo) {
       return null;
     }
+    const parentHypothesisId = String(currentForm.parent_hypothesis_id || '').trim();
+    const parentHypothesis = parentHypothesisId ? hypothesisById.get(parentHypothesisId) : null;
+    const requiredParentType = parentTypeByChild[currentType] || '';
+    if (currentType === 'problema' && parentHypothesisId) return null;
+    if (parentHypothesis && normalizeHypothesisType(parentHypothesis.type) !== requiredParentType) return null;
+    const currentChildren = childHypothesesByParentId.get(editingId) || [];
+    const allowedChildType = childTypeByParent[currentType] || '';
+    const invalidChildren = currentChildren.some((child) => normalizeHypothesisType(child.type) !== allowedChildType);
+    if ((!allowedChildType && currentChildren.length) || invalidChildren) return null;
+
     const thresholdSuffix = currentForm.umbral_tipo === '%' ? '%' : '';
     const payload = {
-      type: currentForm.type,
+      title: String(currentForm.title || '').trim(),
+      type: currentType,
       hypothesis_statement: currentForm.hypothesis_statement,
       variable_x: currentForm.variable_x,
       metrica_objetivo_y: currentForm.metrica_objetivo_y,
@@ -203,7 +389,7 @@ const HypothesesDashboardPage = () => {
       volumen_minimo: Number(currentForm.volumen_minimo || 0),
       volumen_unidad: currentForm.volumen_unidad,
       canal_principal: currentForm.canal_principal,
-      contexto_cualitativo: currentForm.contexto_cualitativo,
+      contexto_cualitativo: buildHierarchyContext(currentForm.contexto_cualitativo, parentHypothesisId),
       campaign_id: campaignId,
       condition: `${currentForm.metrica_objetivo_y} ${currentForm.umbral_operador} ${currentForm.umbral_valor}${thresholdSuffix}`,
     };
@@ -213,7 +399,7 @@ const HypothesesDashboardPage = () => {
   const onCreate = async (event) => {
     event.preventDefault();
     const payload = buildPayload(form);
-    if (!payload) return;
+    if (!payload) { window.alert('La hipótesis debe respetar la cadena problema → segmento → mensajes → solucion → producto.'); return; }
     const result = await createHypothesis(payload);
     if (result) {
       setForm(initialForm);
@@ -226,6 +412,9 @@ const HypothesesDashboardPage = () => {
     setEditForm({
       ...initialForm,
       ...hypothesis,
+      type: normalizeHypothesisType(hypothesis.type) || 'problema',
+      parent_hypothesis_id: getParentHypothesisId(hypothesis),
+      contexto_cualitativo: stripHierarchyMetadata(hypothesis.contexto_cualitativo),
       umbral_operador: hypothesis.umbral_operador || (String(hypothesis.condition || '').match(/(>=|<=|>|<)/)?.[1] || ''),
       umbral_valor: parseThresholdValue(hypothesis),
       umbral_tipo: inferThresholdType(hypothesis),
@@ -240,8 +429,8 @@ const HypothesesDashboardPage = () => {
   const onSaveEdit = async (event) => {
     event.preventDefault();
     if (!editingHypothesisId) return;
-    const payload = buildPayload(editForm);
-    if (!payload) return;
+    const payload = buildPayload(editForm, { editingId: editingHypothesisId });
+    if (!payload) { window.alert('La hipótesis debe respetar la cadena problema → segmento → mensajes → solucion → producto.'); return; }
     const result = await updateHypothesis(editingHypothesisId, payload);
     if (result) {
       cancelEdit();
@@ -267,7 +456,7 @@ const HypothesesDashboardPage = () => {
 
           {showForm && (
             <form onSubmit={onCreate} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-purple-50 mb-6">
-              <HypothesisFormFields form={form} setForm={setForm} projectId={projectId} />
+              <HypothesisFormFields form={form} setForm={setForm} projectId={projectId} availableParents={createAllowedParents(form.type)} requiredParentType={parentTypeByChild[normalizeHypothesisType(form.type)] || ''} allowedChildType={childTypeByParent[normalizeHypothesisType(form.type)] || ''} />
               <div className="md:col-span-2 flex gap-2"><Button type="submit" className="bg-purple-600 text-white">Guardar hipótesis</Button><Button type="button" className="bg-gray-200 text-gray-700" onClick={() => setShowForm(false)}>Cancelar</Button></div>
             </form>
           )}
@@ -304,12 +493,14 @@ const HypothesesDashboardPage = () => {
               {filteredHypotheses.map((hypothesis) => {
                 const isEditing = editingHypothesisId === hypothesis.id;
                 const metricLabel = metricLabelMap.get(hypothesis.metrica_objetivo_y) || hypothesis.metrica_objetivo_y || '-';
+                const parentHypothesis = hypothesisById.get(getParentHypothesisId(hypothesis)) || null;
+                const childHypotheses = childHypothesesByParentId.get(String(hypothesis.id)) || [];
 
                 return (
                   <div key={hypothesis.id} className="rounded-xl border bg-gray-50 p-4 hover:border-purple-300">
                     {isEditing ? (
                       <form onSubmit={onSaveEdit} className="grid md:grid-cols-2 gap-4 border rounded-xl p-4 bg-blue-50 mb-4">
-                        <HypothesisFormFields form={editForm} setForm={setEditForm} projectId={projectId} />
+                        <HypothesisFormFields form={editForm} setForm={setEditForm} projectId={projectId} availableParents={createAllowedParents(editForm.type, editingHypothesisId)} requiredParentType={parentTypeByChild[normalizeHypothesisType(editForm.type)] || ''} allowedChildType={childTypeByParent[normalizeHypothesisType(editForm.type)] || ''} />
                         <div className="md:col-span-2 flex gap-2">
                           <Button type="submit" className="bg-blue-600 text-white"><Save className="w-4 h-4 mr-2" />Guardar cambios</Button>
                           <Button type="button" className="bg-gray-200 text-gray-700" onClick={cancelEdit}><X className="w-4 h-4 mr-2" />Cancelar</Button>
@@ -319,9 +510,21 @@ const HypothesesDashboardPage = () => {
 
                     <div className="flex items-start justify-between gap-2">
                       <div>
-                        <h3 className="font-semibold">{hypothesis.type}</h3>
+                        <h3 className="text-base font-semibold text-slate-900">{getHypothesisDisplayTitle(hypothesis) || 'Hipótesis sin título'}</h3>
+                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Tipo: {hypothesisTypeLabel(hypothesis.type)}</span>
+                          <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">Padre: {parentHypothesis ? hypothesisTypeLabel(parentHypothesis.type) : 'Sin padre'}</span>
+                          <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600">Hijas: {childHypotheses.length}</span>
+                          {(() => {
+                            const evolutionLink = activeEvolutionLinksByDestinationId.get(String(hypothesis.id)) || null;
+                            const traced = Boolean(evolutionLink) || getEvolutionTraceLabel(hypothesis, null) === 'Evolucionada desde Comentarios';
+                            return <span className={`rounded-full border px-2 py-0.5 text-[11px] ${traced ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-50 text-slate-500'}`}>{getEvolutionTraceLabel(hypothesis, evolutionLink)}</span>;
+                          })()}
+                        </div>
+                        <p className="mt-3 text-sm font-medium text-slate-700">Problema</p>
                         <p className="text-sm text-gray-700 mt-1">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
                         <p className="text-xs text-gray-500 mt-2">Métrica: {metricLabel}</p>
+                        <p className="text-xs text-gray-500 mt-1">Padre jerárquico: {parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Capa hija permitida: {childTypeByParent[normalizeHypothesisType(hypothesis.type)] ? hypothesisTypeLabel(childTypeByParent[normalizeHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
                         {(() => {
                           const rawStatus = getHypothesisRawStatus(hypothesis);
                           const validated = isValidatedStatus(rawStatus);
@@ -335,6 +538,20 @@ const HypothesesDashboardPage = () => {
                       </div>
                       <div className="flex gap-1">
                         <Button className="bg-blue-100 text-blue-700 px-3" onClick={() => startEdit(hypothesis)}><Edit className="w-4 h-4" /></Button>
+                        <div className="relative">
+                          <Button className="bg-white border text-slate-700 px-3" onClick={() => setHypothesisMenuId((prev) => (prev === String(hypothesis.id) ? '' : String(hypothesis.id)))}><MoreHorizontal className="w-4 h-4" /></Button>
+                          {hypothesisMenuId === String(hypothesis.id) ? (
+                            <div className="absolute right-0 top-11 z-20 w-48 rounded-xl border border-gray-200 bg-white p-1.5 shadow-lg">
+                              {activeEvolutionLinksByDestinationId.has(String(hypothesis.id)) ? (
+                                <button type="button" className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50" onClick={() => openDeleteEvolutionModal(hypothesis)}>
+                                  <Trash2 className="w-4 h-4" />
+                                  Eliminar evolución
+                                </button>
+                              ) : null}
+                              <button type="button" className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50" onClick={async () => { setHypothesisMenuId(''); await deleteHypothesis(hypothesis.id, campaignId); }}>Borrar hipótesis</button>
+                            </div>
+                          ) : null}
+                        </div>
                       </div>
                     </div>
 
@@ -354,6 +571,25 @@ const HypothesesDashboardPage = () => {
           )}
         </div>
       </div>
+        <div className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 ${deleteEvolutionModal.open ? '' : 'pointer-events-none hidden'}`}>
+          <div className="w-full max-w-lg rounded-2xl border bg-white p-6 shadow-2xl">
+            <h3 className="text-lg font-semibold text-slate-900">Eliminar evolución</h3>
+            <p className="mt-2 text-sm text-slate-600">Se eliminará la hipótesis evolucionada en Modo Video y la rama derivada creada con esa evolución. La hipótesis original del Modo Comentarios permanecerá intacta.</p>
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+              <p><span className="font-semibold text-slate-900">Hipótesis origen:</span> {deleteEvolutionModal.link?.source_hypothesis_title || 'Hipótesis de comentarios'}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-900">Hipótesis evolucionada:</span> {hypothesisById.get(String(deleteEvolutionModal.hypothesisId || ''))?.hypothesis_statement || deleteEvolutionModal.hypothesisId || '—'}</p>
+              <p className="mt-1"><span className="font-semibold text-slate-900">Rama a limpiar:</span> {deleteEvolutionModal.branchIds.length} hipótesis.</p>
+              <p className="mt-1 text-xs text-slate-500">No se eliminarán códigos, perfiles ni fragmentos. Solo se limpiará la hipótesis destino y el vínculo activo de evolución.</p>
+            </div>
+            {deleteEvolutionModal.error ? <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{deleteEvolutionModal.error}</div> : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button className="bg-white border text-slate-700" onClick={closeDeleteEvolutionModal} disabled={deleteEvolutionModal.deleting}>Cancelar</Button>
+              <Button className="bg-red-600 text-white hover:bg-red-700" onClick={confirmDeleteEvolution} disabled={deleteEvolutionModal.deleting}>
+                {deleteEvolutionModal.deleting ? 'Eliminando evolución…' : 'Eliminar evolución'}
+              </Button>
+            </div>
+          </div>
+        </div>
     </div>
   );
 };
