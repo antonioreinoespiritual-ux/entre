@@ -429,6 +429,7 @@ const CommentsModePage = () => {
   const [codeCardDeleteMenuOpen, setCodeCardDeleteMenuOpen] = useState(false);
   const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
   const [hypothesisQuery, setHypothesisQuery] = useState('');
+  const [hypothesisTypeFilter, setHypothesisTypeFilter] = useState('');
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
   const [manualStatePickerHypothesisId, setManualStatePickerHypothesisId] = useState('');
   const [hypothesisEvolutionModal, setHypothesisEvolutionModal] = useState({
@@ -3644,8 +3645,11 @@ const CommentsModePage = () => {
 
   const filteredHypotheses = useMemo(() => {
     const q = String(hypothesisQuery || '').trim().toLowerCase();
-    if (!q) return hypotheses;
     return hypotheses.filter((item) => {
+      const hypothesisType = normalizeCommentHypothesisType(item.type);
+      const matchesType = !hypothesisTypeFilter || hypothesisType === hypothesisTypeFilter;
+      if (!matchesType) return false;
+      if (!q) return true;
       const title = String(item.title || '').toLowerCase();
       const description = String(item.description || '').toLowerCase();
       const contextNote = String(item.context_note || '').toLowerCase();
@@ -3656,7 +3660,7 @@ const CommentsModePage = () => {
         .toLowerCase();
       return title.includes(q) || description.includes(q) || contextNote.includes(q) || linkedProfilesText.includes(q) || typeLabel.includes(q);
     });
-  }, [hypotheses, hypothesisQuery, profileById]);
+  }, [hypotheses, hypothesisQuery, hypothesisTypeFilter, profileById]);
 
   const allowedParentHypothesesForEditor = useMemo(() => {
     const childType = normalizeCommentHypothesisType(hypothesisEditor.type);
@@ -5905,6 +5909,14 @@ const CommentsModePage = () => {
                     <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                     <input className="w-64 rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar hipótesis" value={hypothesisQuery} onChange={(e) => setHypothesisQuery(e.target.value)} />
                   </label>
+                  <select className="rounded-lg border bg-white py-2 px-3 text-sm text-slate-700" value={hypothesisTypeFilter} onChange={(e) => setHypothesisTypeFilter(e.target.value)}>
+                    <option value="">Todas</option>
+                    <option value="problema">problema</option>
+                    <option value="segmento">segmento</option>
+                    <option value="mensajes">mensajes</option>
+                    <option value="solucion">solución</option>
+                    <option value="producto">producto</option>
+                  </select>
                   <Button className="bg-white border text-slate-700" onClick={() => setHypothesisMapOpen(true)}>
                     <Network className="mr-1 h-4 w-4" /> Mapa de hipótesis
                   </Button>
