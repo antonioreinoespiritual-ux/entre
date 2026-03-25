@@ -49,7 +49,13 @@ const ProtectedRoute = ({ children }) => {
 const AuthRoute = ({ children }) => {
   const { session, loading } = useAuth();
 
-  if (loading) return null;
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent" />
+      </div>
+    );
+  }
   if (session) return <Navigate to="/projects" replace />;
   return children;
 };

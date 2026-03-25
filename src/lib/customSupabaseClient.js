@@ -1,5 +1,6 @@
 const configuredApiBaseUrl = (import.meta.env && import.meta.env.VITE_BACKEND_URL) || 'http://localhost:4000';
 const sessionStorageKey = 'mysql_backend_session';
+const bootstrapRequestTimeoutMs = Number(import.meta.env?.VITE_BOOTSTRAP_REQUEST_TIMEOUT_MS || 8000);
 
 const authSubscribers = new Set();
 
@@ -24,6 +25,7 @@ function getStoredSession() {
     const raw = localStorage.getItem(sessionStorageKey);
     return raw ? JSON.parse(raw) : null;
   } catch {
+    try { localStorage.removeItem(sessionStorageKey); } catch {}
     return null;
   }
 }
@@ -59,18 +61,23 @@ async function request(path, options = {}) {
 
   let lastError = null;
   for (const baseUrl of candidateApiBaseUrls()) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('timeout')), bootstrapRequestTimeoutMs);
     try {
       const response = await fetch(`${baseUrl}${path}`, {
         ...options,
         headers,
+        signal: controller.signal,
       });
 
       const json = await response.json();
       if (!response.ok) {
         throw new Error(json.error || `Request failed (${response.status})`);
       }
+      clearTimeout(timeout);
       return json;
     } catch (error) {
+      clearTimeout(timeout);
       lastError = error;
     }
   }

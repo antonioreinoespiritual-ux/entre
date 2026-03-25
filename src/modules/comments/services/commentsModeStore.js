@@ -5,6 +5,9 @@ const configuredApiBaseUrl = (import.meta.env && import.meta.env.VITE_BACKEND_UR
 const sessionStorageKey = 'mysql_backend_session';
 const commentsModeBroadcastPrefix = 'comments-mode:sync:';
 const commentsModeStorageEventPrefix = 'comments-mode:event:';
+const idbOpenTimeoutMs = Number(import.meta.env?.VITE_COMMENTS_IDB_OPEN_TIMEOUT_MS || 2500);
+const idbRequestTimeoutMs = Number(import.meta.env?.VITE_COMMENTS_IDB_REQUEST_TIMEOUT_MS || 2500);
+const commentsBackendRequestTimeoutMs = Number(import.meta.env?.VITE_COMMENTS_BACKEND_TIMEOUT_MS || 8000);
 
 const createEmptyCommentsStore = () => ({
   fragments: [],
@@ -129,6 +132,19 @@ const mergeObjectMaps = (baseValue = {}, incomingValue = {}) => {
   return result;
 };
 
+const withTimeout = (promise, timeoutMs, label = 'operation') => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error(`${label} timeout`)), timeoutMs);
+  promise
+    .then((value) => {
+      clearTimeout(timer);
+      resolve(value);
+    })
+    .catch((error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+});
+
 export const mergeCommentsModeStorePayloads = (basePayload = {}, incomingPayload = {}) => {
   const base = normalizeCommentsModeStorePayload(basePayload);
   const incoming = normalizeCommentsModeStorePayload(incomingPayload);
@@ -156,7 +172,14 @@ const openCommentsModeDb = () => new Promise((resolve, reject) => {
         db.createObjectStore(STORE_NAME);
       }
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onblocked = () => reject(new Error('IndexedDB blocked by another tab/process.'));
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        try { db.close(); } catch {}
+      };
+      resolve(db);
+    };
     request.onerror = () => reject(request.error || new Error('No se pudo abrir IndexedDB'));
   } catch (error) {
     reject(error);
@@ -167,6 +190,20 @@ const runIdbRequest = (request) => new Promise((resolve, reject) => {
   request.onsuccess = () => resolve(request.result);
   request.onerror = () => reject(request.error || new Error('Error en operación IndexedDB'));
 });
+
+const resetCommentsModeIndexedDb = async () => {
+  if (typeof window === 'undefined' || !window.indexedDB) return;
+  await new Promise((resolve) => {
+    try {
+      const request = window.indexedDB.deleteDatabase(DB_NAME);
+      request.onsuccess = () => resolve();
+      request.onerror = () => resolve();
+      request.onblocked = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+};
 
 const getStoredSession = () => {
   try {
@@ -198,12 +235,16 @@ const requestBackend = async (path, options = {}) => {
 
   let lastError = null;
   for (const baseUrl of candidateApiBaseUrls()) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(new Error('timeout')), commentsBackendRequestTimeoutMs);
     try {
-      const response = await fetch(`${baseUrl}${path}`, { ...options, headers });
+      const response = await fetch(`${baseUrl}${path}`, { ...options, headers, signal: controller.signal });
       const json = await response.json();
       if (!response.ok) throw new Error(json.error || `Request failed (${response.status})`);
+      clearTimeout(timeout);
       return json;
     } catch (error) {
+      clearTimeout(timeout);
       lastError = error;
     }
   }
@@ -213,12 +254,17 @@ const requestBackend = async (path, options = {}) => {
 
 const readCachedCommentsModeStore = async (storageKey) => {
   if (!storageKey || typeof window === 'undefined' || !window.indexedDB) return null;
-  const db = await openCommentsModeDb();
-  const tx = db.transaction(STORE_NAME, 'readonly');
-  const store = tx.objectStore(STORE_NAME);
-  const value = await runIdbRequest(store.get(storageKey));
-  db.close();
-  return value || null;
+  try {
+    const db = await withTimeout(openCommentsModeDb(), idbOpenTimeoutMs, 'IndexedDB open');
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    const value = await withTimeout(runIdbRequest(store.get(storageKey)), idbRequestTimeoutMs, 'IndexedDB read');
+    db.close();
+    return value || null;
+  } catch {
+    await resetCommentsModeIndexedDb();
+    return null;
+  }
 };
 
 const writeCachedCommentsModeStore = async (storageKey, payload) => {
@@ -226,11 +272,15 @@ const writeCachedCommentsModeStore = async (storageKey, payload) => {
   const normalizedPayload = normalizeCommentsModeStorePayload(payload);
   const existing = await readCachedCommentsModeStore(storageKey);
   const mergedPayload = mergeCommentsModeStorePayloads(existing || createEmptyCommentsStore(), normalizedPayload);
-  const db = await openCommentsModeDb();
-  const tx = db.transaction(STORE_NAME, 'readwrite');
-  const store = tx.objectStore(STORE_NAME);
-  await runIdbRequest(store.put(mergedPayload, storageKey));
-  db.close();
+  try {
+    const db = await withTimeout(openCommentsModeDb(), idbOpenTimeoutMs, 'IndexedDB open');
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    await withTimeout(runIdbRequest(store.put(mergedPayload, storageKey)), idbRequestTimeoutMs, 'IndexedDB write');
+    db.close();
+  } catch {
+    await resetCommentsModeIndexedDb();
+  }
   return mergedPayload;
 };
 
