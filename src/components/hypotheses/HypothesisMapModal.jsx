@@ -44,8 +44,10 @@ export function HypothesisMapModal({
   const layoutRef = useRef({});
 
   useEffect(() => {
-    setLayoutById(initialLayout && typeof initialLayout === 'object' ? initialLayout : EMPTY_LAYOUT);
-  }, [initialLayout]);
+    if (draggingNode) return;
+    const normalizedLayout = initialLayout && typeof initialLayout === 'object' ? initialLayout : EMPTY_LAYOUT;
+    setLayoutById((previousLayout) => (previousLayout === normalizedLayout ? previousLayout : normalizedLayout));
+  }, [draggingNode, initialLayout]);
 
   useEffect(() => {
     layoutRef.current = layoutById || {};
@@ -241,7 +243,7 @@ export function HypothesisMapModal({
                   key={hypothesis.id}
                   data-hypothesis-map-node="true"
                   className={`absolute rounded-md border bg-white px-2.5 py-2 text-[13px] font-medium text-slate-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] ${draggingNode === hypothesis.id || isSelected ? 'border-2 border-indigo-500' : ''}`}
-                  style={{ left: hypothesis.x, top: hypothesis.y, width: '200px', maxWidth: '200px', borderColor: isSelected ? '#4f46e5' : colors.border, backgroundColor: colors.bg }}
+                  style={{ left: hypothesis.x, top: hypothesis.y, width: '200px', maxWidth: '200px', borderColor: isSelected ? '#4f46e5' : colors.border, backgroundColor: colors.bg, cursor: draggingNode === hypothesis.id ? 'grabbing' : 'grab', userSelect: 'none' }}
                   onMouseDown={(event) => handleNodeMouseDown(event, hypothesis.id)}
                   onClick={(event) => {
                     event.stopPropagation();
