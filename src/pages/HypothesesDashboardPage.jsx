@@ -49,6 +49,15 @@ const childTypeByParent = {
 
 const hierarchyMetaPrefix = '[hierarchy_meta]';
 const hierarchyMetaSuffix = '[/hierarchy_meta]';
+const readVideoHypothesisMapLayout = (storageKey = '') => {
+  if (!storageKey) return {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
 
 const normalizeHypothesisType = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase();
@@ -227,6 +236,7 @@ const HypothesesDashboardPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
   const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis, deleteHypothesis } = useHypotheses();
+  const mapLayoutStorageKey = `video-hypothesis-map-layout:${projectId}:${campaignId}`;
   const [showForm, setShowForm] = useState(false);
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
@@ -238,6 +248,11 @@ const HypothesesDashboardPage = () => {
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
   const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
+  const [hypothesisMapLayout, setHypothesisMapLayout] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
+
+  useEffect(() => {
+    setHypothesisMapLayout(readVideoHypothesisMapLayout(mapLayoutStorageKey));
+  }, [mapLayoutStorageKey]);
 
   useEffect(() => {
     fetchHypotheses(campaignId);
@@ -638,6 +653,13 @@ const HypothesesDashboardPage = () => {
             };
           }}
           getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: ${childHypotheses.length}`}
+          initialLayout={hypothesisMapLayout}
+          persistLayout={(nextLayout) => {
+            setHypothesisMapLayout(nextLayout && typeof nextLayout === 'object' ? nextLayout : {});
+            try {
+              localStorage.setItem(mapLayoutStorageKey, JSON.stringify(nextLayout && typeof nextLayout === 'object' ? nextLayout : {}));
+            } catch {}
+          }}
           emptyStateText="No hay hipótesis para los filtros aplicados."
           emptyWorkspaceText="No hay hipótesis en Modo Video todavía."
         />

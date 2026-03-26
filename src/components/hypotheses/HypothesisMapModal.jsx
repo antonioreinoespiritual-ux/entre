@@ -10,6 +10,7 @@ const DEFAULT_TYPE_COLORS = {
 };
 
 const DEFAULT_STATUS_STYLE = () => ({ label: '', color: '#475569', backgroundColor: '#f1f5f9' });
+const EMPTY_LAYOUT = {};
 
 export function HypothesisMapModal({
   open,
@@ -27,7 +28,7 @@ export function HypothesisMapModal({
   getFilterOptions,
   getNodeMetaLabel,
   persistLayout,
-  initialLayout = {},
+  initialLayout = EMPTY_LAYOUT,
   emptyStateText = 'No hay hipótesis para los filtros aplicados.',
   emptyWorkspaceText = 'No hay hipótesis en este workspace todavía.',
 }) {
@@ -43,7 +44,7 @@ export function HypothesisMapModal({
   const layoutRef = useRef({});
 
   useEffect(() => {
-    setLayoutById(initialLayout && typeof initialLayout === 'object' ? initialLayout : {});
+    setLayoutById(initialLayout && typeof initialLayout === 'object' ? initialLayout : EMPTY_LAYOUT);
   }, [initialLayout]);
 
   useEffect(() => {
