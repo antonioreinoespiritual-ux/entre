@@ -1,5 +1,6 @@
 import React from 'react';
 import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
+import { RouteErrorBoundary } from '@/components/BootstrapErrorBoundary';
 import { Toaster } from '@/components/ui/toaster';
 import { AuthProvider, useAuth } from '@/contexts/SupabaseAuthContext';
 import { ProjectProvider } from '@/contexts/ProjectContext';
@@ -43,7 +44,11 @@ const ProtectedRoute = ({ children }) => {
     return <Navigate to="/login" replace />;
   }
 
-  return children;
+  return (
+    <RouteErrorBoundary>
+      {children}
+    </RouteErrorBoundary>
+  );
 };
 
 const AuthRoute = ({ children }) => {
@@ -57,7 +62,11 @@ const AuthRoute = ({ children }) => {
     );
   }
   if (session) return <Navigate to="/projects" replace />;
-  return children;
+  return (
+    <RouteErrorBoundary>
+      {children}
+    </RouteErrorBoundary>
+  );
 };
 
 const ProtectedApp = () => (

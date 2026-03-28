@@ -234,12 +234,23 @@ export default defineConfig(({ command }) => {
       ...buildOnlyPlugins,
     ],
     cacheDir: 'node_modules/.vite',
+    // Keep terminal output stable between hot-reloads so error messages are
+    // not inadvertently cleared before the developer can read them.
+    clearScreen: false,
     server: {
       cors: true,
       headers: {
         'Cross-Origin-Embedder-Policy': 'credentialless',
       },
       allowedHosts: true,
+      // Allow Vite to try the next available port if 3000 is already bound
+      // (e.g. after an unclean shutdown that left a ghost process).
+      strictPort: false,
+      // Disable file-system polling — polling can peg the CPU and make the
+      // dev server appear unresponsive on Linux / networked FS.
+      watch: {
+        usePolling: false,
+      },
     },
     resolve: {
       extensions: ['.jsx', '.js', '.tsx', '.ts', '.json'],
