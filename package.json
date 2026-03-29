@@ -13,8 +13,8 @@
     "backend:dev": "node backend/src/server.js",
     "backend:start": "node backend/src/server.js",
     "backend:watch": "node --watch backend/src/server.js",
-    "check:node": "node -e \"const major=Number(process.versions.node.split('.')[0]); if (major < 20 || major >= 25) { console.error('Node no soportado para este proyecto: '+process.versions.node+'. Usa Node 20.x (ver .nvmrc).'); process.exit(1); }\"",
-    "predev": "node -e \"const major=Number(process.versions.node.split('.')[0]); if (major < 20 || major >= 25) { console.error('Node no soportado para este proyecto: '+process.versions.node+'. Usa Node 20.x (ver .nvmrc).'); process.exit(1); }\"",
+    "check:node": "node -e \"const major=Number(process.versions.node.split('.')[0]); if (major < 22 || major >= 25) { console.error('Node no soportado para este proyecto: '+process.versions.node+'. Usa Node 22.x (ver .nvmrc).'); process.exit(1); }\"",
+    "predev": "node -e \"const major=Number(process.versions.node.split('.')[0]); if (major < 22 || major >= 25) { console.error('Node no soportado para este proyecto: '+process.versions.node+'. Usa Node 22.x (ver .nvmrc).'); process.exit(1); }\"",
     "repair:deps": "rm -rf node_modules package-lock.json && npm cache verify && npm install"
   },
   "dependencies": {
@@ -63,7 +63,7 @@
     "vite": "^4.4.5"
   },
   "engines": {
-    "node": ">=20 <25",
+    "node": ">=22 <25",
     "npm": ">=9"
   }
 }
