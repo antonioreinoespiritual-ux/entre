@@ -4,7 +4,7 @@ import process from 'node:process';
 import { DatabaseSync } from 'node:sqlite';
 
 export function validateDbEnv(env = process.env) {
-  const configuredPath = env.SQLITE_PATH || env.MYSQLITE_PATH;
+  const configuredPath = env.SQLITE_PATH || env.MYSQLITE_PATH || './backend/data/app.sqlite';
   if (!configuredPath || !String(configuredPath).trim()) {
     throw new Error('Missing SQLite path. Set SQLITE_PATH (or MYSQLITE_PATH).');
   }
@@ -13,7 +13,7 @@ export function validateDbEnv(env = process.env) {
 export function createPool(env = process.env) {
   validateDbEnv(env);
 
-  const dbPath = path.resolve(env.SQLITE_PATH || env.MYSQLITE_PATH);
+  const dbPath = path.resolve(env.SQLITE_PATH || env.MYSQLITE_PATH || './backend/data/app.sqlite');
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   const db = new DatabaseSync(dbPath);

@@ -42,7 +42,15 @@ export function loadEnvFile(filePath, env = process.env) {
 }
 
 export function loadBackendEnv(env = process.env) {
-  // Cargar únicamente .env para evitar tomar rutas de ejemplo que apunten a
-  // una base SQLite nueva/vacía por defecto.
-  return loadEnvFile('.env', env);
+  const primary = loadEnvFile('.env', env);
+  if (primary.loaded) {
+    return primary;
+  }
+
+  const fallback = loadEnvFile('.env.example', env);
+  if (fallback.loaded) {
+    return fallback;
+  }
+
+  return primary;
 }
