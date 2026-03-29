@@ -258,6 +258,11 @@ export default defineConfig(({ command }) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
+    // Prevent Vite from pre-bundling Babel packages on every cold start.
+    // They are large and are only used by the generate-llms script, not by the dev server.
+    optimizeDeps: {
+      exclude: ['@babel/parser', '@babel/traverse', '@babel/generator', '@babel/types'],
+    },
     build: {
       rollupOptions: {
         external: [
