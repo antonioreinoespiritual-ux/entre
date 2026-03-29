@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
 function parseEnvContent(content) {
@@ -42,8 +43,20 @@ export function loadEnvFile(filePath, env = process.env) {
 }
 
 export function loadBackendEnv(env = process.env) {
-  // Orden de prioridad: variables ya exportadas > .env local > .env.example
-  const fromEnv = loadEnvFile('.env', env);
-  if (fromEnv.loaded) return fromEnv;
-  return loadEnvFile('.env.example', env);
+  const projectRoot = fileURLToPath(new URL('../../../', import.meta.url));
+  const candidatePaths = [
+    path.resolve(process.cwd(), '.env'),
+    path.resolve(projectRoot, '.env'),
+    path.resolve(process.cwd(), '.env.example'),
+    path.resolve(projectRoot, '.env.example'),
+  ];
+
+  for (const candidate of candidatePaths) {
+    const loaded = loadEnvFile(candidate, env);
+    if (loaded.loaded) {
+      return loaded;
+    }
+  }
+
+  return { loaded: false, path: path.resolve(projectRoot, '.env') };
 }

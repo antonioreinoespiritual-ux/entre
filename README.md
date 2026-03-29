@@ -55,7 +55,7 @@ Ahora el flujo es 100% UI: usa `/signup` para crear cuenta y `/login` para inici
   npm run dev
   ```
 
-  Si no usas `nvm`, instala/usa Node **20.x** (este proyecto no está validado para Node 25).
+  Si no usas `nvm`, instala/usa Node **22.x** (este proyecto no está validado para Node 25).
 
 - Si `git pull` se queda cargando:
 
