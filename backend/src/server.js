@@ -22,8 +22,8 @@ try {
 } catch (error) {
   const sourceHint = envSource.loaded
     ? `Loaded env from ${envSource.path}`
-    : 'No .env file found in project root (or .env.example).';
-  console.error(`${error.message}. ${sourceHint} Copy .env.example to .env and adjust SQLite path if needed.`);
+    : 'No .env file found in project root.';
+  console.error(`${error.message}. ${sourceHint} Copy .env.example to .env and restore SQLITE_PATH (or MYSQLITE_PATH) to your existing database file.`);
   process.exit(1);
 }
 

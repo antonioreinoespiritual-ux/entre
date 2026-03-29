@@ -42,8 +42,7 @@ export function loadEnvFile(filePath, env = process.env) {
 }
 
 export function loadBackendEnv(env = process.env) {
-  // Orden de prioridad: variables ya exportadas > .env local > .env.example
-  const fromEnv = loadEnvFile('.env', env);
-  if (fromEnv.loaded) return fromEnv;
-  return loadEnvFile('.env.example', env);
+  // Cargar únicamente .env para evitar tomar rutas de ejemplo que apunten a
+  // una base SQLite nueva/vacía por defecto.
+  return loadEnvFile('.env', env);
 }
