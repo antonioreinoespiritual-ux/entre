@@ -60,6 +60,7 @@ const CampaignDetailPage = () => {
   const chooseMode = (mode) => {
     localStorage.setItem(`campaign-mode-selected:${campaign.id}`, mode);
     setModeModalOpen(false);
+    if (mode === 'videos') navigate(hypothesesPath);
     if (mode === 'interviews') navigate(interviewsPath);
     if (mode === 'comments') navigate(commentsPath);
   };
