@@ -9,7 +9,7 @@
     "build:full": "node tools/generate-llms.js && vite build",
     "llms:generate": "node tools/generate-llms.js",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
-    "lint": "eslint . --quiet",
+    "lint": "eslint . --quiet --cache --cache-location .eslintcache",
     "backend:dev": "node backend/src/server.js",
     "backend:start": "node backend/src/server.js",
     "backend:watch": "node --watch backend/src/server.js",

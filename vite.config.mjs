@@ -247,6 +247,9 @@ export default defineConfig(({ command }) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
+    optimizeDeps: {
+      exclude: ['@babel/parser', '@babel/traverse', '@babel/generator', '@babel/types'],
+    },
     build: {
       rollupOptions: {
         external: [

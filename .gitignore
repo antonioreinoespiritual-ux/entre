@@ -4,3 +4,5 @@ dist/
 vite.config.js.timestamp-*
 *.timestamp-*.mjs
 node_modules/.vite
+node_modules/.cache
+.eslintcache
