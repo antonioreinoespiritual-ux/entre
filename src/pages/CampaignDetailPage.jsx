@@ -71,7 +71,7 @@ const CampaignDetailPage = () => {
     return <div className="min-h-screen flex items-center justify-center">Campaign not found</div>;
   }
 
-  const campaignHomePath = `/projects/${campaign.project_id}/campaigns/${id}`;
+  const campaignHomePath = `/campaigns/${campaign.id}`;
   const audiencesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/audiences`;
   const hypothesesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/hypotheses`;
   const videosLibraryPath = `/projects/${campaign.project_id}/videos`;
