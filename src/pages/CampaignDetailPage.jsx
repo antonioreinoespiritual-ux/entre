@@ -9,6 +9,27 @@ import { useAudiences } from '@/contexts/AudienceContext';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { useVideos } from '@/contexts/VideoContext';
 
+const readCampaignModeSelection = (campaignId = '') => {
+  const normalizedCampaignId = String(campaignId || '').trim();
+  if (!normalizedCampaignId) return null;
+  try {
+    return localStorage.getItem(`campaign-mode-selected:${normalizedCampaignId}`);
+  } catch (error) {
+    console.warn('[campaign-mode-selection] Unable to read localStorage preference.', error);
+    return null;
+  }
+};
+
+const persistCampaignModeSelection = (campaignId = '', mode = '') => {
+  const normalizedCampaignId = String(campaignId || '').trim();
+  if (!normalizedCampaignId) return;
+  try {
+    localStorage.setItem(`campaign-mode-selected:${normalizedCampaignId}`, String(mode || '').trim());
+  } catch (error) {
+    console.warn('[campaign-mode-selection] Unable to persist localStorage preference.', error);
+  }
+};
+
 const CampaignDetailPage = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -35,8 +56,7 @@ const CampaignDetailPage = () => {
         await Promise.all([fetchAudiences(data.id), fetchHypotheses(data.id)]);
         const videosResult = await fetchCampaignVideos(data.id);
         setVideosCount((videosResult?.data || []).length);
-        const key = `campaign-mode-selected:${data.id}`;
-        if (!localStorage.getItem(key)) setModeModalOpen(true);
+        if (!readCampaignModeSelection(data.id)) setModeModalOpen(true);
       }
       setLoading(false);
     };
@@ -58,8 +78,9 @@ const CampaignDetailPage = () => {
   const commentsPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/comments`;
 
   const chooseMode = (mode) => {
-    localStorage.setItem(`campaign-mode-selected:${campaign.id}`, mode);
+    persistCampaignModeSelection(campaign.id, mode);
     setModeModalOpen(false);
+    if (mode === 'videos') navigate(hypothesesPath);
     if (mode === 'interviews') navigate(interviewsPath);
     if (mode === 'comments') navigate(commentsPath);
   };

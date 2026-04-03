@@ -59,6 +59,10 @@ const VideoDetailPage = () => {
             <div>
               <h1 className="text-2xl font-bold">{video.title}</h1>
               <p className="text-sm text-gray-300">Tipo: {video.video_type} · Creado: {video.created_at || '-'} · audience: {video.audience_id || 'N/A'}</p>
+              <p className="text-sm text-gray-300">Funnel: {video.funnel || '-'}</p>
+              <p className="text-sm text-gray-300">Formato: {video.content_format || '-'}</p>
+              <p className="text-sm text-gray-300">Objetivo: {video.content_objective || '-'}</p>
+              <p className="text-sm text-gray-300">Score: {video.video_score ?? '-'}</p>
               <p className="text-sm text-gray-300">external_id: {video.external_id || '-'} · campaign/ad_set/ad: {video.campaign_id_ref || '-'} / {video.ad_set_id || '-'} / {video.ad_id || '-'}</p>
             </div>
             <div className="flex gap-2">

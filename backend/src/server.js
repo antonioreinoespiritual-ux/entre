@@ -12,6 +12,7 @@ import { getYouTubeConfig, isYouTubeApiKeyConfigured, isYouTubeOAuthConfigured }
 import { buildYouTubeConsentUrl, exchangeYouTubeCodeForTokens, refreshYouTubeAccessToken, revokeYouTubeToken } from './youtube/auth.js';
 import { listYouTubeChannels, listYouTubeVideos, listYouTubePlaylists, listYouTubeCommentThreads, listYouTubeComments, searchYouTubeVideos } from './youtube/services.js';
 import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypothesisState, withCanonicalHypothesisState } from '../../shared/hypothesisState.js';
+import { buildLegacyIdentityRecords, buildLegacyTopologyRecords, collectLegacyEvolutionLinks, normalizeLegacyCommentHypothesis } from '../../shared/hypothesisLegacyCompat.js';
 
 
 const envSource = loadBackendEnv();
@@ -41,7 +42,7 @@ const corsOrigins = (process.env.CORS_ORIGIN || defaultCorsOrigins.join(','))
   .map((item) => item.trim())
   .filter(Boolean);
 const sessions = new Map();
-const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos', 'interview_hypotheses', 'users']);
+const allowedTables = new Set(['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos', 'interview_hypotheses', 'users', 'comment_mode_states', 'comment_mode_hypotheses', 'comment_mode_hypothesis_profiles', 'comment_mode_evolution_links']);
 const storageRoot = path.resolve('backend/storage');
 
 const schemaSql = [
@@ -181,6 +182,7 @@ const schemaSql = [
     contexto_cualitativo TEXT,
     audience_id TEXT,
     condition TEXT,
+    hypothesis_score REAL,
     validation_status TEXT DEFAULT 'inconclusa',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -233,6 +235,10 @@ const schemaSql = [
     likes INTEGER DEFAULT 0,
     shares INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
+    funnel TEXT,
+    content_format TEXT,
+    content_objective TEXT,
+    video_score REAL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
@@ -510,8 +516,80 @@ const schemaSql = [
     FOREIGN KEY (source_input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
     UNIQUE(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)
   )`,
-  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)',
-  'CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_states (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, storage_key)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_states_scope ON comment_mode_states(user_id, project_id, campaign_id, workspace_id, updated_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_hypotheses (
+    id TEXT PRIMARY KEY,
+    hypothesis_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    lineage_id TEXT,
+    parent_hypothesis_id TEXT,
+    validation_status TEXT DEFAULT 'inconclusa',
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, workspace_id, hypothesis_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_hypotheses_scope ON comment_mode_hypotheses(user_id, project_id, campaign_id, workspace_id, updated_at DESC)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_hypothesis_profiles (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    hypothesis_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, workspace_id, hypothesis_id, profile_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_hypothesis_profiles_scope ON comment_mode_hypothesis_profiles(user_id, project_id, campaign_id, workspace_id, hypothesis_id)',
+  `CREATE TABLE IF NOT EXISTS comment_mode_evolution_links (
+    id TEXT PRIMARY KEY,
+    link_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+    storage_key TEXT NOT NULL,
+    source_hypothesis_id TEXT NOT NULL,
+    destination_mode TEXT NOT NULL,
+    destination_hypothesis_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    deleted_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, workspace_id, link_id)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_comment_mode_evolution_links_scope ON comment_mode_evolution_links(user_id, project_id, campaign_id, workspace_id, source_hypothesis_id)',
   `CREATE TABLE IF NOT EXISTS comment_code_proposal_reviews (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -676,6 +754,384 @@ async function resolveCommentWorkspace(userId, projectId, campaignId, requestedW
   const fallback = fallbackRows[0] || null;
   if (!fallback) throw new Error('Workspace no encontrado para esta campaña.');
   return fallback;
+}
+
+function parseCommentModeStorageKey(storageKey = '') {
+  const normalized = String(storageKey || '').trim();
+  const parts = normalized.split(':');
+  if (parts[0] !== 'comments-mode' || parts.length < 3) throw new Error('storageKey inválido para Comments Mode.');
+  const projectId = String(parts[1] || '').trim();
+  const campaignId = String(parts[2] || '').trim();
+  let workspaceId = COMMENT_WORKSPACE_LEGACY;
+  if (parts[3] === 'workspace') workspaceId = String(parts[4] || '').trim() || COMMENT_WORKSPACE_LEGACY;
+  return { storageKey: normalized, projectId, campaignId, workspaceId };
+}
+
+function normalizeCommentModeStructuralPayload(payload = {}, { storageKey = '' } = {}) {
+  const safe = payload && typeof payload === 'object' ? payload : {};
+  const hypotheses = (Array.isArray(safe.hypotheses) ? safe.hypotheses : [])
+    .map((hypothesis) => normalizeLegacyCommentHypothesis(hypothesis))
+    .filter(Boolean);
+  const hypothesisEvolutionLinks = collectLegacyEvolutionLinks(safe, { storageKey });
+  const explicitIdentities = Array.isArray(safe.hypothesisCrossModeIdentities) ? safe.hypothesisCrossModeIdentities : [];
+  const explicitTopology = Array.isArray(safe.hypothesisTopology) ? safe.hypothesisTopology : [];
+  return {
+    fragments: Array.isArray(safe.fragments) ? safe.fragments : [],
+    codes: Array.isArray(safe.codes) ? safe.codes : [],
+    codeProposals: Array.isArray(safe.codeProposals) ? safe.codeProposals : [],
+    hypotheses,
+    hypothesisEvolutionLinks,
+    hypothesisCrossModeIdentities: explicitIdentities.length ? explicitIdentities : buildLegacyIdentityRecords({ evolutionLinks: hypothesisEvolutionLinks, storageKey }),
+    hypothesisTopology: explicitTopology.length ? explicitTopology : buildLegacyTopologyRecords({ hypotheses, storageKey }),
+    codeMapLayoutsByHypothesis: safe.codeMapLayoutsByHypothesis && typeof safe.codeMapLayoutsByHypothesis === 'object' ? safe.codeMapLayoutsByHypothesis : {},
+    codeMapAnalysisSessions: safe.codeMapAnalysisSessions && typeof safe.codeMapAnalysisSessions === 'object' ? safe.codeMapAnalysisSessions : {},
+    codeMapVisualProfilesByScope: safe.codeMapVisualProfilesByScope && typeof safe.codeMapVisualProfilesByScope === 'object' ? safe.codeMapVisualProfilesByScope : {},
+    hypothesisMapLayout: safe.hypothesisMapLayout && typeof safe.hypothesisMapLayout === 'object' ? safe.hypothesisMapLayout : {},
+  };
+}
+
+function commentStoreTimestamp(value) {
+  if (value == null || value === '') return 0;
+  const timestamp = Date.parse(String(value));
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function commentStoreEntityKey(entity = {}, fallbackPrefix = 'entity') {
+  if (fallbackPrefix === 'evolution-link') {
+    const sourceId = String(entity?.source_hypothesis_id || '').trim();
+    const destinationMode = String(entity?.destination_mode || '').trim();
+    const destinationId = String(entity?.destination_hypothesis_id || '').trim();
+    if (sourceId || destinationMode || destinationId) return `${sourceId}|${destinationMode}|${destinationId}`;
+  }
+  if (fallbackPrefix === 'topology') {
+    const parentId = String(entity?.parent?.hypothesis_id || entity?.parent_hypothesis_id || '').trim();
+    const childId = String(entity?.child?.hypothesis_id || entity?.hypothesis_id || entity?.id || '').trim();
+    if (parentId || childId) return `${parentId}|${childId}`;
+  }
+  if (fallbackPrefix === 'identity') {
+    const identityId = String(entity?.identity_id || '').trim();
+    if (identityId) return identityId;
+    const nodes = Array.isArray(entity?.nodes) ? entity.nodes : [];
+    if (nodes.length) return nodes.map((node) => `${node?.mode || ''}:${node?.hypothesis_id || ''}`).sort().join('|');
+  }
+  return String(
+    entity?.id
+    ?? entity?.hypothesis_id
+    ?? entity?.identity_id
+    ?? entity?.link_id
+    ?? entity?.slug
+    ?? entity?.code
+    ?? entity?.profile_id
+    ?? entity?.comment_id
+    ?? entity?.source_comment_id
+    ?? `${fallbackPrefix}:${JSON.stringify(entity)}`,
+  ).trim();
+}
+
+function mergeCommentStoreEntityArrays(baseItems = [], incomingItems = [], fallbackPrefix = 'entity') {
+  const merged = new Map();
+  for (const item of [...baseItems, ...incomingItems]) {
+    if (!item || typeof item !== 'object') continue;
+    const key = commentStoreEntityKey(item, fallbackPrefix);
+    if (!key) continue;
+    const current = merged.get(key) || null;
+    if (!current) {
+      merged.set(key, item);
+      continue;
+    }
+    const currentTimestamp = Math.max(commentStoreTimestamp(current?.updated_at), commentStoreTimestamp(current?.created_at));
+    const nextTimestamp = Math.max(commentStoreTimestamp(item?.updated_at), commentStoreTimestamp(item?.created_at));
+    if (nextTimestamp > currentTimestamp) {
+      merged.set(key, item);
+    } else if (nextTimestamp === currentTimestamp) {
+      merged.set(key, { ...current, ...item });
+    }
+  }
+  return [...merged.values()];
+}
+
+function mergeCommentStoreObjectMaps(baseValue = {}, incomingValue = {}) {
+  const base = baseValue && typeof baseValue === 'object' ? baseValue : {};
+  const incoming = incomingValue && typeof incomingValue === 'object' ? incomingValue : {};
+  const result = {};
+  for (const key of new Set([...Object.keys(base), ...Object.keys(incoming)])) {
+    const baseEntry = base[key];
+    const incomingEntry = incoming[key];
+    if (
+      baseEntry && typeof baseEntry === 'object' && !Array.isArray(baseEntry)
+      && incomingEntry && typeof incomingEntry === 'object' && !Array.isArray(incomingEntry)
+    ) {
+      result[key] = { ...baseEntry, ...incomingEntry };
+      continue;
+    }
+    result[key] = incomingEntry === undefined ? baseEntry : incomingEntry;
+  }
+  return result;
+}
+
+function mergeCommentModeStructuralPayload(basePayload = {}, incomingPayload = {}, { storageKey = '' } = {}) {
+  const base = normalizeCommentModeStructuralPayload(basePayload, { storageKey });
+  const incoming = normalizeCommentModeStructuralPayload(incomingPayload, { storageKey });
+  return {
+    fragments: mergeCommentStoreEntityArrays(base.fragments, incoming.fragments, 'fragment'),
+    codes: mergeCommentStoreEntityArrays(base.codes, incoming.codes, 'code'),
+    codeProposals: mergeCommentStoreEntityArrays(base.codeProposals, incoming.codeProposals, 'proposal'),
+    hypotheses: mergeCommentStoreEntityArrays(base.hypotheses, incoming.hypotheses, 'hypothesis'),
+    hypothesisEvolutionLinks: mergeCommentStoreEntityArrays(base.hypothesisEvolutionLinks, incoming.hypothesisEvolutionLinks, 'evolution-link'),
+    hypothesisCrossModeIdentities: mergeCommentStoreEntityArrays(base.hypothesisCrossModeIdentities, incoming.hypothesisCrossModeIdentities, 'identity'),
+    hypothesisTopology: mergeCommentStoreEntityArrays(base.hypothesisTopology, incoming.hypothesisTopology, 'topology'),
+    codeMapLayoutsByHypothesis: mergeCommentStoreObjectMaps(base.codeMapLayoutsByHypothesis, incoming.codeMapLayoutsByHypothesis),
+    codeMapAnalysisSessions: mergeCommentStoreObjectMaps(base.codeMapAnalysisSessions, incoming.codeMapAnalysisSessions),
+    codeMapVisualProfilesByScope: mergeCommentStoreObjectMaps(base.codeMapVisualProfilesByScope, incoming.codeMapVisualProfilesByScope),
+    hypothesisMapLayout: mergeCommentStoreObjectMaps(base.hypothesisMapLayout, incoming.hypothesisMapLayout),
+  };
+}
+
+function createCommentLineageIndex(payload = {}) {
+  const lineageByCommentId = new Map();
+  const identities = Array.isArray(payload?.hypothesisCrossModeIdentities) ? payload.hypothesisCrossModeIdentities : [];
+  identities.forEach((identity) => {
+    const identityId = String(identity?.identity_id || identity?.identityId || '').trim();
+    const nodes = Array.isArray(identity?.nodes) ? identity.nodes : [];
+    if (!identityId) return;
+    nodes.forEach((node) => {
+      if (String(node?.mode || '').trim() !== HYPOTHESIS_MODES.COMMENTS) return;
+      const hypothesisId = String(node?.hypothesis_id || node?.hypothesisId || '').trim();
+      if (hypothesisId) lineageByCommentId.set(hypothesisId, identityId);
+    });
+  });
+  return lineageByCommentId;
+}
+
+function collectCommentBranchHypothesisIds(payload = {}, hypothesisId = '') {
+  const normalizedRootId = String(hypothesisId || '').trim();
+  if (!normalizedRootId) return new Set();
+  const hypotheses = Array.isArray(payload?.hypotheses) ? payload.hypotheses : [];
+  const childrenByParentId = new Map();
+  hypotheses.forEach((hypothesis) => {
+    const parentId = String(hypothesis?.parent_hypothesis_id || '').trim();
+    const childId = String(hypothesis?.id || '').trim();
+    if (!parentId || !childId) return;
+    const current = childrenByParentId.get(parentId) || [];
+    current.push(childId);
+    childrenByParentId.set(parentId, current);
+  });
+
+  const branchIds = new Set([normalizedRootId]);
+  const pending = [normalizedRootId];
+  while (pending.length) {
+    const currentId = pending.pop();
+    const childIds = childrenByParentId.get(currentId) || [];
+    childIds.forEach((childId) => {
+      if (branchIds.has(childId)) return;
+      branchIds.add(childId);
+      pending.push(childId);
+    });
+  }
+  return branchIds;
+}
+
+function getCommentManualStateChangeBlockReason(payload = {}, hypothesisId = '') {
+  const branchIds = collectCommentBranchHypothesisIds(payload, hypothesisId);
+  if (!branchIds.size) return 'La hipótesis no existe dentro del workspace actual.';
+  const evolutionLinks = Array.isArray(payload?.hypothesisEvolutionLinks) ? payload.hypothesisEvolutionLinks : [];
+  const hasActiveEvolution = evolutionLinks.some((link) => {
+    if (String(link?.deleted_at || '').trim()) return false;
+    return branchIds.has(String(link?.source_hypothesis_id || '').trim());
+  });
+  if (!hasActiveEvolution) return '';
+  return 'No se puede cambiar manualmente el estado porque la hipótesis o algún nodo de su rama ya tiene evoluciones activas en otros modos.';
+}
+
+function applyManualCommentHypothesisStateChange(payload = {}, hypothesisId = '', nextState = '') {
+  const normalizedHypothesisId = String(hypothesisId || '').trim();
+  const normalizedNextState = normalizeHypothesisState(nextState);
+  const hypotheses = Array.isArray(payload?.hypotheses) ? payload.hypotheses : [];
+  const timestamp = nowIso();
+  let found = false;
+  const nextHypotheses = hypotheses.map((hypothesis) => {
+    if (String(hypothesis?.id || '').trim() !== normalizedHypothesisId) return hypothesis;
+    found = true;
+    const nextHypothesis = {
+      ...hypothesis,
+      validation_status: normalizedNextState,
+      updated_at: timestamp,
+    };
+    delete nextHypothesis.invalidated_at;
+    delete nextHypothesis.invalidated_from_hypothesis_id;
+    return nextHypothesis;
+  });
+  if (!found) throw new Error('Hypothesis not found in comment mode state.');
+  return {
+    ...payload,
+    hypotheses: nextHypotheses,
+  };
+}
+
+async function rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey) {
+  const [hypothesisRows] = await pool.query(
+    `SELECT payload_json FROM comment_mode_hypotheses
+     WHERE user_id = ? AND storage_key = ?
+     ORDER BY created_at ASC, hypothesis_id ASC`,
+    [userId, parsedKey.storageKey],
+  );
+  const [linkRows] = await pool.query(
+    `SELECT payload_json FROM comment_mode_evolution_links
+     WHERE user_id = ? AND storage_key = ?
+     ORDER BY created_at ASC, link_id ASC`,
+    [userId, parsedKey.storageKey],
+  );
+  const payload = {
+    hypotheses: hypothesisRows.map((row) => safeParseJsonField(row.payload_json, {})),
+    hypothesisEvolutionLinks: linkRows.map((row) => safeParseJsonField(row.payload_json, {})),
+  };
+  const normalizedPayload = normalizeCommentModeStructuralPayload(payload, { storageKey: parsedKey.storageKey });
+  if (!normalizedPayload.hypotheses.length && !normalizedPayload.hypothesisEvolutionLinks.length) return null;
+  return normalizedPayload;
+}
+
+async function ensureCommentWorkspaceRecord(userId, projectId, campaignId, workspaceId = '') {
+
+  const requested = String(workspaceId || '').trim() || COMMENT_WORKSPACE_LEGACY;
+  if (requested !== COMMENT_WORKSPACE_LEGACY) return resolveCommentWorkspace(userId, projectId, campaignId, requested);
+
+  const [rows] = await pool.query(
+    `SELECT * FROM comment_workspaces WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [COMMENT_WORKSPACE_LEGACY, userId, projectId, campaignId],
+  );
+  if (rows[0]) return rows[0];
+
+  const now = nowIso();
+  await pool.query(
+    `INSERT INTO comment_workspaces (id, user_id, project_id, campaign_id, name, description, status, is_migrated, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)`,
+    [COMMENT_WORKSPACE_LEGACY, userId, projectId, campaignId, 'Workspace legacy', 'Workspace estructural migrado automáticamente para Comments Mode.', now, now],
+  );
+  const [createdRows] = await pool.query(
+    `SELECT * FROM comment_workspaces WHERE id = ? AND user_id = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [COMMENT_WORKSPACE_LEGACY, userId, projectId, campaignId],
+  );
+  return createdRows[0] || null;
+}
+
+async function persistCommentModeStructuralState(userId, storageKey, payload = {}) {
+  const parsedKey = parseCommentModeStorageKey(storageKey);
+  const [campaignRows] = await pool.query(
+    'SELECT * FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+    [parsedKey.campaignId, parsedKey.projectId, userId],
+  );
+  const campaign = campaignRows[0] || null;
+  if (!campaign) throw new Error('Campaign not found');
+
+  const workspace = await ensureCommentWorkspaceRecord(userId, parsedKey.projectId, parsedKey.campaignId, parsedKey.workspaceId);
+  const existingPayload = await readCommentModeStructuralState(userId, parsedKey.storageKey);
+  const normalizedPayload = mergeCommentModeStructuralPayload(existingPayload || {}, payload, { storageKey: parsedKey.storageKey });
+  const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
+  const now = nowIso();
+
+  await pool.query('BEGIN IMMEDIATE');
+  try {
+    const [existingRows] = await pool.query(
+      'SELECT id, created_at FROM comment_mode_states WHERE user_id = ? AND storage_key = ? LIMIT 1',
+      [userId, parsedKey.storageKey],
+    );
+    const stateId = existingRows[0]?.id || buildEntityId('comment_workspace', 'cms_');
+    const createdAt = existingRows[0]?.created_at || now;
+    await pool.query(
+      `INSERT INTO comment_mode_states (id, user_id, project_id, campaign_id, workspace_id, storage_key, payload_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(user_id, storage_key) DO UPDATE SET
+         project_id = excluded.project_id,
+         campaign_id = excluded.campaign_id,
+         workspace_id = excluded.workspace_id,
+         payload_json = excluded.payload_json,
+         updated_at = excluded.updated_at`,
+      [stateId, userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, JSON.stringify(normalizedPayload), createdAt, now],
+    );
+
+    await pool.query('DELETE FROM comment_mode_hypothesis_profiles WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await pool.query('DELETE FROM comment_mode_evolution_links WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await pool.query('DELETE FROM comment_mode_hypotheses WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+
+    for (const hypothesis of normalizedPayload.hypotheses) {
+      const hypothesisId = String(hypothesis?.id || '').trim();
+      if (!hypothesisId) continue;
+      await pool.query(
+        `INSERT INTO comment_mode_hypotheses (id, hypothesis_id, user_id, project_id, campaign_id, workspace_id, storage_key, lineage_id, parent_hypothesis_id, validation_status, payload_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          buildEntityId('comment_hypothesis', 'cmh_'),
+          hypothesisId,
+          userId,
+          parsedKey.projectId,
+          parsedKey.campaignId,
+          String(workspace?.id || parsedKey.workspaceId),
+          parsedKey.storageKey,
+          lineageByCommentId.get(hypothesisId) || null,
+          String(hypothesis?.parent_hypothesis_id || '').trim() || null,
+          String(hypothesis?.validation_status || HYPOTHESIS_STATE.INCONCLUSIVE).trim() || HYPOTHESIS_STATE.INCONCLUSIVE,
+          JSON.stringify(hypothesis),
+          now,
+          now,
+        ],
+      );
+
+      const linkedProfileIds = Array.isArray(hypothesis?.linked_profile_ids) ? hypothesis.linked_profile_ids : [];
+      for (const profileId of linkedProfileIds.map((value) => String(value || '').trim()).filter(Boolean)) {
+        await pool.query(
+          `INSERT OR IGNORE INTO comment_mode_hypothesis_profiles (id, user_id, project_id, campaign_id, workspace_id, storage_key, hypothesis_id, profile_id, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [buildEntityId('comment_workspace', 'cmp_'), userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, hypothesisId, profileId, now, now],
+        );
+      }
+    }
+
+    for (const link of normalizedPayload.hypothesisEvolutionLinks) {
+      const linkId = String(link?.id || `${link?.source_hypothesis_id || ''}:${link?.destination_mode || ''}:${link?.destination_hypothesis_id || ''}`).trim();
+      if (!linkId) continue;
+      await pool.query(
+        `INSERT INTO comment_mode_evolution_links (id, link_id, user_id, project_id, campaign_id, workspace_id, storage_key, source_hypothesis_id, destination_mode, destination_hypothesis_id, payload_json, deleted_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          buildEntityId('comment_workspace', 'cml_'),
+          linkId,
+          userId,
+          parsedKey.projectId,
+          parsedKey.campaignId,
+          String(workspace?.id || parsedKey.workspaceId),
+          parsedKey.storageKey,
+          String(link?.source_hypothesis_id || '').trim(),
+          String(link?.destination_mode || '').trim(),
+          String(link?.destination_hypothesis_id || '').trim(),
+          JSON.stringify(link),
+          String(link?.deleted_at || '').trim() || null,
+          now,
+          now,
+        ],
+      );
+    }
+
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
+
+  return normalizedPayload;
+}
+
+async function readCommentModeStructuralState(userId, storageKey) {
+  const parsedKey = parseCommentModeStorageKey(storageKey);
+  const [rows] = await pool.query(
+    `SELECT * FROM comment_mode_states WHERE user_id = ? AND storage_key = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
+    [userId, parsedKey.storageKey, parsedKey.projectId, parsedKey.campaignId],
+  );
+  const row = rows[0] || null;
+  if (row) {
+    const normalizedPayload = normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {}), { storageKey: parsedKey.storageKey });
+    if (normalizedPayload.hypotheses.length || normalizedPayload.hypothesisEvolutionLinks.length) return normalizedPayload;
+  }
+  return rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey);
 }
 
 function autoExternalIdForVideo(videoType, videoId) {
@@ -1718,6 +2174,130 @@ async function tableExists(tableName) {
   return rows.length > 0;
 }
 
+async function listTableIndexes(tableName) {
+  const [rows] = await pool.query(`PRAGMA index_list(${normalizeIdentifier(tableName)})`);
+  return rows;
+}
+
+async function listIndexColumns(indexName) {
+  const [rows] = await pool.query(`PRAGMA index_info(${normalizeIdentifier(indexName)})`);
+  return rows.map((row) => String(row.name || ''));
+}
+
+async function commentDatasetHasLegacyScopeUniqueConstraint() {
+  if (!(await tableExists('comment_dataset_comments'))) return false;
+  const indexes = await listTableIndexes('comment_dataset_comments');
+  for (const index of indexes) {
+    if (!index || Number(index.unique) !== 1) continue;
+    const indexName = String(index.name || '').trim();
+    if (!indexName) continue;
+    const columns = await listIndexColumns(indexName);
+    if (columns.join('|') === 'user_id|project_id|campaign_id|source|source_comment_id') {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function rebuildCommentDatasetCommentsTableWithWorkspaceScopedUniqueness() {
+  const staleLegacyTable = 'comment_dataset_comments_legacy_before_workspace_scope_fix';
+  if (!(await tableExists('comment_dataset_comments'))) return;
+
+  if (await tableExists(staleLegacyTable)) {
+    await pool.query(`DROP TABLE ${normalizeIdentifier(staleLegacyTable)}`);
+  }
+
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE comment_dataset_comments RENAME TO ${normalizeIdentifier(staleLegacyTable)}`);
+    await pool.query(`CREATE TABLE comment_dataset_comments (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      campaign_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL DEFAULT '__legacy_workspace__',
+      audience_id TEXT,
+      hypothesis_id TEXT,
+      source TEXT NOT NULL,
+      source_comment_id TEXT NOT NULL,
+      parent_comment_id TEXT,
+      video_id TEXT,
+      channel_id TEXT,
+      author_name TEXT,
+      author_channel_id TEXT,
+      text TEXT NOT NULL,
+      published_at TEXT,
+      like_count INTEGER DEFAULT 0,
+      reply_count INTEGER DEFAULT 0,
+      source_job TEXT,
+      source_run_id TEXT,
+      source_input_id TEXT,
+      source_query_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+      FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+      FOREIGN KEY (hypothesis_id) REFERENCES interview_hypotheses(id) ON DELETE SET NULL,
+      FOREIGN KEY (source_run_id) REFERENCES comment_ingestion_runs(id) ON DELETE SET NULL,
+      FOREIGN KEY (source_input_id) REFERENCES comment_ingestion_inputs(id) ON DELETE SET NULL,
+      UNIQUE(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)
+    )`);
+
+    await pool.query(
+      `INSERT INTO comment_dataset_comments (
+        id, user_id, project_id, campaign_id, workspace_id, audience_id, hypothesis_id, source, source_comment_id, parent_comment_id,
+        video_id, channel_id, author_name, author_channel_id, text, published_at, like_count, reply_count,
+        source_job, source_run_id, source_input_id, source_query_json, created_at, updated_at
+      )
+      SELECT
+        legacy.id,
+        legacy.user_id,
+        legacy.project_id,
+        legacy.campaign_id,
+        COALESCE(NULLIF(TRIM(legacy.workspace_id), ''), '__legacy_workspace__'),
+        legacy.audience_id,
+        legacy.hypothesis_id,
+        legacy.source,
+        legacy.source_comment_id,
+        legacy.parent_comment_id,
+        legacy.video_id,
+        legacy.channel_id,
+        legacy.author_name,
+        legacy.author_channel_id,
+        legacy.text,
+        legacy.published_at,
+        COALESCE(legacy.like_count, 0),
+        COALESCE(legacy.reply_count, 0),
+        legacy.source_job,
+        legacy.source_run_id,
+        legacy.source_input_id,
+        legacy.source_query_json,
+        COALESCE(legacy.created_at, CURRENT_TIMESTAMP),
+        COALESCE(legacy.updated_at, CURRENT_TIMESTAMP)
+      FROM ${normalizeIdentifier(staleLegacyTable)} AS legacy
+      WHERE legacy.rowid IN (
+        SELECT MAX(rowid)
+        FROM ${normalizeIdentifier(staleLegacyTable)}
+        GROUP BY user_id, project_id, campaign_id, COALESCE(NULLIF(TRIM(workspace_id), ''), '__legacy_workspace__'), source, source_comment_id
+      )`,
+    );
+
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign
+      ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)`);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)');
+    await pool.query(`DROP TABLE ${normalizeIdentifier(staleLegacyTable)}`);
+  } catch (error) {
+    if (!(await tableExists('comment_dataset_comments')) && (await tableExists(staleLegacyTable))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(staleLegacyTable)} RENAME TO comment_dataset_comments`);
+    }
+    throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
 async function rebuildVideosTableWithNullableContextColumns() {
   const staleLegacyTable = 'videos_legacy_before_nullable_context_fix';
   const hasVideosTable = await tableExists('videos');
@@ -1779,6 +2359,10 @@ async function rebuildVideosTableWithNullableContextColumns() {
       likes INTEGER DEFAULT 0,
       shares INTEGER DEFAULT 0,
       comments INTEGER DEFAULT 0,
+      funnel TEXT,
+      content_format TEXT,
+      content_objective TEXT,
+      video_score REAL,
       campaign_id TEXT,
       project_id TEXT,
       ad_id TEXT,
@@ -1798,7 +2382,7 @@ async function rebuildVideosTableWithNullableContextColumns() {
       'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'pico_viewers', 'viewers_prom',
       'duracion_min', 'nuevos_seguidores', 'saves', 'organic_piece_type', 'views_finish_pct', 'retencion_pct',
       'tiempo_prom_seg', 'duracion_seg', 'campaign_id_ref', 'ad_set_id', 'cpc', 'ctr', 'duracion_del_video_seg', 'views',
-      'engagement', 'likes', 'shares', 'comments', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
+      'engagement', 'likes', 'shares', 'comments', 'funnel', 'content_format', 'content_objective', 'video_score', 'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id',
       'metrics_json', 'created_at', 'updated_at',
     ];
 
@@ -2008,6 +2592,10 @@ async function ensureVideoHierarchyMigration() {
     ['ctr', 'REAL DEFAULT 0'],
     ['duracion_del_video_seg', 'REAL DEFAULT 0'],
     ['metrics_json', 'TEXT'],
+    ['funnel', 'TEXT'],
+    ['content_format', 'TEXT'],
+    ['content_objective', 'TEXT'],
+    ['video_score', 'REAL'],
   ];
 
   for (const [columnName, columnType] of optionalVideoColumns) {
@@ -2038,6 +2626,7 @@ async function ensureVideoHierarchyMigration() {
     ['volumen_unidad', 'TEXT'],
     ['canal_principal', 'TEXT'],
     ['contexto_cualitativo', 'TEXT'],
+    ['hypothesis_score', 'REAL'],
   ];
 
   for (const [columnName, columnType] of optionalHypothesisColumns) {
@@ -2114,6 +2703,12 @@ async function ensureVideoHierarchyMigration() {
   }
 
   if (await tableExists('comment_dataset_comments')) {
+    if (await commentDatasetHasLegacyScopeUniqueConstraint()) {
+      await rebuildCommentDatasetCommentsTableWithWorkspaceScopedUniqueness();
+    }
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_campaign
+      ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, published_at DESC, created_at DESC)`);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_comment_dataset_comments_run ON comment_dataset_comments(source_run_id)');
     try {
       await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_comment_dataset_comments_scope_source
         ON comment_dataset_comments(user_id, project_id, campaign_id, workspace_id, source, source_comment_id)`);
@@ -2357,11 +2952,46 @@ async function runMigrations() {
     await pool.query(statement);
   }
   await ensureVideoHierarchyMigration();
+  await recalculateAllVideoModeScores();
 }
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+const VIDEO_FUNNEL_VALUES = ['Reconocimiento', 'Consideracion', 'Decisión'];
+const VIDEO_CONTENT_FORMAT_VALUES = [
+  'El contenido comercial',
+  'El contenido de valor',
+  'El contenido informativo',
+];
+const VIDEO_CONTENT_OBJECTIVE_VALUES = [
+  'Los contenidos escritos.',
+  'Los contenidos escritos con elementos gráficos.',
+  'Los contenidos audiovisuales.',
+  'Los contenidos descargables.',
+];
+
+function normalizeVideoFunnel(value, { allowEmpty = true } = {}) {
+  if (value == null) return allowEmpty ? null : undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return allowEmpty ? null : undefined;
+  return VIDEO_FUNNEL_VALUES.includes(normalized) ? normalized : undefined;
+}
+
+function normalizeVideoContentFormat(value, { allowEmpty = true } = {}) {
+  if (value == null) return allowEmpty ? null : undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return allowEmpty ? null : undefined;
+  return VIDEO_CONTENT_FORMAT_VALUES.includes(normalized) ? normalized : undefined;
+}
+
+function normalizeVideoContentObjective(value, { allowEmpty = true } = {}) {
+  if (value == null) return allowEmpty ? null : undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return allowEmpty ? null : undefined;
+  return VIDEO_CONTENT_OBJECTIVE_VALUES.includes(normalized) ? normalized : undefined;
 }
 
 const bulkVideoAllowedFields = new Map([
@@ -2386,12 +3016,18 @@ const bulkVideoAllowedFields = new Map([
   ['ad_id', { column: 'ad_id', type: 'text' }],
   ['url', { column: 'url', type: 'text' }],
   ['video_type', { column: 'video_type', type: 'enum', enumValues: ['paid', 'organic', 'live'] }],
+  ['funnel', { column: 'funnel', type: 'video_funnel' }],
+  ['content_format', { column: 'content_format', type: 'video_content_format' }],
+  ['content_objective', { column: 'content_objective', type: 'video_content_objective' }],
 ]);
 
 function parseTypedValue(value, type) {
   if (value == null || value === '') return null;
   if (type === 'text') return String(value);
   if (type === 'enum') return String(value).trim().toLowerCase();
+  if (type === 'video_funnel') return normalizeVideoFunnel(value);
+  if (type === 'video_content_format') return normalizeVideoContentFormat(value);
+  if (type === 'video_content_objective') return normalizeVideoContentObjective(value);
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
   if (type === 'int') return Math.trunc(parsed);
@@ -5759,6 +6395,38 @@ const hypothesisContextOnlyFields = new Set(['audience_id']);
 
 const videoGlobalForbiddenFields = new Set(['audience_id', 'audience', 'hypothesis_id', 'campaign_id']);
 
+function sanitizeVideoMutablePayload(input = {}, { requireFunnel = false } = {}) {
+  const sanitized = { ...input };
+  if (Object.prototype.hasOwnProperty.call(sanitized, 'funnel')) {
+    const normalizedFunnel = normalizeVideoFunnel(sanitized.funnel, { allowEmpty: !requireFunnel });
+    if (normalizedFunnel === undefined) {
+      throw new Error(`videos.funnel must be one of: ${VIDEO_FUNNEL_VALUES.join(', ')}`);
+    }
+    sanitized.funnel = normalizedFunnel;
+  } else if (requireFunnel) {
+    throw new Error('videos.funnel is required');
+  }
+  if (Object.prototype.hasOwnProperty.call(sanitized, 'content_format')) {
+    const normalizedContentFormat = normalizeVideoContentFormat(sanitized.content_format, { allowEmpty: !requireFunnel });
+    if (normalizedContentFormat === undefined) {
+      throw new Error(`videos.content_format must be one of: ${VIDEO_CONTENT_FORMAT_VALUES.join(', ')}`);
+    }
+    sanitized.content_format = normalizedContentFormat;
+  } else if (requireFunnel) {
+    throw new Error('videos.content_format is required');
+  }
+  if (Object.prototype.hasOwnProperty.call(sanitized, 'content_objective')) {
+    const normalizedContentObjective = normalizeVideoContentObjective(sanitized.content_objective, { allowEmpty: !requireFunnel });
+    if (normalizedContentObjective === undefined) {
+      throw new Error(`videos.content_objective must be one of: ${VIDEO_CONTENT_OBJECTIVE_VALUES.join(', ')}`);
+    }
+    sanitized.content_objective = normalizedContentObjective;
+  } else if (requireFunnel) {
+    throw new Error('videos.content_objective is required');
+  }
+  return sanitized;
+}
+
 async function loadHypothesisAnalysisContext(hypothesisId, userId, config = {}) {
   const hypothesis = await fetchOwnedHypothesisById(hypothesisId, userId);
   if (!hypothesis) throw new Error('Hypothesis not found');
@@ -5814,6 +6482,196 @@ function computeDerivedVideoMetrics(video) {
     purchase_rate: viewContent > 0 ? purchase / viewContent : (views > 0 ? purchase / views : 0),
     clicks_per_1000_views: views > 0 ? (1000 * clicks) / views : 0,
   };
+}
+
+function saturatingRatio(value, pivot) {
+  const safeValue = Math.max(safeNumber(value, 0), 0);
+  const safePivot = Math.max(safeNumber(pivot, 0), 0);
+  if (safeValue <= 0 || safePivot <= 0) return safeValue > 0 ? 1 : 0;
+  return safeValue / (safeValue + safePivot);
+}
+
+function roundScore(value) {
+  if (value == null || !Number.isFinite(Number(value))) return null;
+  return Number(Number(value).toFixed(2));
+}
+
+function summarizeVideoSignals(video = {}) {
+  const views = Math.max(toNumber(video.views), 0);
+  const clicks = Math.max(toNumber(video.clicks), 0);
+  const likes = Math.max(toNumber(video.likes), 0);
+  const comments = Math.max(toNumber(video.comments), 0);
+  const shares = Math.max(toNumber(video.shares), 0);
+  const saves = Math.max(toNumber(video.saves), 0);
+  const purchases = Math.max(toNumber(video.purchase), 0);
+  const initiateCheckouts = Math.max(toNumber(video.initiate_checkouts), 0);
+  const viewContent = Math.max(toNumber(video.view_content), 0);
+  const leadForms = Math.max(toNumber(video.formulario_lead), 0);
+  const engagementActions = likes + (1.5 * comments) + (2.5 * shares) + (2 * saves);
+  const conversionActions = (1.2 * viewContent) + (1.5 * leadForms) + (1.8 * initiateCheckouts) + (3.2 * purchases);
+  const ctr = views > 0 ? (clicks / views) : Math.max(toNumber(video.ctr), 0);
+  const engagementRate = views > 0 ? (engagementActions / views) : 0;
+  const conversionRate = views > 0 ? (conversionActions / views) : 0;
+  const cpc = toNumber(video.cpc, 0);
+
+  return {
+    views,
+    clicks,
+    likes,
+    comments,
+    shares,
+    saves,
+    purchases,
+    initiateCheckouts,
+    viewContent,
+    leadForms,
+    engagementActions,
+    conversionActions,
+    ctr,
+    engagementRate,
+    conversionRate,
+    cpc,
+  };
+}
+
+function computeVideoPriorityScore(video = {}) {
+  const signals = summarizeVideoSignals(video);
+  const reachScore = saturatingRatio(signals.views, 5000);
+  const ctrScore = saturatingRatio(signals.ctr * 100, 2.5);
+  const engagementScore = saturatingRatio(signals.engagementRate * 100, 4);
+  const conversionRateScore = saturatingRatio(signals.conversionRate * 100, 2.2);
+  const conversionVolumeScore = saturatingRatio(signals.conversionActions, 25);
+  const costEfficiencyScore = signals.cpc > 0
+    ? clamp(0, 1 - saturatingRatio(signals.cpc, 2.5), 1)
+    : (signals.clicks > 0 ? 0.55 : 0.35);
+  const supportScore = clamp(
+    0,
+    (0.65 * saturatingRatio(signals.views, 3000))
+      + (0.2 * saturatingRatio(signals.clicks + signals.engagementActions, 70))
+      + (0.15 * saturatingRatio(signals.conversionActions, 14)),
+    1,
+  );
+  const compositeScore = clamp(
+    0,
+    (0.18 * reachScore)
+      + (0.22 * ctrScore)
+      + (0.2 * engagementScore)
+      + (0.22 * conversionRateScore)
+      + (0.1 * conversionVolumeScore)
+      + (0.08 * costEfficiencyScore),
+    1,
+  );
+
+  return roundScore(100 * compositeScore * (0.45 + (0.55 * supportScore)));
+}
+
+function average(values = []) {
+  const filtered = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (!filtered.length) return null;
+  return filtered.reduce((sum, value) => sum + value, 0) / filtered.length;
+}
+
+function standardDeviation(values = []) {
+  const mean = average(values);
+  if (mean == null) return null;
+  const filtered = values.map((value) => Number(value)).filter((value) => Number.isFinite(value));
+  if (filtered.length <= 1) return 0;
+  const variance = filtered.reduce((sum, value) => sum + ((value - mean) ** 2), 0) / filtered.length;
+  return Math.sqrt(variance);
+}
+
+function computeHypothesisPriorityScore(videos = []) {
+  const usableVideos = Array.isArray(videos)
+    ? videos.filter((video) => Number.isFinite(Number(video?.video_score)))
+    : [];
+  if (!usableVideos.length) return null;
+
+  const scoredVideos = usableVideos.map((video) => {
+    const signals = summarizeVideoSignals(video);
+    const weight = Math.max(
+      0.15,
+      (0.6 * saturatingRatio(signals.views, 2500))
+        + (0.25 * saturatingRatio(signals.clicks + signals.engagementActions, 45))
+        + (0.15 * saturatingRatio(signals.conversionActions, 12)),
+    );
+    return { video, weight, score: Number(video.video_score) };
+  });
+
+  const totalWeight = scoredVideos.reduce((sum, item) => sum + item.weight, 0);
+  if (!totalWeight) return null;
+
+  const weightedAverageScore = scoredVideos.reduce((sum, item) => sum + (item.score * item.weight), 0) / totalWeight;
+  const totalViews = scoredVideos.reduce((sum, item) => sum + Math.max(toNumber(item.video.views), 0), 0);
+  const countSupport = saturatingRatio(scoredVideos.length, 4);
+  const volumeSupport = saturatingRatio(totalViews, 12000);
+  const sumSquaredWeights = scoredVideos.reduce((sum, item) => sum + (item.weight ** 2), 0);
+  const effectiveSampleSize = sumSquaredWeights > 0 ? ((totalWeight ** 2) / sumSquaredWeights) : 0;
+  const balanceScore = scoredVideos.length ? clamp(0, effectiveSampleSize / scoredVideos.length, 1) : 0;
+  const consistencyScore = scoredVideos.length <= 1
+    ? 0.65
+    : clamp(0, 1 - ((standardDeviation(scoredVideos.map((item) => item.score)) || 0) / 18), 1);
+  const robustnessScore = clamp(0, (0.4 * countSupport) + (0.4 * volumeSupport) + (0.2 * balanceScore), 1);
+
+  return roundScore(
+    weightedAverageScore
+      * (0.65 + (0.35 * robustnessScore))
+      * (0.85 + (0.15 * consistencyScore)),
+  );
+}
+
+async function recalculateHypothesisScore(userId, hypothesisId) {
+  if (!userId || !hypothesisId) return null;
+  const videos = await listVideosForHypothesis(hypothesisId, userId, {});
+  const nextScore = computeHypothesisPriorityScore(videos);
+  await pool.query(
+    'UPDATE hypotheses SET hypothesis_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+    [nextScore, hypothesisId, userId],
+  );
+  return nextScore;
+}
+
+async function recalculateVideoModeScoresForVideo(userId, videoId) {
+  if (!userId || !videoId) return { videoScore: null, hypothesisIds: [] };
+  const video = await fetchOwnedVideoById(videoId, userId);
+  if (!video) return { videoScore: null, hypothesisIds: [] };
+
+  const videoScore = computeVideoPriorityScore(video);
+  await pool.query(
+    'UPDATE videos SET video_score = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+    [videoScore, videoId, userId],
+  );
+
+  const [links] = await pool.query(
+    'SELECT DISTINCT hypothesis_id FROM hypothesis_videos WHERE video_id = ? AND user_id = ?',
+    [videoId, userId],
+  );
+  const hypothesisIds = [...new Set(links.map((row) => String(row.hypothesis_id || '').trim()).filter(Boolean))];
+  for (const hypothesisId of hypothesisIds) {
+    await recalculateHypothesisScore(userId, hypothesisId);
+  }
+  return { videoScore, hypothesisIds };
+}
+
+async function recalculateAllVideoModeScores() {
+  const [videos] = await pool.query('SELECT id, user_id FROM videos');
+  for (const video of videos) {
+    await recalculateVideoModeScoresForVideo(video.user_id, video.id);
+  }
+
+  const [hypothesesWithoutVideos] = await pool.query(
+    `SELECT h.id, h.user_id
+     FROM hypotheses h
+     WHERE NOT EXISTS (
+       SELECT 1 FROM hypothesis_videos hv
+       WHERE hv.hypothesis_id = h.id AND hv.user_id = h.user_id
+     )`,
+  );
+  for (const hypothesis of hypothesesWithoutVideos) {
+    await pool.query(
+      'UPDATE hypotheses SET hypothesis_score = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
+      [hypothesis.id, hypothesis.user_id],
+    );
+  }
 }
 
 function compareVideosAB(videoA, videoB, config = {}) {
@@ -6110,6 +6968,27 @@ async function executeCrudQuery(body, currentUserId) {
       if (!writeRow.video_type || !['paid', 'organic', 'live'].includes(String(writeRow.video_type))) {
         throw new Error("videos.video_type must be one of: paid, organic, live");
       }
+      if (Object.prototype.hasOwnProperty.call(writeRow, 'funnel')) {
+        const normalizedFunnel = normalizeVideoFunnel(writeRow.funnel);
+        if (normalizedFunnel === undefined) {
+          throw new Error(`videos.funnel must be one of: ${VIDEO_FUNNEL_VALUES.join(', ')}`);
+        }
+        writeRow.funnel = normalizedFunnel;
+      }
+      if (Object.prototype.hasOwnProperty.call(writeRow, 'content_format')) {
+        const normalizedContentFormat = normalizeVideoContentFormat(writeRow.content_format);
+        if (normalizedContentFormat === undefined) {
+          throw new Error(`videos.content_format must be one of: ${VIDEO_CONTENT_FORMAT_VALUES.join(', ')}`);
+        }
+        writeRow.content_format = normalizedContentFormat;
+      }
+      if (Object.prototype.hasOwnProperty.call(writeRow, 'content_objective')) {
+        const normalizedContentObjective = normalizeVideoContentObjective(writeRow.content_objective);
+        if (normalizedContentObjective === undefined) {
+          throw new Error(`videos.content_objective must be one of: ${VIDEO_CONTENT_OBJECTIVE_VALUES.join(', ')}`);
+        }
+        writeRow.content_objective = normalizedContentObjective;
+      }
 
       if (writeRow.hypothesis_id) {
         const [ownershipRows] = await pool.query(
@@ -6245,6 +7124,7 @@ async function executeCrudQuery(body, currentUserId) {
           await pool.query('DELETE FROM videos WHERE id = ? AND user_id = ?', [created.id, currentUserId]);
           throw new Error('No se pudo crear carpeta canonical en Cloud para el video.');
         }
+        await recalculateVideoModeScoresForVideo(currentUserId, created.id);
         [inserted] = await pool.query(`SELECT * FROM ${quotedTable} WHERE id = ?`, [writeRow.id]);
       }
     }
@@ -6257,11 +7137,37 @@ async function executeCrudQuery(body, currentUserId) {
 
   if (operation === 'update') {
     const normalizedPayload = normalizePersistedHypothesisPayload(table, payload || {});
+    if (table === 'videos' && Object.prototype.hasOwnProperty.call(normalizedPayload || {}, 'funnel')) {
+      const normalizedFunnel = normalizeVideoFunnel(normalizedPayload.funnel);
+      if (normalizedFunnel === undefined) {
+        throw new Error(`videos.funnel must be one of: ${VIDEO_FUNNEL_VALUES.join(', ')}`);
+      }
+      normalizedPayload.funnel = normalizedFunnel;
+    }
+    if (table === 'videos' && Object.prototype.hasOwnProperty.call(normalizedPayload || {}, 'content_format')) {
+      const normalizedContentFormat = normalizeVideoContentFormat(normalizedPayload.content_format);
+      if (normalizedContentFormat === undefined) {
+        throw new Error(`videos.content_format must be one of: ${VIDEO_CONTENT_FORMAT_VALUES.join(', ')}`);
+      }
+      normalizedPayload.content_format = normalizedContentFormat;
+    }
+    if (table === 'videos' && Object.prototype.hasOwnProperty.call(normalizedPayload || {}, 'content_objective')) {
+      const normalizedContentObjective = normalizeVideoContentObjective(normalizedPayload.content_objective);
+      if (normalizedContentObjective === undefined) {
+        throw new Error(`videos.content_objective must be one of: ${VIDEO_CONTENT_OBJECTIVE_VALUES.join(', ')}`);
+      }
+      normalizedPayload.content_objective = normalizedContentObjective;
+    }
     const fields = Object.keys(normalizedPayload || {});
     if (!fields.length) throw new Error('Empty update payload');
     const setSql = fields.map((field) => `${normalizeIdentifier(field)} = ?`).join(', ');
     await pool.query(`UPDATE ${quotedTable} SET ${setSql}${where}`, [...fields.map((field) => normalizedPayload[field]), ...whereValues]);
     const [updated] = await pool.query(`SELECT * FROM ${quotedTable}${where}`, whereValues);
+    if (table === 'videos') {
+      for (const row of updated) {
+        await recalculateVideoModeScoresForVideo(currentUserId, row.id);
+      }
+    }
     if (table === 'hypotheses' && Object.prototype.hasOwnProperty.call(payload || {}, 'audience_id')) {
       for (const hypothesis of updated) {
         await pool.query(
@@ -6277,7 +7183,26 @@ async function executeCrudQuery(body, currentUserId) {
   }
 
   if (operation === 'delete') {
+    let linkedHypothesisIds = [];
+    if (table === 'videos' && filters.some((entry) => entry?.field === 'id')) {
+      const targetVideoIds = filters.filter((entry) => entry?.field === 'id').map((entry) => entry.value);
+      if (targetVideoIds.length) {
+        const placeholders = targetVideoIds.map(() => '?').join(', ');
+        const [links] = await pool.query(
+          `SELECT DISTINCT hypothesis_id
+           FROM hypothesis_videos
+           WHERE user_id = ? AND video_id IN (${placeholders})`,
+          [currentUserId, ...targetVideoIds],
+        );
+        linkedHypothesisIds = [...new Set(links.map((row) => String(row.hypothesis_id || '').trim()).filter(Boolean))];
+      }
+    }
     await pool.query(`DELETE FROM ${quotedTable}${where}`, whereValues);
+    if (table === 'videos') {
+      for (const hypothesisId of linkedHypothesisIds) {
+        await recalculateHypothesisScore(currentUserId, hypothesisId);
+      }
+    }
     if (['projects', 'campaigns', 'audiences', 'hypotheses', 'videos', 'hypothesis_videos'].includes(table)) {
       await syncCloudForUser(currentUserId);
     }
@@ -7297,6 +8222,78 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
     }
 
 
+
+    if (url.pathname === '/api/comment-mode/state' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const storageKey = String(url.searchParams.get('storageKey') || '').trim();
+      if (!storageKey) return sendJson(req, res, 400, { error: 'storageKey is required' });
+      const payload = await readCommentModeStructuralState(user.id, storageKey);
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload } });
+    }
+
+    if (url.pathname === '/api/comment-mode/states' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+      const [campaignRows] = await pool.query('SELECT * FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1', [campaignId, projectId, user.id]);
+      if (!campaignRows[0]) return sendJson(req, res, 404, { error: 'Campaign not found' });
+      const [rows] = await pool.query(
+        `SELECT storage_key, workspace_id, payload_json, updated_at FROM comment_mode_states WHERE user_id = ? AND project_id = ? AND campaign_id = ? ORDER BY updated_at DESC`,
+        [user.id, projectId, campaignId],
+      );
+      return sendJson(req, res, 200, {
+        data: {
+          items: rows.map((row) => ({
+            storage_key: row.storage_key,
+            workspace_id: row.workspace_id,
+            updated_at: row.updated_at,
+            payload: normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {})),
+          })),
+        },
+      });
+    }
+
+    if (url.pathname === '/api/comment-mode/state' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const storageKey = String(body.storageKey || '').trim();
+      if (!storageKey) return sendJson(req, res, 400, { error: 'storageKey is required' });
+      const payload = await persistCommentModeStructuralState(user.id, storageKey, body.payload || {});
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload } });
+    }
+
+    if (url.pathname === '/api/comment-mode/hypotheses/manual-state' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const storageKey = String(body.storageKey || '').trim();
+      const hypothesisId = String(body.hypothesisId || '').trim();
+      const nextState = normalizeHypothesisState(body.nextState || body.validation_status || body.hypothesis_state);
+      if (!storageKey || !hypothesisId) return sendJson(req, res, 400, { error: 'storageKey and hypothesisId are required' });
+
+      const payload = await readCommentModeStructuralState(user.id, storageKey);
+      if (!payload) return sendJson(req, res, 404, { error: 'Comment mode state not found for the requested workspace.' });
+
+      const blockedReason = getCommentManualStateChangeBlockReason(payload, hypothesisId);
+      if (blockedReason) {
+        return sendJson(req, res, 409, { error: blockedReason, code: 'comment_manual_state_blocked_by_active_evolution' });
+      }
+
+      const nextPayload = applyManualCommentHypothesisStateChange(payload, hypothesisId, nextState);
+      const savedPayload = await persistCommentModeStructuralState(user.id, storageKey, nextPayload);
+      return sendJson(req, res, 200, {
+        data: {
+          storage_key: storageKey,
+          hypothesis_id: hypothesisId,
+          validation_status: nextState,
+          payload: savedPayload,
+        },
+      });
+    }
 
     if (url.pathname === '/api/comment-base/workspaces' && req.method === 'GET') {
       const user = authFromRequest(req);
@@ -8841,6 +9838,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
             const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
             const values = setEntries.map(([, value]) => value);
             await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.matchedVideoId, user.id]);
+            await recalculateVideoModeScoresForVideo(user.id, entry.matchedVideoId);
           }
           await pool.query('COMMIT');
         } catch (error) {
@@ -8911,7 +9909,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       }
 
       const disallowed = new Set(['id', 'user_id', 'created_at', 'video_id', 'campaign_id', 'project_id']);
-      const entries = Object.entries(body || {}).filter(([key]) => !disallowed.has(key));
+      let sanitizedBody;
+      try {
+        sanitizedBody = sanitizeVideoMutablePayload(body || {});
+      } catch (error) {
+        sendJson(req, res, 400, { error: error?.message || String(error) });
+        return;
+      }
+      const entries = Object.entries(sanitizedBody || {}).filter(([key]) => !disallowed.has(key));
       if (!entries.length) {
         sendJson(req, res, 400, { error: 'No editable fields provided' });
         return;
@@ -8920,6 +9925,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const setSql = entries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
       const values = entries.map(([, value]) => value);
       await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, existing.id, user.id]);
+      await recalculateVideoModeScoresForVideo(user.id, existing.id);
       const updated = await fetchOwnedVideoById(existing.id, user.id);
       sendJson(req, res, 200, { video: updated });
       return;
@@ -8936,6 +9942,11 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         sendJson(req, res, 404, { error: 'Video not found' });
         return;
       }
+      const [linkedHypothesisRows] = await pool.query(
+        'SELECT DISTINCT hypothesis_id FROM hypothesis_videos WHERE video_id = ? AND user_id = ?',
+        [existing.id, user.id],
+      );
+      const linkedHypothesisIds = [...new Set(linkedHypothesisRows.map((row) => String(row.hypothesis_id || '').trim()).filter(Boolean))];
 
       try {
         await purgeVideoCloudArtifacts(user.id, existing.id);
@@ -8951,6 +9962,9 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         }
 
         await syncCloudForUser(user.id);
+        for (const linkedHypothesisId of linkedHypothesisIds) {
+          await recalculateHypothesisScore(user.id, linkedHypothesisId);
+        }
         sendJson(req, res, 200, { ok: true, deleted_video_id: existing.id });
       } catch (error) {
         sendJson(req, res, 500, { error: error?.message || String(error) });
@@ -8974,9 +9988,15 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         sendJson(req, res, 400, { error: 'project_id is required' });
         return;
       }
-      const payload = {
-        ...body,
-      };
+      let payload;
+      try {
+        payload = sanitizeVideoMutablePayload({
+          ...body,
+        }, { requireFunnel: true });
+      } catch (error) {
+        sendJson(req, res, 400, { error: error?.message || String(error) });
+        return;
+      }
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
       sendJson(req, res, 200, { data: rows });
       return;
@@ -9074,10 +10094,16 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         sendJson(req, res, 400, { error: 'Global video payload contains forbidden fields', code: 'VIDEO_GLOBAL_FORBIDDEN_FIELDS', fields: forbidden });
         return;
       }
-      const payload = {
-        ...body,
-        project_id: projectId,
-      };
+      let payload;
+      try {
+        payload = sanitizeVideoMutablePayload({
+          ...body,
+          project_id: projectId,
+        }, { requireFunnel: true });
+      } catch (error) {
+        sendJson(req, res, 400, { error: error?.message || String(error) });
+        return;
+      }
 
       const rows = await executeCrudQuery({ table: 'videos', operation: 'insert', payload }, user.id);
       sendJson(req, res, 200, { data: rows });
@@ -9140,6 +10166,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         linked.push(hyp.id);
       }
       await syncCloudForUser(user.id);
+      await recalculateVideoModeScoresForVideo(user.id, video.id);
       sendJson(req, res, 200, { ok: true, linked, already_linked, skipped });
       return;
     }
@@ -9767,6 +10794,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         'SELECT * FROM hypothesis_videos WHERE hypothesis_id = ? AND video_id = ? AND user_id = ? LIMIT 1',
         [hypothesisId, videoId, user.id],
       );
+      await recalculateHypothesisScore(user.id, hypothesisId);
       sendJson(req, res, 200, { data: rows[0] || null });
       return;
     }
@@ -9835,6 +10863,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         await unlinkVideoFolderFromAudience(user.id, hypothesis.campaign_id, previousAudienceId, video);
       }
 
+      await recalculateHypothesisScore(user.id, targetHypothesisId);
       const videos = await listVideosForHypothesis(targetHypothesisId, user.id, {});
       const updated = videos.find((row) => String(row.id) === String(targetVideoId)) || null;
       sendJson(req, res, 200, { video: updated });
@@ -9912,6 +10941,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       }
 
       await syncCloudForUser(user.id);
+      await recalculateHypothesisScore(user.id, targetHypothesisId);
       sendJson(req, res, 200, {
         ok: true,
         linked,
@@ -9967,6 +10997,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         unlinked.push(video.id);
       }
 
+      await recalculateHypothesisScore(user.id, targetHypothesisId);
       sendJson(req, res, 200, { ok: true, unlinked, skipped });
       return;
     }

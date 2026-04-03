@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Brain, Edit, Lightbulb, MoreHorizontal, Network, Plus, Save, Trash2, X } from 'lucide-react';
+import { ArrowLeft, Brain, Edit, Gauge, Lightbulb, MoreHorizontal, Network, Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
@@ -49,6 +49,15 @@ const childTypeByParent = {
 
 const hierarchyMetaPrefix = '[hierarchy_meta]';
 const hierarchyMetaSuffix = '[/hierarchy_meta]';
+const readVideoHypothesisMapLayout = (storageKey = '') => {
+  if (!storageKey) return {};
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
 
 const normalizeHypothesisType = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase();
@@ -160,6 +169,20 @@ const thresholdTypeOptions = [
 
 const metricLabelMap = new Map(metricObjectiveOptions.map((option) => [option.value, option.label]));
 
+const formatScore = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed.toFixed(parsed >= 100 || Number.isInteger(parsed) ? 0 : 1) : '—';
+};
+
+const scoreTone = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 'border-slate-200 bg-slate-100 text-slate-500';
+  if (parsed >= 75) return 'border-cyan-400/60 bg-slate-950 text-cyan-300';
+  if (parsed >= 55) return 'border-violet-300 bg-violet-50 text-violet-700';
+  if (parsed >= 35) return 'border-amber-300 bg-amber-50 text-amber-700';
+  return 'border-rose-300 bg-rose-50 text-rose-700';
+};
+
 
 const getHypothesisRawStatus = (hypothesis) => (
   hypothesis?.validation_status
@@ -213,6 +236,7 @@ const HypothesesDashboardPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
   const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis, deleteHypothesis } = useHypotheses();
+  const mapLayoutStorageKey = `video-hypothesis-map-layout:${projectId}:${campaignId}`;
   const [showForm, setShowForm] = useState(false);
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
@@ -224,12 +248,25 @@ const HypothesesDashboardPage = () => {
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
   const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
+  const [hypothesisMapLayout, setHypothesisMapLayout] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
+
+  useEffect(() => {
+    setHypothesisMapLayout(readVideoHypothesisMapLayout(mapLayoutStorageKey));
+  }, [mapLayoutStorageKey]);
 
   useEffect(() => {
     fetchHypotheses(campaignId);
   }, [campaignId, fetchHypotheses]);
 
-  const sortedHypotheses = useMemo(() => hypotheses || [], [hypotheses]);
+  const sortedHypotheses = useMemo(() => [...(hypotheses || [])].sort((left, right) => {
+    const leftScore = Number(left?.hypothesis_score);
+    const rightScore = Number(right?.hypothesis_score);
+    const leftHasScore = Number.isFinite(leftScore);
+    const rightHasScore = Number.isFinite(rightScore);
+    if (leftHasScore && rightHasScore && leftScore !== rightScore) return rightScore - leftScore;
+    if (leftHasScore !== rightHasScore) return leftHasScore ? -1 : 1;
+    return String(left?.created_at || '').localeCompare(String(right?.created_at || '')) * -1;
+  }), [hypotheses]);
 
   const hypothesisById = useMemo(
     () => new Map(sortedHypotheses.map((hypothesis) => [String(hypothesis.id), hypothesis])),
@@ -518,6 +555,10 @@ const HypothesesDashboardPage = () => {
                       <div>
                         <h3 className="text-base font-semibold text-slate-900">{getHypothesisDisplayTitle(hypothesis) || 'Hipótesis sin título'}</h3>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
+                          <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold shadow-sm ${scoreTone(hypothesis.hypothesis_score)}`}>
+                            <Gauge className="h-3.5 w-3.5" />
+                            Score {formatScore(hypothesis.hypothesis_score)}
+                          </span>
                           <span className="rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Tipo: {hypothesisTypeLabel(hypothesis.type)}</span>
                           <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[11px] text-indigo-700">Padre: {parentHypothesis ? hypothesisTypeLabel(parentHypothesis.type) : 'Sin padre'}</span>
                           <span className="rounded-full border border-gray-200 bg-white px-2 py-0.5 text-[11px] text-gray-600">Hijas: {childHypotheses.length}</span>
@@ -529,6 +570,18 @@ const HypothesesDashboardPage = () => {
                         </div>
                         <p className="mt-3 text-sm font-medium text-slate-700">Problema</p>
                         <p className="text-sm text-gray-700 mt-1">{hypothesis.hypothesis_statement || hypothesis.condition || 'Sin statement'}</p>
+                        <div className="mt-3">
+                          <div className="flex items-center justify-between text-[11px] font-medium text-slate-500">
+                            <span>Prioridad tecnológica</span>
+                            <span>{formatScore(hypothesis.hypothesis_score)}/100</span>
+                          </div>
+                          <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-violet-500 to-fuchsia-500 transition-all"
+                              style={{ width: `${Math.max(0, Math.min(100, Number(hypothesis.hypothesis_score) || 0))}%` }}
+                            />
+                          </div>
+                        </div>
                         <p className="text-xs text-gray-500 mt-2">Métrica: {metricLabel}</p>
                         <p className="text-xs text-gray-500 mt-1">Padre jerárquico: {parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Capa hija permitida: {childTypeByParent[normalizeHypothesisType(hypothesis.type)] ? hypothesisTypeLabel(childTypeByParent[normalizeHypothesisType(hypothesis.type)]) : 'No admite hijas'}</p>
                         {(() => {
@@ -600,6 +653,13 @@ const HypothesesDashboardPage = () => {
             };
           }}
           getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: ${childHypotheses.length}`}
+          initialLayout={hypothesisMapLayout}
+          persistLayout={(nextLayout) => {
+            setHypothesisMapLayout(nextLayout && typeof nextLayout === 'object' ? nextLayout : {});
+            try {
+              localStorage.setItem(mapLayoutStorageKey, JSON.stringify(nextLayout && typeof nextLayout === 'object' ? nextLayout : {}));
+            } catch {}
+          }}
           emptyStateText="No hay hipótesis para los filtros aplicados."
           emptyWorkspaceText="No hay hipótesis en Modo Video todavía."
         />

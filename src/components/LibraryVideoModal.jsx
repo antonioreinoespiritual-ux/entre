@@ -4,6 +4,18 @@ import { useToast } from '@/components/ui/use-toast';
 import { useVideos } from '@/contexts/VideoContext';
 
 const tabs = ['paid', 'organic', 'live'];
+const funnelOptions = ['Reconocimiento', 'Consideracion', 'Decisión'];
+const contentFormatOptions = [
+  'El contenido comercial',
+  'El contenido de valor',
+  'El contenido informativo',
+];
+const contentObjectiveOptions = [
+  'Los contenidos escritos.',
+  'Los contenidos escritos con elementos gráficos.',
+  'Los contenidos audiovisuales.',
+  'Los contenidos descargables.',
+];
 
 const globalFields = [
   'external_id',
@@ -18,6 +30,9 @@ const globalFields = [
   'organic_piece_type',
   'campaign_id_ref',
   'ad_set_id',
+  'funnel',
+  'content_format',
+  'content_objective',
 ];
 
 const metricFields = [
@@ -60,6 +75,9 @@ const baseVideo = {
   organic_piece_type: '',
   campaign_id_ref: '',
   ad_set_id: '',
+  funnel: '',
+  content_format: '',
+  content_objective: '',
   clicks: 0,
   views: 0,
   likes: 0,
@@ -98,6 +116,9 @@ const labels = {
   organic_piece_type: 'Organic piece type',
   campaign_id_ref: 'Campaign ID (ad platform)',
   ad_set_id: 'Ad set ID',
+  funnel: 'Funnel',
+  content_format: 'Tipo de contenido (formato)',
+  content_objective: 'Tipo de contenido (objetivo)',
   clicks: 'Clicks',
   views: 'Views',
   likes: 'Likes',
@@ -156,6 +177,18 @@ const LibraryVideoModal = ({ isOpen, onClose, mode = 'create', projectId, initia
       project_id: projectId,
       video_type: activeTab,
     };
+    if (!isEdit && !String(payload.funnel || '').trim()) {
+      toast({ title: 'Error', description: 'Selecciona un funnel válido para crear el video.', variant: 'destructive' });
+      return;
+    }
+    if (!isEdit && !String(payload.content_format || '').trim()) {
+      toast({ title: 'Error', description: 'Selecciona un tipo de contenido (formato) válido.', variant: 'destructive' });
+      return;
+    }
+    if (!isEdit && !String(payload.content_objective || '').trim()) {
+      toast({ title: 'Error', description: 'Selecciona un tipo de contenido (objetivo) válido.', variant: 'destructive' });
+      return;
+    }
     metricFields.forEach((field) => {
       if (field in payload) payload[field] = Number(payload[field] || 0);
     });
@@ -205,6 +238,36 @@ const LibraryVideoModal = ({ isOpen, onClose, mode = 'create', projectId, initia
                   <label className="block text-sm font-medium mb-1">{labels[field] || field}</label>
                   {field === 'contexto_cualitativo' ? (
                     <textarea className="w-full rounded-lg border p-2" rows="2" value={form[field]} onChange={(e) => setForm((c) => ({ ...c, [field]: e.target.value }))} />
+                  ) : field === 'funnel' ? (
+                    <select
+                      className="w-full rounded-lg border p-2"
+                      value={form[field] ?? ''}
+                      required={!isEdit}
+                      onChange={(e) => setForm((c) => ({ ...c, [field]: e.target.value }))}
+                    >
+                      <option value="">Selecciona funnel</option>
+                      {funnelOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  ) : field === 'content_format' ? (
+                    <select
+                      className="w-full rounded-lg border p-2"
+                      value={form[field] ?? ''}
+                      required={!isEdit}
+                      onChange={(e) => setForm((c) => ({ ...c, [field]: e.target.value }))}
+                    >
+                      <option value="">Selecciona formato</option>
+                      {contentFormatOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
+                  ) : field === 'content_objective' ? (
+                    <select
+                      className="w-full rounded-lg border p-2"
+                      value={form[field] ?? ''}
+                      required={!isEdit}
+                      onChange={(e) => setForm((c) => ({ ...c, [field]: e.target.value }))}
+                    >
+                      <option value="">Selecciona objetivo</option>
+                      {contentObjectiveOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                    </select>
                   ) : (
                     <input
                       type="text"

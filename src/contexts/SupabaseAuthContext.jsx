@@ -4,6 +4,7 @@ import { supabase } from '@/lib/customSupabaseClient';
 import { useToast } from '@/components/ui/use-toast';
 
 const AuthContext = createContext(undefined);
+const AUTH_BOOTSTRAP_TIMEOUT_MS = 9000;
 
 export const AuthProvider = ({ children }) => {
   const { toast } = useToast();
@@ -22,20 +23,37 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
+    let mounted = true;
+    const timeoutId = setTimeout(() => {
+      if (!mounted) return;
+      setLoading(false);
+    }, AUTH_BOOTSTRAP_TIMEOUT_MS);
+
     const getSession = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      handleSession(session);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!mounted) return;
+        handleSession(session);
+      } catch {
+        if (!mounted) return;
+        handleSession(null);
+      }
     };
 
     getSession();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
+        if (!mounted) return;
         handleSession(session);
       }
     );
 
-    return () => subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      clearTimeout(timeoutId);
+      subscription.unsubscribe();
+    };
   }, [handleSession]);
 
   const signUp = useCallback(async (email, password, options) => {

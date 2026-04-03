@@ -158,6 +158,10 @@ const CampaignVideosLibraryPage = () => {
                   <div>
                     <p className="font-semibold">#{video.video_id ?? '—'} · {video.title || '—'} <span className="text-xs text-gray-500">({video.video_type || '—'})</span></p>
                     <p className="text-sm text-gray-600">Session: {video.session_id ?? video.external_id ?? '—'}</p>
+                    <p className="text-sm text-gray-600">Funnel: {video.funnel || '—'}</p>
+                    <p className="text-sm text-gray-600">Formato: {video.content_format || '—'}</p>
+                    <p className="text-sm text-gray-600">Objetivo: {video.content_objective || '—'}</p>
+                    <p className="text-sm text-gray-600">Score: {video.video_score ?? '—'}</p>
                     <p className="text-sm text-gray-600">Views: {video.views || 0} · Likes: {video.likes || 0} · Comments: {video.comments || 0}</p>
                     <p className="text-xs text-gray-500 mt-1">Usado en: {video.used_in_hypotheses || 0} hipótesis</p>
                     {Array.isArray(video.linked_hypotheses) && video.linked_hypotheses.length > 0 ? <p className="text-xs text-gray-500">{video.linked_hypotheses.join(' · ')}</p> : null}

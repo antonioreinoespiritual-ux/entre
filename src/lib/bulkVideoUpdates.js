@@ -20,14 +20,19 @@ const allowedFieldMap = new Map([
   ['ad_id', { key: 'ad_id', type: 'text' }],
   ['url', { key: 'url', type: 'text' }],
   ['video_type', { key: 'video_type', type: 'enum', enumValues: ['paid', 'organic', 'live'] }],
+  ['funnel', { key: 'funnel', type: 'enum', enumValues: ['Reconocimiento', 'Consideracion', 'Decisión'] }],
+  ['content_format', { key: 'content_format', type: 'enum', enumValues: ['El contenido comercial', 'El contenido de valor', 'El contenido informativo'] }],
+  ['content_objective', { key: 'content_objective', type: 'enum', enumValues: ['Los contenidos escritos.', 'Los contenidos escritos con elementos gráficos.', 'Los contenidos audiovisuales.', 'Los contenidos descargables.'] }],
 ]);
 
 function parseTypedValue(value, config) {
   if (value == null || value === '') return null;
   if (config.type === 'text') return String(value);
   if (config.type === 'enum') {
-    const normalized = String(value).trim().toLowerCase();
-    return config.enumValues.includes(normalized) ? normalized : null;
+    const normalized = String(value).trim();
+    if (config.enumValues.includes(normalized)) return normalized;
+    const lowered = normalized.toLowerCase();
+    return config.enumValues.includes(lowered) ? lowered : null;
   }
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;

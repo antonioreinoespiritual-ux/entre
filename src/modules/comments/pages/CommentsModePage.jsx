@@ -5,7 +5,16 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { commentsIngestionApi } from '@/services/commentsIngestionApi';
 import { Toolbar } from '@/modules/interviews/components/editor-toolbar/Toolbar';
-import { loadCommentsModeStore, saveCommentsModeStore } from '@/modules/comments/services/commentsModeStore';
+import {
+  createEmptyCommentsStore,
+  loadCommentsModeStore,
+  mergeCommentsModeStorePayloads,
+  normalizeCommentsModeStorePayload,
+  saveCommentsModeStore,
+  subscribeCommentsModeStore,
+  updateCommentHypothesisManualState,
+} from '@/modules/comments/services/commentsModeStore';
+import { listAvailableCommentHypothesisProfiles, normalizeCommentHypothesisLinkedProfileIds } from '@/modules/comments/services/commentHypothesisProfiles';
 import { markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { interviewsModuleApi } from '@/modules/interviews/services/interviewsModuleApi';
@@ -291,40 +300,10 @@ const buildCodeMapInitialAssistantReport = (analysis = {}, subject = {}, targetT
   ].join('\n');
 };
 
-const createEmptyCommentsStore = () => ({
-  fragments: [],
-  codes: [],
-  codeProposals: [],
-  hypotheses: [],
-  hypothesisEvolutionLinks: [],
-  codeMapLayoutsByHypothesis: {},
-  codeMapAnalysisSessions: {},
-  codeMapVisualProfilesByScope: {},
-  hypothesisMapLayout: {},
-});
-
 const loadCommentsStoreFromLocalStorage = (storageKey = '') => {
   try {
     const parsed = JSON.parse(localStorage.getItem(storageKey) || '{}');
-    return {
-      fragments: Array.isArray(parsed.fragments) ? parsed.fragments : [],
-      codes: Array.isArray(parsed.codes) ? parsed.codes : [],
-      codeProposals: Array.isArray(parsed.codeProposals) ? parsed.codeProposals : [],
-      hypotheses: Array.isArray(parsed.hypotheses) ? parsed.hypotheses : [],
-      hypothesisEvolutionLinks: Array.isArray(parsed.hypothesisEvolutionLinks) ? parsed.hypothesisEvolutionLinks : [],
-      codeMapLayoutsByHypothesis: parsed.codeMapLayoutsByHypothesis && typeof parsed.codeMapLayoutsByHypothesis === 'object'
-        ? parsed.codeMapLayoutsByHypothesis
-        : {},
-      codeMapAnalysisSessions: parsed.codeMapAnalysisSessions && typeof parsed.codeMapAnalysisSessions === 'object'
-        ? parsed.codeMapAnalysisSessions
-        : {},
-      codeMapVisualProfilesByScope: parsed.codeMapVisualProfilesByScope && typeof parsed.codeMapVisualProfilesByScope === 'object'
-        ? parsed.codeMapVisualProfilesByScope
-        : {},
-      hypothesisMapLayout: parsed.hypothesisMapLayout && typeof parsed.hypothesisMapLayout === 'object'
-        ? parsed.hypothesisMapLayout
-        : {},
-    };
+    return normalizeCommentsModeStorePayload(parsed);
   } catch {
     return createEmptyCommentsStore();
   }
@@ -450,7 +429,9 @@ const CommentsModePage = () => {
   const [codeCardDeleteMenuOpen, setCodeCardDeleteMenuOpen] = useState(false);
   const [codeCardDeleteMode, setCodeCardDeleteMode] = useState('none');
   const [hypothesisQuery, setHypothesisQuery] = useState('');
+  const [hypothesisTypeFilter, setHypothesisTypeFilter] = useState('');
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [manualStatePickerHypothesisId, setManualStatePickerHypothesisId] = useState('');
   const [hypothesisEvolutionModal, setHypothesisEvolutionModal] = useState({
     open: false,
     saving: false,
@@ -544,15 +525,23 @@ const CommentsModePage = () => {
   const readerTextContainerRef = useRef(null);
 
   const [store, setStore] = useState(() => loadCommentsStoreFromLocalStorage(storageKey));
+  const storeRef = useRef(store);
+
+  useEffect(() => {
+    storeRef.current = store;
+  }, [store]);
 
   const persist = (next) => {
-    setStore(next);
+    const normalizedNext = mergeCommentsModeStorePayloads(storeRef.current, next);
+    setStore(normalizedNext);
     try {
-      localStorage.setItem(storageKey, JSON.stringify(next));
+      localStorage.setItem(storageKey, JSON.stringify(normalizedNext));
     } catch {
       // Fallback para datasets grandes: el guardado principal vive en IndexedDB.
     }
-    saveCommentsModeStore(storageKey, next).catch(() => {
+    saveCommentsModeStore(storageKey, normalizedNext).then((savedPayload) => {
+      setStore((current) => mergeCommentsModeStorePayloads(current, savedPayload));
+    }).catch(() => {
       // Silencio controlado: no bloquear UX si IndexedDB falla en navegador restringido.
     });
   };
@@ -696,6 +685,18 @@ const CommentsModePage = () => {
     return () => {
       cancelled = true;
     };
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey) return undefined;
+    return subscribeCommentsModeStore(storageKey, (incomingPayload) => {
+      setStore((current) => mergeCommentsModeStorePayloads(current, incomingPayload));
+      try {
+        const currentStored = loadCommentsStoreFromLocalStorage(storageKey);
+        const mergedLocal = mergeCommentsModeStorePayloads(currentStored, incomingPayload);
+        localStorage.setItem(storageKey, JSON.stringify(mergedLocal));
+      } catch {}
+    });
   }, [storageKey]);
 
   const fragments = store.fragments || [];
@@ -3632,43 +3633,10 @@ const CommentsModePage = () => {
   ];
 
 
-  const availableHypothesisProfiles = useMemo(() => {
-    const aggregated = new Map();
-    Object.values(codeMapVisualProfilesByScope || {}).forEach((scopeData) => {
-      const profiles = Array.isArray(scopeData?.profiles) ? scopeData.profiles : [];
-      const assignments = scopeData?.assignments && typeof scopeData.assignments === 'object' ? scopeData.assignments : {};
-      const assignmentCountByProfile = Object.values(assignments).reduce((acc, profileId) => {
-        const normalizedProfileId = String(profileId || '').trim();
-        if (!normalizedProfileId) return acc;
-        acc.set(normalizedProfileId, (acc.get(normalizedProfileId) || 0) + 1);
-        return acc;
-      }, new Map());
-
-      profiles.forEach((profile) => {
-        const id = String(profile?.id || '').trim();
-        if (!id) return;
-        const previous = aggregated.get(id);
-        const nextAssignmentCount = Number(assignmentCountByProfile.get(id) || 0);
-        if (!previous) {
-          aggregated.set(id, {
-            id,
-            name: String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
-            description: String(profile?.description || '').trim(),
-            assignmentCount: nextAssignmentCount,
-          });
-          return;
-        }
-        aggregated.set(id, {
-          ...previous,
-          name: previous.name || String(profile?.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
-          description: previous.description || String(profile?.description || '').trim(),
-          assignmentCount: Number(previous.assignmentCount || 0) + nextAssignmentCount,
-        });
-      });
-    });
-
-    return Array.from(aggregated.values()).sort((a, b) => a.name.localeCompare(b.name, 'es'));
-  }, [codeMapVisualProfilesByScope]);
+  const availableHypothesisProfiles = useMemo(
+    () => listAvailableCommentHypothesisProfiles(codeMapVisualProfilesByScope, codeMapScopeKey),
+    [codeMapScopeKey, codeMapVisualProfilesByScope],
+  );
 
   const profileById = useMemo(
     () => new Map(availableHypothesisProfiles.map((profile) => [String(profile.id), profile])),
@@ -3677,8 +3645,11 @@ const CommentsModePage = () => {
 
   const filteredHypotheses = useMemo(() => {
     const q = String(hypothesisQuery || '').trim().toLowerCase();
-    if (!q) return hypotheses;
     return hypotheses.filter((item) => {
+      const hypothesisType = normalizeCommentHypothesisType(item.type);
+      const matchesType = !hypothesisTypeFilter || hypothesisType === hypothesisTypeFilter;
+      if (!matchesType) return false;
+      if (!q) return true;
       const title = String(item.title || '').toLowerCase();
       const description = String(item.description || '').toLowerCase();
       const contextNote = String(item.context_note || '').toLowerCase();
@@ -3689,7 +3660,7 @@ const CommentsModePage = () => {
         .toLowerCase();
       return title.includes(q) || description.includes(q) || contextNote.includes(q) || linkedProfilesText.includes(q) || typeLabel.includes(q);
     });
-  }, [hypotheses, hypothesisQuery, profileById]);
+  }, [hypotheses, hypothesisQuery, hypothesisTypeFilter, profileById]);
 
   const allowedParentHypothesesForEditor = useMemo(() => {
     const childType = normalizeCommentHypothesisType(hypothesisEditor.type);
@@ -3800,6 +3771,18 @@ const CommentsModePage = () => {
     return descendants;
   };
 
+  const getManualStateChangeBlockReason = useCallback((hypothesisId = '') => {
+    const normalizedId = String(hypothesisId || '').trim();
+    if (!normalizedId) return 'No se pudo identificar la hipótesis.';
+    const branchIds = new Set([normalizedId, ...collectDescendantHypothesisIds(normalizedId)]);
+    const hasActiveEvolution = [...branchIds].some((branchId) => {
+      const links = evolutionLinksBySourceId.get(String(branchId)) || [];
+      return links.some((link) => !link?.deleted_at);
+    });
+    if (!hasActiveEvolution) return '';
+    return 'No se puede cambiar manualmente el estado porque la hipótesis o algún nodo de su rama ya tiene evoluciones activas en otros modos.';
+  }, [collectDescendantHypothesisIds, evolutionLinksBySourceId]);
+
   const findInvalidAncestorForHypothesis = (hypothesisId = '', excludedAncestorIds = new Set()) => {
     let current = hypothesisById.get(String(hypothesisId || '').trim());
     while (current) {
@@ -3818,13 +3801,19 @@ const CommentsModePage = () => {
     return null;
   };
 
-  const updateHypothesisValidationStatus = (hypothesisId, nextStatus) => {
+  const updateHypothesisValidationStatus = async (hypothesisId, nextStatus) => {
     const normalizedId = String(hypothesisId || '').trim();
     if (!normalizedId) return;
 
     const normalizedStatus = normalizeCommentHypothesisValidationStatus(nextStatus);
     const targetHypothesis = hypothesisById.get(normalizedId);
     if (!targetHypothesis) return;
+
+    const blockedReason = getManualStateChangeBlockReason(normalizedId);
+    if (blockedReason) {
+      window.alert(blockedReason);
+      return;
+    }
 
     if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID) {
       const invalidAncestor = findInvalidAncestorForHypothesis(normalizedId);
@@ -3834,45 +3823,15 @@ const CommentsModePage = () => {
       }
     }
 
-    const descendantIds = normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID
-      ? collectDescendantHypothesisIds(normalizedId)
-      : new Set();
-    if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
-      const descendantsCount = descendantIds.size;
-      const confirmed = window.confirm(
-        descendantsCount
-          ? `¿Invalidar esta hipótesis y toda su rama descendente? Se invalidarán ${descendantsCount + 1} hipótesis en total.`
-          : '¿Invalidar esta hipótesis? No tiene descendientes, así que solo cambiará este nodo.',
-      );
-      if (!confirmed) return;
-    }
-    const affectedIds = new Set([normalizedId, ...descendantIds]);
-    const timestamp = new Date().toISOString();
-    const invalidatedAt = normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? timestamp : '';
-
-    const nextHypotheses = hypotheses.map((item) => {
-      const itemId = String(item?.id || '').trim();
-      if (!affectedIds.has(itemId)) return item;
-
-      const isDirectTarget = itemId === normalizedId;
-      const nextItem = {
-        ...item,
-        validation_status: normalizedStatus,
-        updated_at: timestamp,
-      };
-
-      if (normalizedStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID) {
-        nextItem.invalidated_at = invalidatedAt;
-        nextItem.invalidated_from_hypothesis_id = isDirectTarget ? itemId : normalizedId;
-      } else {
-        delete nextItem.invalidated_at;
-        delete nextItem.invalidated_from_hypothesis_id;
-      }
-
-      return nextItem;
+    await updateCommentHypothesisManualState({
+      storageKey,
+      hypothesisId: normalizedId,
+      nextState: normalizedStatus,
     });
 
-    persist({ ...store, hypotheses: nextHypotheses });
+    const nextStore = await loadCommentsModeStore(storageKey);
+    setStore(nextStore && typeof nextStore === 'object' ? nextStore : loadCommentsStoreFromLocalStorage(storageKey));
+    setManualStatePickerHypothesisId('');
     setHypothesisMenuId('');
   };
 
@@ -4263,7 +4222,7 @@ const CommentsModePage = () => {
       type: normalizeCommentHypothesisType(hypothesis.type) || 'problema',
       parentHypothesisId: String(hypothesis.parent_hypothesis_id || ''),
       context_note: String(hypothesis.context_note || ''),
-      linkedProfileIds: Array.isArray(hypothesis.linked_profile_ids) ? hypothesis.linked_profile_ids.map((profileId) => String(profileId)) : [],
+      linkedProfileIds: normalizeCommentHypothesisLinkedProfileIds(hypothesis),
       profileQuery: '',
     });
   };
@@ -4279,9 +4238,9 @@ const CommentsModePage = () => {
     const parentHypothesisId = String(hypothesisEditor.parentHypothesisId || '').trim();
     const parentHypothesis = parentHypothesisId ? hypothesisById.get(parentHypothesisId) : null;
     const contextNote = String(hypothesisEditor.context_note || '').trim();
-    const linkedProfileIds = Array.from(new Set((Array.isArray(hypothesisEditor.linkedProfileIds) ? hypothesisEditor.linkedProfileIds : [])
-      .map((profileId) => String(profileId).trim())
-      .filter((profileId) => profileById.has(profileId))));
+    const linkedProfileIds = Array.from(new Set(normalizeCommentHypothesisLinkedProfileIds({
+      linked_profile_ids: hypothesisEditor.linkedProfileIds,
+    }).filter((profileId) => profileById.has(profileId))));
 
     if (!title || !description || !hypothesisType) {
       window.alert('Título, descripción y tipo son obligatorios para crear/editar hipótesis.');
@@ -5950,6 +5909,14 @@ const CommentsModePage = () => {
                     <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
                     <input className="w-64 rounded-lg border bg-white py-2 pl-9 pr-3 text-sm" placeholder="Buscar hipótesis" value={hypothesisQuery} onChange={(e) => setHypothesisQuery(e.target.value)} />
                   </label>
+                  <select className="rounded-lg border bg-white py-2 px-3 text-sm text-slate-700" value={hypothesisTypeFilter} onChange={(e) => setHypothesisTypeFilter(e.target.value)}>
+                    <option value="">Todas</option>
+                    <option value="problema">problema</option>
+                    <option value="segmento">segmento</option>
+                    <option value="mensajes">mensajes</option>
+                    <option value="solucion">solución</option>
+                    <option value="producto">producto</option>
+                  </select>
                   <Button className="bg-white border text-slate-700" onClick={() => setHypothesisMapOpen(true)}>
                     <Network className="mr-1 h-4 w-4" /> Mapa de hipótesis
                   </Button>
@@ -5970,6 +5937,8 @@ const CommentsModePage = () => {
                     const parentHypothesis = hypothesisById.get(String(hypothesis.parent_hypothesis_id || '')) || null;
                     const childHypotheses = childHypothesesByParentId.get(String(hypothesis.id)) || [];
                     const evolutions = evolutionLinksBySourceId.get(String(hypothesis.id)) || [];
+                    const manualStateChangeBlockedReason = getManualStateChangeBlockReason(hypothesis.id);
+                    const manualStateChangeAllowed = !manualStateChangeBlockedReason;
                     return (
                       <article key={hypothesis.id} className={`relative rounded-xl border bg-white p-4 shadow-sm ${validationStatus === COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID ? 'border-rose-200 bg-rose-50/30' : 'border-slate-200'}`}>
                         <div className="flex items-start justify-between gap-2">
@@ -5984,8 +5953,26 @@ const CommentsModePage = () => {
                             {hypothesisMenuId === String(hypothesis.id) ? (
                               <div className="absolute right-0 top-9 z-40 w-44 rounded-lg border bg-white p-1.5 shadow-lg">
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEditor(hypothesis)}>Editar</button>
-                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-emerald-700 hover:bg-emerald-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID)}>Marcar validada</button>
-                                <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID)}>Invalidar rama</button>
+                                <button
+                                  type="button"
+                                  className={`w-full rounded-md px-2 py-1.5 text-left text-xs ${manualStateChangeAllowed ? 'hover:bg-slate-100 text-slate-700' : 'cursor-not-allowed text-slate-400 bg-slate-50'}`}
+                                  onClick={() => {
+                                    if (!manualStateChangeAllowed) return;
+                                    setManualStatePickerHypothesisId((prev) => (prev === String(hypothesis.id) ? '' : String(hypothesis.id)));
+                                  }}
+                                  disabled={!manualStateChangeAllowed}
+                                  title={manualStateChangeBlockedReason || 'Cambiar estado manualmente'}
+                                >
+                                  Cambiar estado
+                                </button>
+                                {manualStatePickerHypothesisId === String(hypothesis.id) ? (
+                                  <div className="mt-1 space-y-1 border-t pt-1">
+                                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-emerald-700 hover:bg-emerald-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.VALID)}>Marcar validada</button>
+                                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.INVALID)}>Marcar invalidada</button>
+                                    <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-amber-700 hover:bg-amber-50" onClick={() => updateHypothesisValidationStatus(hypothesis.id, COMMENT_HYPOTHESIS_VALIDATION_STATUS.PENDING)}>Marcar inconclusa</button>
+                                  </div>
+                                ) : null}
+                                {!manualStateChangeAllowed ? <p className="mt-1 rounded-md bg-slate-50 px-2 py-1 text-[11px] leading-4 text-slate-500">{manualStateChangeBlockedReason}</p> : null}
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionModal(hypothesis)}>Evolucionar hipótesis</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openHypothesisEvolutionDeleteModal(hypothesis)} disabled={!evolutions.length}>Eliminar evoluciones</button>
                                 <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs text-rose-700 hover:bg-rose-50" onClick={() => deleteHypothesis(hypothesis.id)}>Eliminar</button>

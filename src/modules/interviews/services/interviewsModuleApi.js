@@ -1,5 +1,6 @@
 import { interviewsApi } from '@/services/interviewsApi';
 import { createStableId } from '@/lib/stableId';
+import { syncCrossModeHypothesisStateTransition } from '@/modules/hypotheses/services/crossModeValidationSync';
 import { HYPOTHESIS_MODES, buildModeStatePatch, withCanonicalHypothesisState } from '../../../../shared/hypothesisState.js';
 
 const createId = () => createStableId('q_');
@@ -40,6 +41,22 @@ const buildInterviewHypothesisPayload = (payload = {}) => ({
   ...buildModeStatePatch(HYPOTHESIS_MODES.INTERVIEWS, payload.validation_result ?? payload.validation_status ?? payload.hypothesis_state ?? payload.status),
 });
 
+const maybeSyncInterviewStateTransition = async ({ previousState = '', record = null, origin = 'interviews' } = {}) => {
+  const normalizedRecord = record ? normalizeInterviewHypothesis(record) : null;
+  const nextState = normalizedRecord?.validation_result || normalizedRecord?.hypothesis_state || '';
+  if (!normalizedRecord?.project_id || !normalizedRecord?.campaign_id || !normalizedRecord?.id) return normalizedRecord;
+  await syncCrossModeHypothesisStateTransition({
+    projectId: normalizedRecord.project_id,
+    campaignId: normalizedRecord.campaign_id,
+    mode: HYPOTHESIS_MODES.INTERVIEWS,
+    hypothesisId: normalizedRecord.id,
+    previousState,
+    nextState,
+    origin,
+  });
+  return normalizedRecord;
+};
+
 export const interviewsModuleApi = {
   listAudiences: interviewsApi.listAudiences,
 
@@ -50,8 +67,21 @@ export const interviewsModuleApi = {
 
   listHypotheses: async (projectId, campaignId) => (await interviewsApi.listInterviewHypotheses(projectId, campaignId)).map(normalizeInterviewHypothesis),
   createHypothesis: async (projectId, campaignId, payload) => normalizeInterviewHypothesis(await interviewsApi.createInterviewHypothesis(projectId, campaignId, buildInterviewHypothesisPayload(payload))),
-  updateHypothesis: async (id, payload) => normalizeInterviewHypothesis(await interviewsApi.updateInterviewHypothesis(id, buildInterviewHypothesisPayload(payload))),
-  evaluateHypothesis: interviewsApi.evaluateInterviewHypothesis,
+  updateHypothesis: async (id, payload) => {
+    const record = await interviewsApi.updateInterviewHypothesis(id, buildInterviewHypothesisPayload(payload));
+    const includesStateChange = payload.validation_result != null || payload.validation_status != null || payload.hypothesis_state != null;
+    if (!includesStateChange) return normalizeInterviewHypothesis(record);
+    return maybeSyncInterviewStateTransition({
+      previousState: '',
+      record,
+      origin: 'interviews_manual_update',
+    });
+  },
+  evaluateHypothesis: async (id) => maybeSyncInterviewStateTransition({
+    previousState: '',
+    record: await interviewsApi.evaluateInterviewHypothesis(id),
+    origin: 'interviews_evaluate',
+  }),
   deleteHypothesis: interviewsApi.deleteInterviewHypothesis,
 
   listForms: async (projectId, campaignId) => {
