@@ -405,6 +405,8 @@ const CommentsModePage = () => {
   const [fragmentCodeFilter, setFragmentCodeFilter] = useState('');
   const [fragmentClientFilter, setFragmentClientFilter] = useState('');
   const [fragmentInterviewFilter, setFragmentInterviewFilter] = useState('');
+  const [fragmentPage, setFragmentPage] = useState(1);
+  const [fragmentPageSize, setFragmentPageSize] = useState(20);
   const [fragmentMenuId, setFragmentMenuId] = useState('');
   const [codeQuery, setCodeQuery] = useState('');
   const [codeHypothesisFilter, setCodeHypothesisFilter] = useState('');
@@ -3007,6 +3009,25 @@ const CommentsModePage = () => {
     });
   }, [fragments, fragmentCodeFilter, fragmentClientFilter, fragmentInterviewFilter, fragmentQuery]);
 
+  useEffect(() => {
+    setFragmentPage(1);
+  }, [fragmentQuery, fragmentCodeFilter, fragmentClientFilter, fragmentInterviewFilter, workspaceContext.workspaceId]);
+
+  const fragmentTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredFragments.length / Math.max(1, fragmentPageSize))),
+    [filteredFragments.length, fragmentPageSize],
+  );
+
+  useEffect(() => {
+    setFragmentPage((current) => Math.min(Math.max(1, current), fragmentTotalPages));
+  }, [fragmentTotalPages]);
+
+  const paginatedFragments = useMemo(() => {
+    const safePage = Math.min(Math.max(1, fragmentPage), fragmentTotalPages);
+    const start = (safePage - 1) * fragmentPageSize;
+    return filteredFragments.slice(start, start + fragmentPageSize);
+  }, [filteredFragments, fragmentPage, fragmentPageSize, fragmentTotalPages]);
+
   const renderFragmentSourceWithHighlight = (fragment) => {
     const sourceText = String(fragment?.source_comment_text || '');
     const start = Number(fragment?.selection_start);
@@ -3461,27 +3482,47 @@ const CommentsModePage = () => {
 
   const loadCommentsTable = async ({ offset = commentsTable.offset, q = commentsTable.q } = {}) => {
     try {
+      const normalizedLimit = Math.max(1, Number(commentsTable.limit || 100));
+      const normalizedOffset = Math.max(0, Number(offset || 0));
       setCommentsTable((prev) => ({ ...prev, loading: true, error: '' }));
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
         workspaceId: workspaceContext.workspaceId,
-        limit: commentsTable.limit,
-        offset,
+        limit: normalizedLimit,
+        offset: normalizedOffset,
         q,
       });
+      const total = Number(data.total || 0);
+      if (total > 0 && normalizedOffset >= total) {
+        const safeOffset = Math.max(0, (Math.ceil(total / normalizedLimit) - 1) * normalizedLimit);
+        if (safeOffset !== normalizedOffset) {
+          await loadCommentsTable({ offset: safeOffset, q });
+          return;
+        }
+      }
       setCommentsTable((prev) => ({
         ...prev,
         loading: false,
         items: Array.isArray(data.items) ? data.items : [],
-        total: Number(data.total || 0),
-        offset,
+        total,
+        offset: normalizedOffset,
         q,
       }));
     } catch (error) {
       setCommentsTable((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar la tabla de comentarios.' }));
     }
   };
+
+  const commentsCurrentPage = useMemo(
+    () => Math.floor(Number(commentsTable.offset || 0) / Math.max(1, Number(commentsTable.limit || 100))) + 1,
+    [commentsTable.offset, commentsTable.limit],
+  );
+
+  const commentsTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(Number(commentsTable.total || 0) / Math.max(1, Number(commentsTable.limit || 100)))),
+    [commentsTable.total, commentsTable.limit],
+  );
 
   const loadRuns = async () => {
     try {
@@ -4601,7 +4642,7 @@ const CommentsModePage = () => {
                     </table>
                   </div>
                   <div className="p-3 border-t flex items-center justify-between text-xs text-slate-600">
-                    <span>Total: {commentsTable.total}</span>
+                    <span>Total: {commentsTable.total} · Página {commentsCurrentPage} de {commentsTotalPages}</span>
                     <div className="flex gap-2">
                       <Button className="bg-white border" disabled={commentsTable.offset <= 0} onClick={() => loadCommentsTable({ offset: Math.max(0, commentsTable.offset - commentsTable.limit), q: commentsTable.q })}>Anterior</Button>
                       <Button className="bg-white border" disabled={commentsTable.offset + commentsTable.limit >= commentsTable.total} onClick={() => loadCommentsTable({ offset: commentsTable.offset + commentsTable.limit, q: commentsTable.q })}>Siguiente</Button>
@@ -4746,7 +4787,7 @@ const CommentsModePage = () => {
               </div>
 
               <div className="space-y-2">
-                {!filteredFragments.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay fragmentos para los filtros aplicados.</p> : filteredFragments.map((fragment) => {
+                {!filteredFragments.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay fragmentos para los filtros aplicados.</p> : paginatedFragments.map((fragment) => {
                   const fragmentId = String(fragment.id);
                   const selected = selectedFragmentId === fragmentId;
                   const linkedCode = codes.find((code) => (fragment.code_slugs || []).includes(code.slug));
@@ -4812,6 +4853,26 @@ const CommentsModePage = () => {
                   );
                 })}
               </div>
+              {filteredFragments.length ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 text-xs text-slate-600">
+                  <span>Total filtrado: {filteredFragments.length} · Página {fragmentPage} de {fragmentTotalPages}</span>
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="rounded border bg-white px-2 py-1"
+                      value={fragmentPageSize}
+                      onChange={(event) => {
+                        const nextSize = Math.max(1, Number(event.target.value || 20));
+                        setFragmentPageSize(nextSize);
+                        setFragmentPage(1);
+                      }}
+                    >
+                      {[10, 20, 50, 100].map((size) => <option key={size} value={size}>{size} por página</option>)}
+                    </select>
+                    <Button className="bg-white border" disabled={fragmentPage <= 1} onClick={() => setFragmentPage((current) => Math.max(1, current - 1))}>Anterior</Button>
+                    <Button className="bg-white border" disabled={fragmentPage >= fragmentTotalPages} onClick={() => setFragmentPage((current) => Math.min(fragmentTotalPages, current + 1))}>Siguiente</Button>
+                  </div>
+                </div>
+              ) : null}
 
               {fragmentEditor.open ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
