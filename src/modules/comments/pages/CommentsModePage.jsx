@@ -748,7 +748,12 @@ const CommentsModePage = () => {
     };
   }, [codeGenerationMetrics]);
 
-  const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
+  const activeCodes = useMemo(
+    () => codes.filter((code) => !String(code.deleted_at || '').trim()),
+    [codes],
+  );
+
+  const clusters = useMemo(() => buildClusters(activeCodes, fragments), [activeCodes, fragments]);
 
   const fragmentClientOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.client_id || '').trim()).filter(Boolean))), [fragments]);
   const fragmentInterviewOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.interview_id || '').trim()).filter(Boolean))), [fragments]);
@@ -779,7 +784,7 @@ const CommentsModePage = () => {
     const maxSources = Math.max(1, ...Array.from(uniqueSourcesBySlug.values(), (set) => Number(set?.size || 0)));
 
     const result = new Map();
-    codes.forEach((code) => {
+    activeCodes.forEach((code) => {
       const slug = String(code.slug || '');
       const fragmentCount = Number(fragmentCountBySlug.get(slug) || 0);
       const uniqueSources = Number(uniqueSourcesBySlug.get(slug)?.size || 0);
@@ -808,7 +813,7 @@ const CommentsModePage = () => {
     });
 
     return result;
-  }, [codes, fragments]);
+  }, [activeCodes, fragments]);
 
   const getScoreColorClass = (score = 0) => {
     if (score >= 80) return 'bg-emerald-100 text-emerald-800 border-emerald-200';
@@ -817,9 +822,9 @@ const CommentsModePage = () => {
     return 'bg-slate-100 text-slate-700 border-slate-200';
   };
 
-  const codeHypothesisOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.hypothesis_id || '').trim()).filter(Boolean))), [codes]);
-  const codeClusterOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.cluster_id || '').trim()).filter(Boolean))), [codes]);
-  const codeClientOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.client_id || '').trim()).filter(Boolean))), [codes]);
+  const codeHypothesisOptions = useMemo(() => Array.from(new Set(activeCodes.map((code) => String(code.hypothesis_id || '').trim()).filter(Boolean))), [activeCodes]);
+  const codeClusterOptions = useMemo(() => Array.from(new Set(activeCodes.map((code) => String(code.cluster_id || '').trim()).filter(Boolean))), [activeCodes]);
+  const codeClientOptions = useMemo(() => Array.from(new Set(activeCodes.map((code) => String(code.client_id || '').trim()).filter(Boolean))), [activeCodes]);
 
   const tokenize = (text = '') => String(text || '').toLowerCase()
     .normalize('NFD')
@@ -1616,8 +1621,8 @@ const CommentsModePage = () => {
 
 
   const deleteAllCodes = () => {
-    if (!codes.length) return;
-    if (!window.confirm(`¿Eliminar todos los códigos (${codes.length}) y desvincularlos de fragmentos?`)) return;
+    if (!activeCodes.length) return;
+    if (!window.confirm(`¿Eliminar todos los códigos (${activeCodes.length}) y desvincularlos de fragmentos?`)) return;
     const nextFragments = fragments.map((fragment) => ({
       ...fragment,
       code_slugs: [],
@@ -1690,8 +1695,7 @@ const CommentsModePage = () => {
   const filteredCodes = useMemo(() => {
     const query = codeQuery.trim().toLowerCase();
     const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
-    return codes.filter((code) => {
-      if (String(code.deleted_at || '').trim()) return false;
+    return activeCodes.filter((code) => {
       const name = String(code.name || '').toLowerCase();
       const description = String(code.description || '').toLowerCase();
       const tags = Array.isArray(code.tags) ? code.tags.join(' ').toLowerCase() : String(code.tags || '').toLowerCase();
@@ -1701,7 +1705,7 @@ const CommentsModePage = () => {
       const matchesClient = !codeClientFilter || String(code.client_id || '') === codeClientFilter;
       return matchesQuery && matchesHypothesis && matchesCluster && matchesClient;
     });
-  }, [codes, codeQuery, codeHypothesisFilter, codeClusterFilter, codeClientFilter]);
+  }, [activeCodes, codeQuery, codeHypothesisFilter, codeClusterFilter, codeClientFilter]);
 
   const codeTreeRoots = useMemo(() => {
     const filteredSet = new Set(filteredCodes.map((code) => String(code.slug)));
@@ -1836,9 +1840,9 @@ const CommentsModePage = () => {
 
   const codeMapVisibleCodes = useMemo(() => {
     const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
-    if (!selectedHypothesisIds.length) return codes;
-    return codes.filter((code) => selectedHypothesisIds.includes(String(code.hypothesis_id || '')));
-  }, [codes, codeHypothesisFilter]);
+    if (!selectedHypothesisIds.length) return activeCodes;
+    return activeCodes.filter((code) => selectedHypothesisIds.includes(String(code.hypothesis_id || '')));
+  }, [activeCodes, codeHypothesisFilter]);
 
   const codeMapNodes = useMemo(() => codeMapVisibleCodes.map((code, index) => {
     const saved = codeMapLayoutBySlug[code.slug] || {};
@@ -4536,7 +4540,7 @@ const CommentsModePage = () => {
             </div>
             <div className="rounded-xl border bg-white p-3">
               <p className="text-xs text-slate-500">Códigos</p>
-              <p className="text-2xl font-semibold text-slate-900">{codes.length}</p>
+              <p className="text-2xl font-semibold text-slate-900">{activeCodes.length}</p>
             </div>
             <div className="rounded-xl border bg-white p-3">
               <p className="text-xs text-slate-500">Clusters</p>
