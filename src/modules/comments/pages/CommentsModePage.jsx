@@ -239,6 +239,32 @@ const COMMENT_CODE_EVOLUTION_DISABLED = true;
 
 
 const CODE_MAP_ALL_SCOPE = '__all__';
+const CODE_MAP_PROFILE_WIDTH = 220;
+const CODE_MAP_PROFILE_HEIGHT = 74;
+const CODE_MAP_CODE_MIN_WIDTH = 90;
+const CODE_MAP_CODE_MAX_WIDTH = 220;
+const CODE_MAP_CODE_HEIGHT = 52;
+
+const resolveCodeMapAnchorPoint = (node = {}, opposite = {}) => {
+  const x = Number(node.x) || 0;
+  const y = Number(node.y) || 0;
+  const width = Math.max(1, Number(node.width) || 0);
+  const height = Math.max(1, Number(node.height) || 0);
+  const centerX = x + (width / 2);
+  const centerY = y + (height / 2);
+  const oppositeCenterX = (Number(opposite.x) || 0) + ((Math.max(1, Number(opposite.width) || 0)) / 2);
+  const oppositeCenterY = (Number(opposite.y) || 0) + ((Math.max(1, Number(opposite.height) || 0)) / 2);
+  const dx = oppositeCenterX - centerX;
+  const dy = oppositeCenterY - centerY;
+  if (dx === 0 && dy === 0) return { x: centerX, y: centerY };
+  const scaleX = width / (2 * Math.abs(dx || 1));
+  const scaleY = height / (2 * Math.abs(dy || 1));
+  const scale = Math.min(scaleX, scaleY);
+  return {
+    x: centerX + (dx * scale),
+    y: centerY + (dy * scale),
+  };
+};
 
 
 const LEGACY_WORKSPACE_ID = '__legacy_workspace__';
@@ -1855,10 +1881,13 @@ const CommentsModePage = () => {
     const saved = codeMapLayoutBySlug[code.slug] || {};
     const x = Number(saved.x);
     const y = Number(saved.y);
+    const width = Math.max(CODE_MAP_CODE_MIN_WIDTH, Math.min(CODE_MAP_CODE_MAX_WIDTH, 100 + (Number(codeScoreBySlug.get(String(code.slug))?.score_total || 0) * 1.1)));
     return {
       ...code,
       fragmentCount: Number(codeUsageCount.get(String(code.slug)) || 0),
       scoreTotal: Number(codeScoreBySlug.get(String(code.slug))?.score_total || 0),
+      width,
+      height: CODE_MAP_CODE_HEIGHT,
       x: Number.isFinite(x) ? x : 120 + ((index % 4) * 260),
       y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 160),
     };
@@ -1879,6 +1908,8 @@ const CommentsModePage = () => {
       id: profileId,
       name: String(profile.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
       description: String(profile.description || '').trim(),
+      width: CODE_MAP_PROFILE_WIDTH,
+      height: CODE_MAP_PROFILE_HEIGHT,
       x: Number.isFinite(draftX) ? draftX : (Number.isFinite(persistedX) ? persistedX : fallbackX),
       y: Number.isFinite(draftY) ? draftY : (Number.isFinite(persistedY) ? persistedY : fallbackY),
     };
@@ -1920,8 +1951,20 @@ const CommentsModePage = () => {
 
   const codeMapRenderableNodesById = useMemo(() => {
     const rows = [
-      ...visibleCodeMapNodes.map((node) => ({ id: String(node.slug), x: Number(node.x) || 0, y: Number(node.y) || 0 })),
-      ...codeMapProfileNodes.map((profile) => ({ id: String(profile.id), x: Number(profile.x) || 0, y: Number(profile.y) || 0 })),
+      ...visibleCodeMapNodes.map((node) => ({
+        id: String(node.slug),
+        x: Number(node.x) || 0,
+        y: Number(node.y) || 0,
+        width: Number(node.width) || CODE_MAP_CODE_MIN_WIDTH,
+        height: Number(node.height) || CODE_MAP_CODE_HEIGHT,
+      })),
+      ...codeMapProfileNodes.map((profile) => ({
+        id: String(profile.id),
+        x: Number(profile.x) || 0,
+        y: Number(profile.y) || 0,
+        width: Number(profile.width) || CODE_MAP_PROFILE_WIDTH,
+        height: Number(profile.height) || CODE_MAP_PROFILE_HEIGHT,
+      })),
     ];
     return new Map(rows.map((item) => [item.id, item]));
   }, [visibleCodeMapNodes, codeMapProfileNodes]);
@@ -5498,14 +5541,16 @@ const CommentsModePage = () => {
                             const source = codeMapRenderableNodesById.get(String(edge.source));
                             const target = codeMapRenderableNodesById.get(String(edge.target));
                             if (!source || !target) return null;
+                            const sourceAnchor = resolveCodeMapAnchorPoint(source, target);
+                            const targetAnchor = resolveCodeMapAnchorPoint(target, source);
                             const selected = selectedCodeMapEdge === edge.id;
                             return (
                               <line
                                 key={edge.id}
-                                x1={source.x + 90}
-                                y1={source.y + 26}
-                                x2={target.x + 90}
-                                y2={target.y + 26}
+                                x1={sourceAnchor.x}
+                                y1={sourceAnchor.y}
+                                x2={targetAnchor.x}
+                                y2={targetAnchor.y}
                                 stroke={selected ? '#4f46e5' : edge.type === 'profile_link' ? '#0f766e' : '#9CA3AF'}
                                 strokeWidth={selected ? 2 : 1.5}
                                 className="cursor-pointer"
@@ -5528,7 +5573,7 @@ const CommentsModePage = () => {
                               data-code-map-profile="true"
                               data-code-map-profile-id={profile.id}
                               className={`absolute min-w-[160px] rounded-lg border-2 border-teal-300 bg-teal-50/90 px-3 py-2 text-[12px] text-teal-900 shadow-sm ${isDraggingProfile ? 'cursor-grabbing shadow-md' : 'cursor-grab'}`}
-                              style={{ left: profile.x, top: profile.y, width: '220px' }}
+                              style={{ left: profile.x, top: profile.y, width: `${CODE_MAP_PROFILE_WIDTH}px` }}
                               onMouseDown={(event) => handleCodeMapProfileMouseDown(event, profile.id)}
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -5557,7 +5602,7 @@ const CommentsModePage = () => {
 
                         {visibleCodeMapNodes.map((code) => {
                           const isNodeSelected = selectedCodeMapNode === code.slug;
-                          const nodeWidth = Math.max(100, Math.min(220, 100 + (Number(code.scoreTotal || 0) * 1.1)));
+                          const nodeWidth = Math.max(CODE_MAP_CODE_MIN_WIDTH, Number(code.width) || CODE_MAP_CODE_MIN_WIDTH);
                           return (
                             <div
                               key={code.slug}
