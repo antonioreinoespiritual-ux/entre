@@ -482,6 +482,8 @@ const CommentsModePage = () => {
   const [codeMapProfileContextMenu, setCodeMapProfileContextMenu] = useState({ open: false, x: 0, y: 0, profileId: '' });
   const [codeMapProfileEditor, setCodeMapProfileEditor] = useState({ open: false, mode: 'create', id: '', name: '', description: '' });
   const [profileConnectSource, setProfileConnectSource] = useState('');
+  const [draggingCodeMapProfileId, setDraggingCodeMapProfileId] = useState('');
+  const [codeMapProfileLayoutDraftById, setCodeMapProfileLayoutDraftById] = useState({});
   const [codeMapAiModal, setCodeMapAiModal] = useState({
     open: false,
     loading: false,
@@ -1818,6 +1820,11 @@ const CommentsModePage = () => {
   }, [codeMapLayoutsByHypothesis, codeMapScopeKey]);
 
   useEffect(() => {
+    setDraggingCodeMapProfileId('');
+    setCodeMapProfileLayoutDraftById({});
+  }, [codeMapScopeKey]);
+
+  useEffect(() => {
     codeMapLayoutRef.current = codeMapLayoutBySlug || {};
   }, [codeMapLayoutBySlug]);
 
@@ -1860,16 +1867,22 @@ const CommentsModePage = () => {
   const codeMapVisibleSlugSet = useMemo(() => new Set(codeMapVisibleCodes.map((code) => String(code.slug))), [codeMapVisibleCodes]);
 
   const codeMapProfileNodes = useMemo(() => (Array.isArray(codeMapProfiles) ? codeMapProfiles : []).map((profile, index) => {
+    const profileId = String(profile.id || '');
+    const draftLayout = codeMapProfileLayoutDraftById[profileId] || {};
     const fallbackX = 80 + ((index % 3) * 320);
     const fallbackY = 36 + (Math.floor(index / 3) * 210);
+    const draftX = Number(draftLayout.x);
+    const draftY = Number(draftLayout.y);
+    const persistedX = Number(profile.x);
+    const persistedY = Number(profile.y);
     return {
-      id: String(profile.id || ''),
+      id: profileId,
       name: String(profile.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
       description: String(profile.description || '').trim(),
-      x: Number.isFinite(Number(profile.x)) ? Number(profile.x) : fallbackX,
-      y: Number.isFinite(Number(profile.y)) ? Number(profile.y) : fallbackY,
+      x: Number.isFinite(draftX) ? draftX : (Number.isFinite(persistedX) ? persistedX : fallbackX),
+      y: Number.isFinite(draftY) ? draftY : (Number.isFinite(persistedY) ? persistedY : fallbackY),
     };
-  }).filter((profile) => profile.id), [codeMapProfiles]);
+  }).filter((profile) => profile.id), [codeMapProfiles, codeMapProfileLayoutDraftById]);
 
   const codeMapProfileNodeById = useMemo(() => new Map(codeMapProfileNodes.map((profile) => [String(profile.id), profile])), [codeMapProfileNodes]);
 
@@ -2444,19 +2457,36 @@ const CommentsModePage = () => {
     const startProfile = codeMapProfileNodes.find((profile) => String(profile.id) === id) || { x: 0, y: 0 };
     const startNodeX = Number(startProfile.x) || 0;
     const startNodeY = Number(startProfile.y) || 0;
+    let latestPosition = { x: startNodeX, y: startNodeY };
+    setDraggingCodeMapProfileId(id);
 
     const onMove = (moveEvent) => {
       const deltaX = (moveEvent.clientX - startX) / (codeMapZoom || 1);
       const deltaY = (moveEvent.clientY - startY) / (codeMapZoom || 1);
-      upsertCodeMapProfile({
-        ...startProfile,
-        id,
+      latestPosition = {
         x: Math.max(12, Math.round(startNodeX + deltaX)),
         y: Math.max(12, Math.round(startNodeY + deltaY)),
-      });
+      };
+      setCodeMapProfileLayoutDraftById((prev) => ({
+        ...prev,
+        [id]: latestPosition,
+      }));
     };
 
     const onUp = () => {
+      upsertCodeMapProfile({
+        ...startProfile,
+        id,
+        x: latestPosition.x,
+        y: latestPosition.y,
+      });
+      setDraggingCodeMapProfileId('');
+      setCodeMapProfileLayoutDraftById((prev) => {
+        if (!Object.prototype.hasOwnProperty.call(prev, id)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -5491,12 +5521,13 @@ const CommentsModePage = () => {
 
                         {codeMapProfileNodes.map((profile) => {
                           const isCollapsed = Boolean(codeMapProfileCollapsed[String(profile.id)]);
+                          const isDraggingProfile = String(draggingCodeMapProfileId) === String(profile.id);
                           return (
                             <div
                               key={profile.id}
                               data-code-map-profile="true"
                               data-code-map-profile-id={profile.id}
-                              className="absolute min-w-[160px] rounded-lg border-2 border-teal-300 bg-teal-50/90 px-3 py-2 text-[12px] text-teal-900 shadow-sm"
+                              className={`absolute min-w-[160px] rounded-lg border-2 border-teal-300 bg-teal-50/90 px-3 py-2 text-[12px] text-teal-900 shadow-sm ${isDraggingProfile ? 'cursor-grabbing shadow-md' : 'cursor-grab'}`}
                               style={{ left: profile.x, top: profile.y, width: '220px' }}
                               onMouseDown={(event) => handleCodeMapProfileMouseDown(event, profile.id)}
                               onClick={(event) => {
