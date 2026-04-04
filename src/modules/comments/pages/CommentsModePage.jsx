@@ -413,6 +413,8 @@ const CommentsModePage = () => {
   const [codeClusterFilter, setCodeClusterFilter] = useState('');
   const [codeClientFilter, setCodeClientFilter] = useState('');
   const [codeSortBy, setCodeSortBy] = useState('score_total_desc');
+  const [codePage, setCodePage] = useState(1);
+  const [codePageSize, setCodePageSize] = useState(20);
   const [proposalStatusFilter, setProposalStatusFilter] = useState('');
   const [proposalTypeFilter, setProposalTypeFilter] = useState('');
   const [proposalSortBy, setProposalSortBy] = useState('confidence_desc');
@@ -1714,6 +1716,25 @@ const CommentsModePage = () => {
 
     return { roots, childrenByParent };
   }, [filteredCodes, codeSortBy, codeScoreBySlug]);
+
+  useEffect(() => {
+    setCodePage(1);
+  }, [codeQuery, codeHypothesisFilter, codeClusterFilter, codeClientFilter, codeSortBy, workspaceContext.workspaceId]);
+
+  const codeTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(codeTreeRoots.roots.length / Math.max(1, codePageSize))),
+    [codeTreeRoots.roots.length, codePageSize],
+  );
+
+  useEffect(() => {
+    setCodePage((current) => Math.min(Math.max(1, current), codeTotalPages));
+  }, [codeTotalPages]);
+
+  const paginatedCodeRoots = useMemo(() => {
+    const safePage = Math.min(Math.max(1, codePage), codeTotalPages);
+    const start = (safePage - 1) * codePageSize;
+    return codeTreeRoots.roots.slice(start, start + codePageSize);
+  }, [codeTreeRoots.roots, codePage, codePageSize, codeTotalPages]);
 
   const codeMapScopeKey = useMemo(
     () => buildCodeMapScopeKey(codeHypothesisFilter),
@@ -5073,8 +5094,28 @@ const CommentsModePage = () => {
                   </div>
 
                   <div className="space-y-2">
-                    {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
+                    {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : paginatedCodeRoots.map((code) => renderCodeNode(code, 0))}
                   </div>
+                  {codeTreeRoots.roots.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 text-xs text-slate-600">
+                      <span>Total filtrado: {codeTreeRoots.roots.length} · Página {codePage} de {codeTotalPages}</span>
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="rounded border bg-white px-2 py-1"
+                          value={codePageSize}
+                          onChange={(event) => {
+                            const nextSize = Math.max(1, Number(event.target.value || 20));
+                            setCodePageSize(nextSize);
+                            setCodePage(1);
+                          }}
+                        >
+                          {[10, 20, 50, 100].map((size) => <option key={size} value={size}>{size} por página</option>)}
+                        </select>
+                        <Button className="bg-white border" disabled={codePage <= 1} onClick={() => setCodePage((current) => Math.max(1, current - 1))}>Anterior</Button>
+                        <Button className="bg-white border" disabled={codePage >= codeTotalPages} onClick={() => setCodePage((current) => Math.min(codeTotalPages, current + 1))}>Siguiente</Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </>
               )}
 
