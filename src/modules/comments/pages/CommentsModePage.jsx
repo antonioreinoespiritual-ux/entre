@@ -1579,7 +1579,16 @@ const CommentsModePage = () => {
       });
     }
 
-    const nextCodes = codes.filter((code) => !descendants.has(String(code.slug)));
+    const deletionTimestamp = new Date().toISOString();
+    const nextCodes = codes.map((code) => {
+      const codeSlug = String(code.slug);
+      if (!descendants.has(codeSlug)) return code;
+      return {
+        ...code,
+        deleted_at: deletionTimestamp,
+        updated_at: deletionTimestamp,
+      };
+    });
     const nextFragments = fragments.map((fragment) => ({
       ...fragment,
       code_slugs: (fragment.code_slugs || []).filter((item) => !descendants.has(String(item))),
@@ -1621,7 +1630,13 @@ const CommentsModePage = () => {
         collapsed: safe.collapsed && typeof safe.collapsed === 'object' ? safe.collapsed : {},
       }];
     }));
-    persist({ ...store, codes: [], fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
+    const deletionTimestamp = new Date().toISOString();
+    const nextCodes = codes.map((code) => ({
+      ...code,
+      deleted_at: deletionTimestamp,
+      updated_at: deletionTimestamp,
+    }));
+    persist({ ...store, codes: nextCodes, fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
     setCodeCardSlug('');
@@ -1676,6 +1691,7 @@ const CommentsModePage = () => {
     const query = codeQuery.trim().toLowerCase();
     const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
     return codes.filter((code) => {
+      if (String(code.deleted_at || '').trim()) return false;
       const name = String(code.name || '').toLowerCase();
       const description = String(code.description || '').toLowerCase();
       const tags = Array.isArray(code.tags) ? code.tags.join(' ').toLowerCase() : String(code.tags || '').toLowerCase();
@@ -4391,9 +4407,9 @@ const CommentsModePage = () => {
     };
 
     return (
-      <div key={slug} className="relative isolate space-y-1">
+      <div key={slug} className={`relative space-y-1 ${codeMenuSlug === slug ? 'z-[120]' : 'z-0'}`}>
         <article
-          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''} ${codeMenuSlug === slug ? 'z-40' : 'z-0'}`}
+          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''}`}
           style={{ marginLeft: `${depth * 18}px` }}
           onClick={() => setSelectedCodeSlug(slug)}
         >
@@ -4449,7 +4465,7 @@ const CommentsModePage = () => {
                 <MoreHorizontal className="h-4 w-4" />
               </button>
               {codeMenuSlug === slug ? (
-                <div className="absolute right-0 top-9 z-50 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+                <div className="absolute right-0 top-9 z-[130] w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Editar código</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('create', null, slug)}>Crear subcódigo</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Mover jerarquía</button>
