@@ -734,7 +734,11 @@ const CommentsModePage = () => {
   const fragments = store.fragments || [];
   const codes = store.codes || [];
   const codeProposals = store.codeProposals || [];
-  const hypotheses = store.hypotheses || [];
+  const allHypotheses = Array.isArray(store.hypotheses) ? store.hypotheses : [];
+  const hypotheses = useMemo(
+    () => allHypotheses.filter((item) => !String(item?.deleted_at || '').trim()),
+    [allHypotheses],
+  );
   const hypothesisEvolutionLinks = Array.isArray(store.hypothesisEvolutionLinks) ? store.hypothesisEvolutionLinks : [];
   const codeMapLayoutsByHypothesis = store.codeMapLayoutsByHypothesis && typeof store.codeMapLayoutsByHypothesis === 'object'
     ? store.codeMapLayoutsByHypothesis
@@ -4464,7 +4468,15 @@ const CommentsModePage = () => {
     const id = String(hypothesisId || '');
     if (!id) return;
     if (!window.confirm('¿Eliminar esta hipótesis?')) return;
-    const nextHypotheses = hypotheses.filter((item) => String(item.id) !== id);
+    const deletionTimestamp = new Date().toISOString();
+    const nextHypotheses = allHypotheses.map((item) => {
+      if (String(item.id) !== id) return item;
+      return {
+        ...item,
+        deleted_at: deletionTimestamp,
+        updated_at: deletionTimestamp,
+      };
+    });
     persist({ ...store, hypotheses: nextHypotheses });
     setHypothesisMenuId('');
   };
