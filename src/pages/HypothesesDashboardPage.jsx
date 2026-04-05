@@ -1,11 +1,10 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Brain, Edit, Gauge, Lightbulb, MoreHorizontal, Network, Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
-import HypothesisMapModal from '@/components/hypotheses/HypothesisMapModal';
 
 const initialForm = {
   title: '',
@@ -57,15 +56,6 @@ const readVideoHypothesisMapLayout = (storageKey = '') => {
   } catch {
     return {};
   }
-};
-
-const mergeVideoHypothesisMapLayouts = (baseLayout = {}, incomingLayout = {}) => {
-  const base = baseLayout && typeof baseLayout === 'object' ? baseLayout : {};
-  const incoming = incomingLayout && typeof incomingLayout === 'object' ? incomingLayout : {};
-  return {
-    ...base,
-    ...incoming,
-  };
 };
 
 const normalizeHypothesisType = (value = '') => {
@@ -257,28 +247,37 @@ const HypothesesDashboardPage = () => {
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
   const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
-  const [hypothesisMapLayout, setHypothesisMapLayout] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
-  const [hypothesisMapSessionSeed, setHypothesisMapSessionSeed] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
-  const [hypothesisMapSessionVersion, setHypothesisMapSessionVersion] = useState(0);
+  const [hypothesisMapZoom, setHypothesisMapZoom] = useState(1);
+  const [hypothesisMapPan, setHypothesisMapPan] = useState({ x: 0, y: 0 });
+  const [isHypothesisMapPanning, setIsHypothesisMapPanning] = useState(false);
+  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
+  const [draggingHypothesisMapNode, setDraggingHypothesisMapNode] = useState('');
+  const [selectedHypothesisMapNode, setSelectedHypothesisMapNode] = useState('');
+  const [selectedHypothesisMapEdge, setSelectedHypothesisMapEdge] = useState('');
+  const [hypothesisMapFilter, setHypothesisMapFilter] = useState('');
+  const hypothesisMapCanvasRef = useRef(null);
+  const hypothesisMapLayoutRef = useRef({});
 
   useEffect(() => {
     const storedLayout = readVideoHypothesisMapLayout(mapLayoutStorageKey);
-    setHypothesisMapLayout(storedLayout);
-    if (!hypothesisMapOpen) {
-      setHypothesisMapSessionSeed(storedLayout);
-    }
-  }, [mapLayoutStorageKey, hypothesisMapOpen]);
+    setHypothesisMapLayoutById(storedLayout);
+  }, [mapLayoutStorageKey]);
 
-  const openHypothesisMap = () => {
-    const storedLayout = readVideoHypothesisMapLayout(mapLayoutStorageKey);
-    const seedLayout = mergeVideoHypothesisMapLayouts(storedLayout, hypothesisMapLayout);
-    setHypothesisMapSessionSeed(seedLayout);
-    setHypothesisMapSessionVersion((current) => current + 1);
-    setHypothesisMapOpen(true);
+  useEffect(() => {
+    hypothesisMapLayoutRef.current = hypothesisMapLayoutById || {};
+  }, [hypothesisMapLayoutById]);
+
+  const persistHypothesisMapLayout = (nextLayout) => {
+    const normalizedLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
+    setHypothesisMapLayoutById(normalizedLayout);
+    try {
+      localStorage.setItem(mapLayoutStorageKey, JSON.stringify(normalizedLayout));
+    } catch {}
   };
 
-  const closeHypothesisMap = () => {
-    setHypothesisMapOpen(false);
+  const openHypothesisMap = () => {
+    setHypothesisMapLayoutById(readVideoHypothesisMapLayout(mapLayoutStorageKey));
+    setHypothesisMapOpen(true);
   };
 
   useEffect(() => {
@@ -308,6 +307,151 @@ const HypothesesDashboardPage = () => {
     acc.set(parentId, current);
     return acc;
   }, new Map()), [sortedHypotheses]);
+
+  const hypothesisMapFilterOptions = useMemo(
+    () => sortedHypotheses.filter((hypothesis) => normalizeHypothesisType(hypothesis?.type) === 'problema'),
+    [sortedHypotheses],
+  );
+
+  useEffect(() => {
+    if (!hypothesisMapFilter) return;
+    if (!hypothesisMapFilterOptions.some((hypothesis) => String(hypothesis?.id || '').trim() === String(hypothesisMapFilter || '').trim())) {
+      setHypothesisMapFilter('');
+    }
+  }, [hypothesisMapFilter, hypothesisMapFilterOptions]);
+
+  const hypothesisMapVisibleHypotheses = useMemo(() => {
+    const filterId = String(hypothesisMapFilter || '').trim();
+    if (!filterId) return sortedHypotheses;
+    const visibleIds = new Set([filterId]);
+    let current = hypothesisById.get(filterId);
+    while (current) {
+      const parentId = getParentHypothesisId(current);
+      if (!parentId) break;
+      visibleIds.add(parentId);
+      current = hypothesisById.get(parentId);
+    }
+    const addDescendants = (parentId) => {
+      const children = childHypothesesByParentId.get(parentId) || [];
+      children.forEach((child) => {
+        const childId = String(child?.id || '').trim();
+        if (!childId || visibleIds.has(childId)) return;
+        visibleIds.add(childId);
+        addDescendants(childId);
+      });
+    };
+    addDescendants(filterId);
+    return sortedHypotheses.filter((hypothesis) => visibleIds.has(String(hypothesis?.id || '').trim()));
+  }, [sortedHypotheses, hypothesisMapFilter, hypothesisById, childHypothesesByParentId]);
+
+  const hypothesisMapNodes = useMemo(() => hypothesisMapVisibleHypotheses.map((hypothesis, index) => {
+    const hypothesisId = String(hypothesis?.id || '').trim();
+    const saved = hypothesisMapLayoutById[hypothesisId] || {};
+    const x = Number(saved.x);
+    const y = Number(saved.y);
+    return {
+      ...hypothesis,
+      id: hypothesisId,
+      parent_hypothesis_id: getParentHypothesisId(hypothesis),
+      x: Number.isFinite(x) ? x : 120 + ((index % 4) * 300),
+      y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 180),
+    };
+  }), [hypothesisMapVisibleHypotheses, hypothesisMapLayoutById]);
+
+  const hypothesisMapVisibleIdSet = useMemo(() => new Set(hypothesisMapNodes.map((hypothesis) => String(hypothesis.id))), [hypothesisMapNodes]);
+  const hypothesisMapEdges = useMemo(() => hypothesisMapNodes
+    .filter((hypothesis) => hypothesis.parent_hypothesis_id && hypothesisMapVisibleIdSet.has(String(hypothesis.parent_hypothesis_id)))
+    .map((hypothesis) => ({
+      id: `edge_${hypothesis.parent_hypothesis_id}_${hypothesis.id}`,
+      source: String(hypothesis.parent_hypothesis_id),
+      target: String(hypothesis.id),
+    })), [hypothesisMapNodes, hypothesisMapVisibleIdSet]);
+  const hypothesisMapRenderableNodesById = useMemo(() => new Map(hypothesisMapNodes.map((node) => [String(node.id), node])), [hypothesisMapNodes]);
+
+  const handleHypothesisMapNodeMouseDown = (event, id) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setDraggingHypothesisMapNode(id);
+    setSelectedHypothesisMapNode(id);
+    setSelectedHypothesisMapEdge('');
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const start = hypothesisMapLayoutById[id] || hypothesisMapNodes.find((node) => String(node.id) === String(id)) || { x: 0, y: 0 };
+    const startNodeX = Number(start.x) || 0;
+    const startNodeY = Number(start.y) || 0;
+
+    const onMove = (moveEvent) => {
+      const deltaX = (moveEvent.clientX - startX) / (hypothesisMapZoom || 1);
+      const deltaY = (moveEvent.clientY - startY) / (hypothesisMapZoom || 1);
+      setHypothesisMapLayoutById((prev) => ({
+        ...prev,
+        [id]: {
+          x: Math.max(12, Math.round(startNodeX + deltaX)),
+          y: Math.max(12, Math.round(startNodeY + deltaY)),
+        },
+      }));
+    };
+
+    const onUp = () => {
+      setDraggingHypothesisMapNode('');
+      const fullSnapshot = { ...(hypothesisMapLayoutRef.current || {}) };
+      hypothesisMapNodes.forEach((node) => {
+        const snapshotNode = fullSnapshot[String(node.id)] || {};
+        const snapshotX = Number(snapshotNode.x);
+        const snapshotY = Number(snapshotNode.y);
+        fullSnapshot[String(node.id)] = {
+          x: Number.isFinite(snapshotX) ? snapshotX : (Number(node.x) || 0),
+          y: Number.isFinite(snapshotY) ? snapshotY : (Number(node.y) || 0),
+        };
+      });
+      persistHypothesisMapLayout(fullSnapshot);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const handleHypothesisMapCanvasMouseDown = (event) => {
+    if (event.button !== 0) return;
+    if (event.target.closest('[data-hypothesis-map-node="true"]')) return;
+    setSelectedHypothesisMapNode('');
+    setSelectedHypothesisMapEdge('');
+    setIsHypothesisMapPanning(true);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startPan = { ...hypothesisMapPan };
+    const onMove = (moveEvent) => {
+      setHypothesisMapPan({
+        x: startPan.x + (moveEvent.clientX - startX),
+        y: startPan.y + (moveEvent.clientY - startY),
+      });
+    };
+    const onUp = () => {
+      setIsHypothesisMapPanning(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const closeHypothesisMap = () => {
+    const fullSnapshot = { ...(hypothesisMapLayoutRef.current || {}) };
+    hypothesisMapNodes.forEach((node) => {
+      const snapshotNode = fullSnapshot[String(node.id)] || {};
+      const snapshotX = Number(snapshotNode.x);
+      const snapshotY = Number(snapshotNode.y);
+      fullSnapshot[String(node.id)] = {
+        x: Number.isFinite(snapshotX) ? snapshotX : (Number(node.x) || 0),
+        y: Number.isFinite(snapshotY) ? snapshotY : (Number(node.y) || 0),
+      };
+    });
+    persistHypothesisMapLayout(fullSnapshot);
+    setHypothesisMapOpen(false);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -658,49 +802,112 @@ const HypothesesDashboardPage = () => {
         </div>
       </div>
 
-        <HypothesisMapModal
-          key={`${mapLayoutStorageKey}:${hypothesisMapSessionVersion}`}
-          open={hypothesisMapOpen}
-          onClose={closeHypothesisMap}
-          title="Mapa de hipótesis"
-          description="Vista de grafo para la jerarquía de hipótesis del Modo Video."
-          hypotheses={sortedHypotheses}
-          getHypothesisId={(hypothesis) => String(hypothesis?.id || '').trim()}
-          getHypothesisTitle={(hypothesis) => getHypothesisDisplayTitle(hypothesis) || 'Hipótesis sin título'}
-          getParentId={(hypothesis) => getParentHypothesisId(hypothesis)}
-          getType={(hypothesis) => normalizeHypothesisType(hypothesis?.type)}
-          getTypeLabel={(value) => hypothesisTypeLabel(value)}
-          getFilterOptions={(items) => items.filter((hypothesis) => hypothesis.type === 'problema')}
-          getStatus={(hypothesis) => getHypothesisRawStatus(hypothesis)}
-          getStatusStyle={(hypothesis, status) => {
-            const validated = isValidatedStatus(status);
-            return {
-              label: status ? (validated ? 'VALIDADA' : 'NO VALIDADA') : 'SIN ESTADO',
-              color: validated ? '#047857' : '#be123c',
-              backgroundColor: validated ? '#d1fae5' : '#ffe4e6',
-            };
-          }}
-          getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: ${childHypotheses.length}`}
-          initialLayout={hypothesisMapSessionSeed}
-          persistFullVisibleLayout
-          persistLayout={(nextLayout) => {
-            const normalizedNextLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
-            setHypothesisMapLayout((previousLayout) => {
-              const mergedLayout = mergeVideoHypothesisMapLayouts(previousLayout, normalizedNextLayout);
-              try {
-                localStorage.setItem(mapLayoutStorageKey, JSON.stringify(mergedLayout));
-              } catch {}
-              return mergedLayout;
-            });
-            try {
-              const storedLayout = readVideoHypothesisMapLayout(mapLayoutStorageKey);
-              const mergedStoredLayout = mergeVideoHypothesisMapLayouts(storedLayout, normalizedNextLayout);
-              localStorage.setItem(mapLayoutStorageKey, JSON.stringify(mergedStoredLayout));
-            } catch {}
-          }}
-          emptyStateText="No hay hipótesis para los filtros aplicados."
-          emptyWorkspaceText="No hay hipótesis en Modo Video todavía."
-        />
+        {hypothesisMapOpen ? (
+          <div className="fixed inset-0 z-50 bg-slate-900/55 p-4">
+            <div className="mx-auto flex h-full max-w-7xl flex-col overflow-hidden rounded-xl border bg-white shadow-2xl">
+              <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-slate-900">Mapa de hipótesis</h3>
+                  <p className="text-xs text-slate-500">Vista de grafo para la jerarquía de hipótesis del Modo Video.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-slate-600">Hipótesis</label>
+                  <select className="rounded border border-slate-200 bg-white px-2 py-1 text-xs" value={hypothesisMapFilter} onChange={(event) => setHypothesisMapFilter(event.target.value)}>
+                    <option value="">Todas</option>
+                    {hypothesisMapFilterOptions.map((hypothesis) => (
+                      <option key={hypothesis.id} value={hypothesis.id}>{getHypothesisDisplayTitle(hypothesis) || hypothesis.id}</option>
+                    ))}
+                  </select>
+                  <label className="text-xs text-slate-600">Zoom</label>
+                  <input type="range" min={0.4} max={2} step={0.1} value={hypothesisMapZoom} onChange={(event) => setHypothesisMapZoom(Number(event.target.value) || 1)} />
+                  <Button className="bg-white border text-slate-700" onClick={() => { setHypothesisMapPan({ x: 0, y: 0 }); setHypothesisMapZoom(1); }}>
+                    Reset
+                  </Button>
+                  <Button className="bg-white border text-slate-700" onClick={closeHypothesisMap}>
+                    Cerrar
+                  </Button>
+                </div>
+              </div>
+
+              <div
+                ref={hypothesisMapCanvasRef}
+                className={`relative h-full overflow-hidden bg-slate-50 ${isHypothesisMapPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+                onMouseDown={handleHypothesisMapCanvasMouseDown}
+              >
+                <div className="absolute h-[2200px] w-[2400px] origin-top-left" style={{ transform: `translate(${hypothesisMapPan.x}px, ${hypothesisMapPan.y}px) scale(${hypothesisMapZoom})` }}>
+                  <svg className="absolute inset-0 h-full w-full">
+                    {hypothesisMapEdges.map((edge) => {
+                      const source = hypothesisMapRenderableNodesById.get(edge.source);
+                      const target = hypothesisMapRenderableNodesById.get(edge.target);
+                      if (!source || !target) return null;
+                      const selected = selectedHypothesisMapEdge === edge.id;
+                      return (
+                        <line
+                          key={edge.id}
+                          x1={source.x + 100}
+                          y1={source.y + 28}
+                          x2={target.x + 100}
+                          y2={target.y + 28}
+                          stroke={selected ? '#4f46e5' : '#9CA3AF'}
+                          strokeWidth={selected ? 2 : 1.5}
+                          className="cursor-pointer"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setSelectedHypothesisMapNode('');
+                            setSelectedHypothesisMapEdge(edge.id);
+                          }}
+                        />
+                      );
+                    })}
+                  </svg>
+
+                  {hypothesisMapNodes.map((hypothesis) => {
+                    const hypothesisType = normalizeHypothesisType(hypothesis?.type);
+                    const isSelected = selectedHypothesisMapNode === hypothesis.id;
+                    const parentHypothesis = hypothesisById.get(String(hypothesis.parent_hypothesis_id || '')) || null;
+                    const childHypotheses = childHypothesesByParentId.get(String(hypothesis.id)) || [];
+                    const hypothesisStatus = getHypothesisRawStatus(hypothesis);
+                    const validated = isValidatedStatus(hypothesisStatus);
+                    return (
+                      <div
+                        key={hypothesis.id}
+                        data-hypothesis-map-node="true"
+                        className={`absolute rounded-md border bg-white px-2.5 py-2 text-[13px] font-medium text-slate-800 shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)] ${draggingHypothesisMapNode === hypothesis.id || isSelected ? 'border-2 border-indigo-500' : ''}`}
+                        style={{ left: hypothesis.x, top: hypothesis.y, width: '200px', maxWidth: '200px', cursor: draggingHypothesisMapNode === hypothesis.id ? 'grabbing' : 'grab', userSelect: 'none' }}
+                        onMouseDown={(event) => handleHypothesisMapNodeMouseDown(event, hypothesis.id)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedHypothesisMapEdge('');
+                          setSelectedHypothesisMapNode(hypothesis.id);
+                        }}
+                      >
+                        <p className="whitespace-normal break-words leading-tight text-slate-900">{getHypothesisDisplayTitle(hypothesis) || 'Sin título'}</p>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                          <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                            {hypothesisTypeLabel(hypothesisType)}
+                          </span>
+                          <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${validated ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                            {hypothesisStatus ? (validated ? 'VALIDADA' : 'NO VALIDADA') : 'SIN ESTADO'}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            {childHypotheses.length > 0 ? `${childHypotheses.length} hija${childHypotheses.length !== 1 ? 's' : ''}` : parentHypothesis ? 'hoja' : 'raíz'}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-[10px] text-slate-500">Padre: {parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: {childHypotheses.length}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {!hypothesisMapNodes.length ? (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <p className="rounded-lg border border-dashed bg-white px-6 py-4 text-sm text-slate-500">{sortedHypotheses.length ? 'No hay hipótesis para los filtros aplicados.' : 'No hay hipótesis en Modo Video todavía.'}</p>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 ${deleteEvolutionModal.open ? '' : 'pointer-events-none hidden'}`}>
           <div className="w-full max-w-lg rounded-2xl border bg-white p-6 shadow-2xl">
