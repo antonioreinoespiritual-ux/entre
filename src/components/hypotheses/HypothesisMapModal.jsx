@@ -43,13 +43,38 @@ export function HypothesisMapModal({
   const canvasRef = useRef(null);
   const layoutRef = useRef({});
   const persistDebounceRef = useRef(null);
+  const wasOpenRef = useRef(false);
+  const hydratedContextRef = useRef('');
+
+  const mapContextKey = useMemo(() => (
+    Array.isArray(hypotheses)
+      ? hypotheses
+        .map((hypothesis) => getHypothesisId(hypothesis))
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right))
+        .join('|')
+      : ''
+  ), [hypotheses, getHypothesisId]);
 
   useEffect(() => {
-    if (draggingNode) return;
     const normalizedLayout = initialLayout && typeof initialLayout === 'object' ? initialLayout : EMPTY_LAYOUT;
-    layoutRef.current = normalizedLayout;
-    setLayoutById((previousLayout) => (previousLayout === normalizedLayout ? previousLayout : normalizedLayout));
-  }, [draggingNode, initialLayout]);
+    const isOpening = open && !wasOpenRef.current;
+    const contextChanged = hydratedContextRef.current !== mapContextKey;
+
+    if (isOpening || contextChanged) {
+      setLayoutById((previousLayout) => {
+        if (contextChanged) return normalizedLayout;
+        const hasLocalLayout = previousLayout && typeof previousLayout === 'object' && Object.keys(previousLayout).length > 0;
+        return hasLocalLayout ? previousLayout : normalizedLayout;
+      });
+      if (contextChanged) {
+        layoutRef.current = normalizedLayout;
+      }
+      hydratedContextRef.current = mapContextKey;
+    }
+
+    wasOpenRef.current = open;
+  }, [open, mapContextKey, initialLayout]);
 
   useEffect(() => {
     layoutRef.current = layoutById || {};
