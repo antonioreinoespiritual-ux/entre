@@ -239,6 +239,32 @@ const COMMENT_CODE_EVOLUTION_DISABLED = true;
 
 
 const CODE_MAP_ALL_SCOPE = '__all__';
+const CODE_MAP_PROFILE_WIDTH = 220;
+const CODE_MAP_PROFILE_HEIGHT = 74;
+const CODE_MAP_CODE_MIN_WIDTH = 90;
+const CODE_MAP_CODE_MAX_WIDTH = 220;
+const CODE_MAP_CODE_HEIGHT = 52;
+
+const resolveCodeMapAnchorPoint = (node = {}, opposite = {}) => {
+  const x = Number(node.x) || 0;
+  const y = Number(node.y) || 0;
+  const width = Math.max(1, Number(node.width) || 0);
+  const height = Math.max(1, Number(node.height) || 0);
+  const centerX = x + (width / 2);
+  const centerY = y + (height / 2);
+  const oppositeCenterX = (Number(opposite.x) || 0) + ((Math.max(1, Number(opposite.width) || 0)) / 2);
+  const oppositeCenterY = (Number(opposite.y) || 0) + ((Math.max(1, Number(opposite.height) || 0)) / 2);
+  const dx = oppositeCenterX - centerX;
+  const dy = oppositeCenterY - centerY;
+  if (dx === 0 && dy === 0) return { x: centerX, y: centerY };
+  const scaleX = width / (2 * Math.abs(dx || 1));
+  const scaleY = height / (2 * Math.abs(dy || 1));
+  const scale = Math.min(scaleX, scaleY);
+  return {
+    x: centerX + (dx * scale),
+    y: centerY + (dy * scale),
+  };
+};
 
 
 const LEGACY_WORKSPACE_ID = '__legacy_workspace__';
@@ -405,12 +431,16 @@ const CommentsModePage = () => {
   const [fragmentCodeFilter, setFragmentCodeFilter] = useState('');
   const [fragmentClientFilter, setFragmentClientFilter] = useState('');
   const [fragmentInterviewFilter, setFragmentInterviewFilter] = useState('');
+  const [fragmentPage, setFragmentPage] = useState(1);
+  const [fragmentPageSize, setFragmentPageSize] = useState(20);
   const [fragmentMenuId, setFragmentMenuId] = useState('');
   const [codeQuery, setCodeQuery] = useState('');
   const [codeHypothesisFilter, setCodeHypothesisFilter] = useState('');
   const [codeClusterFilter, setCodeClusterFilter] = useState('');
   const [codeClientFilter, setCodeClientFilter] = useState('');
   const [codeSortBy, setCodeSortBy] = useState('score_total_desc');
+  const [codePage, setCodePage] = useState(1);
+  const [codePageSize, setCodePageSize] = useState(20);
   const [proposalStatusFilter, setProposalStatusFilter] = useState('');
   const [proposalTypeFilter, setProposalTypeFilter] = useState('');
   const [proposalSortBy, setProposalSortBy] = useState('confidence_desc');
@@ -478,6 +508,8 @@ const CommentsModePage = () => {
   const [codeMapProfileContextMenu, setCodeMapProfileContextMenu] = useState({ open: false, x: 0, y: 0, profileId: '' });
   const [codeMapProfileEditor, setCodeMapProfileEditor] = useState({ open: false, mode: 'create', id: '', name: '', description: '' });
   const [profileConnectSource, setProfileConnectSource] = useState('');
+  const [draggingCodeMapProfileId, setDraggingCodeMapProfileId] = useState('');
+  const [codeMapProfileLayoutDraftById, setCodeMapProfileLayoutDraftById] = useState({});
   const [codeMapAiModal, setCodeMapAiModal] = useState({
     open: false,
     loading: false,
@@ -702,7 +734,11 @@ const CommentsModePage = () => {
   const fragments = store.fragments || [];
   const codes = store.codes || [];
   const codeProposals = store.codeProposals || [];
-  const hypotheses = store.hypotheses || [];
+  const allHypotheses = Array.isArray(store.hypotheses) ? store.hypotheses : [];
+  const hypotheses = useMemo(
+    () => allHypotheses.filter((item) => !String(item?.deleted_at || '').trim()),
+    [allHypotheses],
+  );
   const hypothesisEvolutionLinks = Array.isArray(store.hypothesisEvolutionLinks) ? store.hypothesisEvolutionLinks : [];
   const codeMapLayoutsByHypothesis = store.codeMapLayoutsByHypothesis && typeof store.codeMapLayoutsByHypothesis === 'object'
     ? store.codeMapLayoutsByHypothesis
@@ -744,7 +780,12 @@ const CommentsModePage = () => {
     };
   }, [codeGenerationMetrics]);
 
-  const clusters = useMemo(() => buildClusters(codes, fragments), [codes, fragments]);
+  const activeCodes = useMemo(
+    () => codes.filter((code) => !String(code.deleted_at || '').trim()),
+    [codes],
+  );
+
+  const clusters = useMemo(() => buildClusters(activeCodes, fragments), [activeCodes, fragments]);
 
   const fragmentClientOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.client_id || '').trim()).filter(Boolean))), [fragments]);
   const fragmentInterviewOptions = useMemo(() => Array.from(new Set(fragments.map((f) => String(f.interview_id || '').trim()).filter(Boolean))), [fragments]);
@@ -775,7 +816,7 @@ const CommentsModePage = () => {
     const maxSources = Math.max(1, ...Array.from(uniqueSourcesBySlug.values(), (set) => Number(set?.size || 0)));
 
     const result = new Map();
-    codes.forEach((code) => {
+    activeCodes.forEach((code) => {
       const slug = String(code.slug || '');
       const fragmentCount = Number(fragmentCountBySlug.get(slug) || 0);
       const uniqueSources = Number(uniqueSourcesBySlug.get(slug)?.size || 0);
@@ -804,7 +845,7 @@ const CommentsModePage = () => {
     });
 
     return result;
-  }, [codes, fragments]);
+  }, [activeCodes, fragments]);
 
   const getScoreColorClass = (score = 0) => {
     if (score >= 80) return 'bg-emerald-100 text-emerald-800 border-emerald-200';
@@ -813,9 +854,9 @@ const CommentsModePage = () => {
     return 'bg-slate-100 text-slate-700 border-slate-200';
   };
 
-  const codeHypothesisOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.hypothesis_id || '').trim()).filter(Boolean))), [codes]);
-  const codeClusterOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.cluster_id || '').trim()).filter(Boolean))), [codes]);
-  const codeClientOptions = useMemo(() => Array.from(new Set(codes.map((code) => String(code.client_id || '').trim()).filter(Boolean))), [codes]);
+  const codeHypothesisOptions = useMemo(() => Array.from(new Set(activeCodes.map((code) => String(code.hypothesis_id || '').trim()).filter(Boolean))), [activeCodes]);
+  const codeClusterOptions = useMemo(() => Array.from(new Set(activeCodes.map((code) => String(code.cluster_id || '').trim()).filter(Boolean))), [activeCodes]);
+  const codeClientOptions = useMemo(() => Array.from(new Set(activeCodes.map((code) => String(code.client_id || '').trim()).filter(Boolean))), [activeCodes]);
 
   const tokenize = (text = '') => String(text || '').toLowerCase()
     .normalize('NFD')
@@ -1575,7 +1616,16 @@ const CommentsModePage = () => {
       });
     }
 
-    const nextCodes = codes.filter((code) => !descendants.has(String(code.slug)));
+    const deletionTimestamp = new Date().toISOString();
+    const nextCodes = codes.map((code) => {
+      const codeSlug = String(code.slug);
+      if (!descendants.has(codeSlug)) return code;
+      return {
+        ...code,
+        deleted_at: deletionTimestamp,
+        updated_at: deletionTimestamp,
+      };
+    });
     const nextFragments = fragments.map((fragment) => ({
       ...fragment,
       code_slugs: (fragment.code_slugs || []).filter((item) => !descendants.has(String(item))),
@@ -1603,8 +1653,8 @@ const CommentsModePage = () => {
 
 
   const deleteAllCodes = () => {
-    if (!codes.length) return;
-    if (!window.confirm(`¿Eliminar todos los códigos (${codes.length}) y desvincularlos de fragmentos?`)) return;
+    if (!activeCodes.length) return;
+    if (!window.confirm(`¿Eliminar todos los códigos (${activeCodes.length}) y desvincularlos de fragmentos?`)) return;
     const nextFragments = fragments.map((fragment) => ({
       ...fragment,
       code_slugs: [],
@@ -1617,7 +1667,13 @@ const CommentsModePage = () => {
         collapsed: safe.collapsed && typeof safe.collapsed === 'object' ? safe.collapsed : {},
       }];
     }));
-    persist({ ...store, codes: [], fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
+    const deletionTimestamp = new Date().toISOString();
+    const nextCodes = codes.map((code) => ({
+      ...code,
+      deleted_at: deletionTimestamp,
+      updated_at: deletionTimestamp,
+    }));
+    persist({ ...store, codes: nextCodes, fragments: nextFragments, codeMapVisualProfilesByScope: cleanedVisualScopes });
     setSelectedCodeSlug('');
     setCodeMenuSlug('');
     setCodeCardSlug('');
@@ -1671,7 +1727,7 @@ const CommentsModePage = () => {
   const filteredCodes = useMemo(() => {
     const query = codeQuery.trim().toLowerCase();
     const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
-    return codes.filter((code) => {
+    return activeCodes.filter((code) => {
       const name = String(code.name || '').toLowerCase();
       const description = String(code.description || '').toLowerCase();
       const tags = Array.isArray(code.tags) ? code.tags.join(' ').toLowerCase() : String(code.tags || '').toLowerCase();
@@ -1681,7 +1737,7 @@ const CommentsModePage = () => {
       const matchesClient = !codeClientFilter || String(code.client_id || '') === codeClientFilter;
       return matchesQuery && matchesHypothesis && matchesCluster && matchesClient;
     });
-  }, [codes, codeQuery, codeHypothesisFilter, codeClusterFilter, codeClientFilter]);
+  }, [activeCodes, codeQuery, codeHypothesisFilter, codeClusterFilter, codeClientFilter]);
 
   const codeTreeRoots = useMemo(() => {
     const filteredSet = new Set(filteredCodes.map((code) => String(code.slug)));
@@ -1712,6 +1768,25 @@ const CommentsModePage = () => {
 
     return { roots, childrenByParent };
   }, [filteredCodes, codeSortBy, codeScoreBySlug]);
+
+  useEffect(() => {
+    setCodePage(1);
+  }, [codeQuery, codeHypothesisFilter, codeClusterFilter, codeClientFilter, codeSortBy, workspaceContext.workspaceId]);
+
+  const codeTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(codeTreeRoots.roots.length / Math.max(1, codePageSize))),
+    [codeTreeRoots.roots.length, codePageSize],
+  );
+
+  useEffect(() => {
+    setCodePage((current) => Math.min(Math.max(1, current), codeTotalPages));
+  }, [codeTotalPages]);
+
+  const paginatedCodeRoots = useMemo(() => {
+    const safePage = Math.min(Math.max(1, codePage), codeTotalPages);
+    const start = (safePage - 1) * codePageSize;
+    return codeTreeRoots.roots.slice(start, start + codePageSize);
+  }, [codeTreeRoots.roots, codePage, codePageSize, codeTotalPages]);
 
   const codeMapScopeKey = useMemo(
     () => buildCodeMapScopeKey(codeHypothesisFilter),
@@ -1775,6 +1850,11 @@ const CommentsModePage = () => {
   }, [codeMapLayoutsByHypothesis, codeMapScopeKey]);
 
   useEffect(() => {
+    setDraggingCodeMapProfileId('');
+    setCodeMapProfileLayoutDraftById({});
+  }, [codeMapScopeKey]);
+
+  useEffect(() => {
     codeMapLayoutRef.current = codeMapLayoutBySlug || {};
   }, [codeMapLayoutBySlug]);
 
@@ -1797,18 +1877,21 @@ const CommentsModePage = () => {
 
   const codeMapVisibleCodes = useMemo(() => {
     const selectedHypothesisIds = parseHypothesisSelection(codeHypothesisFilter);
-    if (!selectedHypothesisIds.length) return codes;
-    return codes.filter((code) => selectedHypothesisIds.includes(String(code.hypothesis_id || '')));
-  }, [codes, codeHypothesisFilter]);
+    if (!selectedHypothesisIds.length) return activeCodes;
+    return activeCodes.filter((code) => selectedHypothesisIds.includes(String(code.hypothesis_id || '')));
+  }, [activeCodes, codeHypothesisFilter]);
 
   const codeMapNodes = useMemo(() => codeMapVisibleCodes.map((code, index) => {
     const saved = codeMapLayoutBySlug[code.slug] || {};
     const x = Number(saved.x);
     const y = Number(saved.y);
+    const width = Math.max(CODE_MAP_CODE_MIN_WIDTH, Math.min(CODE_MAP_CODE_MAX_WIDTH, 100 + (Number(codeScoreBySlug.get(String(code.slug))?.score_total || 0) * 1.1)));
     return {
       ...code,
       fragmentCount: Number(codeUsageCount.get(String(code.slug)) || 0),
       scoreTotal: Number(codeScoreBySlug.get(String(code.slug))?.score_total || 0),
+      width,
+      height: CODE_MAP_CODE_HEIGHT,
       x: Number.isFinite(x) ? x : 120 + ((index % 4) * 260),
       y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 160),
     };
@@ -1817,16 +1900,24 @@ const CommentsModePage = () => {
   const codeMapVisibleSlugSet = useMemo(() => new Set(codeMapVisibleCodes.map((code) => String(code.slug))), [codeMapVisibleCodes]);
 
   const codeMapProfileNodes = useMemo(() => (Array.isArray(codeMapProfiles) ? codeMapProfiles : []).map((profile, index) => {
+    const profileId = String(profile.id || '');
+    const draftLayout = codeMapProfileLayoutDraftById[profileId] || {};
     const fallbackX = 80 + ((index % 3) * 320);
     const fallbackY = 36 + (Math.floor(index / 3) * 210);
+    const draftX = Number(draftLayout.x);
+    const draftY = Number(draftLayout.y);
+    const persistedX = Number(profile.x);
+    const persistedY = Number(profile.y);
     return {
-      id: String(profile.id || ''),
+      id: profileId,
       name: String(profile.name || 'Perfil estratégico').trim() || 'Perfil estratégico',
       description: String(profile.description || '').trim(),
-      x: Number.isFinite(Number(profile.x)) ? Number(profile.x) : fallbackX,
-      y: Number.isFinite(Number(profile.y)) ? Number(profile.y) : fallbackY,
+      width: CODE_MAP_PROFILE_WIDTH,
+      height: CODE_MAP_PROFILE_HEIGHT,
+      x: Number.isFinite(draftX) ? draftX : (Number.isFinite(persistedX) ? persistedX : fallbackX),
+      y: Number.isFinite(draftY) ? draftY : (Number.isFinite(persistedY) ? persistedY : fallbackY),
     };
-  }).filter((profile) => profile.id), [codeMapProfiles]);
+  }).filter((profile) => profile.id), [codeMapProfiles, codeMapProfileLayoutDraftById]);
 
   const codeMapProfileNodeById = useMemo(() => new Map(codeMapProfileNodes.map((profile) => [String(profile.id), profile])), [codeMapProfileNodes]);
 
@@ -1864,8 +1955,20 @@ const CommentsModePage = () => {
 
   const codeMapRenderableNodesById = useMemo(() => {
     const rows = [
-      ...visibleCodeMapNodes.map((node) => ({ id: String(node.slug), x: Number(node.x) || 0, y: Number(node.y) || 0 })),
-      ...codeMapProfileNodes.map((profile) => ({ id: String(profile.id), x: Number(profile.x) || 0, y: Number(profile.y) || 0 })),
+      ...visibleCodeMapNodes.map((node) => ({
+        id: String(node.slug),
+        x: Number(node.x) || 0,
+        y: Number(node.y) || 0,
+        width: Number(node.width) || CODE_MAP_CODE_MIN_WIDTH,
+        height: Number(node.height) || CODE_MAP_CODE_HEIGHT,
+      })),
+      ...codeMapProfileNodes.map((profile) => ({
+        id: String(profile.id),
+        x: Number(profile.x) || 0,
+        y: Number(profile.y) || 0,
+        width: Number(profile.width) || CODE_MAP_PROFILE_WIDTH,
+        height: Number(profile.height) || CODE_MAP_PROFILE_HEIGHT,
+      })),
     ];
     return new Map(rows.map((item) => [item.id, item]));
   }, [visibleCodeMapNodes, codeMapProfileNodes]);
@@ -2401,19 +2504,36 @@ const CommentsModePage = () => {
     const startProfile = codeMapProfileNodes.find((profile) => String(profile.id) === id) || { x: 0, y: 0 };
     const startNodeX = Number(startProfile.x) || 0;
     const startNodeY = Number(startProfile.y) || 0;
+    let latestPosition = { x: startNodeX, y: startNodeY };
+    setDraggingCodeMapProfileId(id);
 
     const onMove = (moveEvent) => {
       const deltaX = (moveEvent.clientX - startX) / (codeMapZoom || 1);
       const deltaY = (moveEvent.clientY - startY) / (codeMapZoom || 1);
-      upsertCodeMapProfile({
-        ...startProfile,
-        id,
+      latestPosition = {
         x: Math.max(12, Math.round(startNodeX + deltaX)),
         y: Math.max(12, Math.round(startNodeY + deltaY)),
-      });
+      };
+      setCodeMapProfileLayoutDraftById((prev) => ({
+        ...prev,
+        [id]: latestPosition,
+      }));
     };
 
     const onUp = () => {
+      upsertCodeMapProfile({
+        ...startProfile,
+        id,
+        x: latestPosition.x,
+        y: latestPosition.y,
+      });
+      setDraggingCodeMapProfileId('');
+      setCodeMapProfileLayoutDraftById((prev) => {
+        if (!Object.prototype.hasOwnProperty.call(prev, id)) return prev;
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
     };
@@ -3007,6 +3127,25 @@ const CommentsModePage = () => {
     });
   }, [fragments, fragmentCodeFilter, fragmentClientFilter, fragmentInterviewFilter, fragmentQuery]);
 
+  useEffect(() => {
+    setFragmentPage(1);
+  }, [fragmentQuery, fragmentCodeFilter, fragmentClientFilter, fragmentInterviewFilter, workspaceContext.workspaceId]);
+
+  const fragmentTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredFragments.length / Math.max(1, fragmentPageSize))),
+    [filteredFragments.length, fragmentPageSize],
+  );
+
+  useEffect(() => {
+    setFragmentPage((current) => Math.min(Math.max(1, current), fragmentTotalPages));
+  }, [fragmentTotalPages]);
+
+  const paginatedFragments = useMemo(() => {
+    const safePage = Math.min(Math.max(1, fragmentPage), fragmentTotalPages);
+    const start = (safePage - 1) * fragmentPageSize;
+    return filteredFragments.slice(start, start + fragmentPageSize);
+  }, [filteredFragments, fragmentPage, fragmentPageSize, fragmentTotalPages]);
+
   const renderFragmentSourceWithHighlight = (fragment) => {
     const sourceText = String(fragment?.source_comment_text || '');
     const start = Number(fragment?.selection_start);
@@ -3461,27 +3600,47 @@ const CommentsModePage = () => {
 
   const loadCommentsTable = async ({ offset = commentsTable.offset, q = commentsTable.q } = {}) => {
     try {
+      const normalizedLimit = Math.max(1, Number(commentsTable.limit || 100));
+      const normalizedOffset = Math.max(0, Number(offset || 0));
       setCommentsTable((prev) => ({ ...prev, loading: true, error: '' }));
       const data = await commentsIngestionApi.listTable({
         projectId,
         campaignId,
         workspaceId: workspaceContext.workspaceId,
-        limit: commentsTable.limit,
-        offset,
+        limit: normalizedLimit,
+        offset: normalizedOffset,
         q,
       });
+      const total = Number(data.total || 0);
+      if (total > 0 && normalizedOffset >= total) {
+        const safeOffset = Math.max(0, (Math.ceil(total / normalizedLimit) - 1) * normalizedLimit);
+        if (safeOffset !== normalizedOffset) {
+          await loadCommentsTable({ offset: safeOffset, q });
+          return;
+        }
+      }
       setCommentsTable((prev) => ({
         ...prev,
         loading: false,
         items: Array.isArray(data.items) ? data.items : [],
-        total: Number(data.total || 0),
-        offset,
+        total,
+        offset: normalizedOffset,
         q,
       }));
     } catch (error) {
       setCommentsTable((prev) => ({ ...prev, loading: false, error: error.message || 'No se pudo cargar la tabla de comentarios.' }));
     }
   };
+
+  const commentsCurrentPage = useMemo(
+    () => Math.floor(Number(commentsTable.offset || 0) / Math.max(1, Number(commentsTable.limit || 100))) + 1,
+    [commentsTable.offset, commentsTable.limit],
+  );
+
+  const commentsTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(Number(commentsTable.total || 0) / Math.max(1, Number(commentsTable.limit || 100)))),
+    [commentsTable.total, commentsTable.limit],
+  );
 
   const loadRuns = async () => {
     try {
@@ -4309,7 +4468,15 @@ const CommentsModePage = () => {
     const id = String(hypothesisId || '');
     if (!id) return;
     if (!window.confirm('¿Eliminar esta hipótesis?')) return;
-    const nextHypotheses = hypotheses.filter((item) => String(item.id) !== id);
+    const deletionTimestamp = new Date().toISOString();
+    const nextHypotheses = allHypotheses.map((item) => {
+      if (String(item.id) !== id) return item;
+      return {
+        ...item,
+        deleted_at: deletionTimestamp,
+        updated_at: deletionTimestamp,
+      };
+    });
     persist({ ...store, hypotheses: nextHypotheses });
     setHypothesisMenuId('');
   };
@@ -4329,9 +4496,9 @@ const CommentsModePage = () => {
     };
 
     return (
-      <div key={slug} className="relative isolate space-y-1">
+      <div key={slug} className={`relative space-y-1 ${codeMenuSlug === slug ? 'z-[120]' : 'z-0'}`}>
         <article
-          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''} ${codeMenuSlug === slug ? 'z-40' : 'z-0'}`}
+          className={`group relative rounded-xl border bg-white p-3 shadow-sm transition ${isSelected ? 'border-indigo-300 ring-1 ring-indigo-100' : 'border-slate-200 hover:border-indigo-200 hover:shadow-md'} ${usageCount === 0 ? 'opacity-80' : ''}`}
           style={{ marginLeft: `${depth * 18}px` }}
           onClick={() => setSelectedCodeSlug(slug)}
         >
@@ -4387,7 +4554,7 @@ const CommentsModePage = () => {
                 <MoreHorizontal className="h-4 w-4" />
               </button>
               {codeMenuSlug === slug ? (
-                <div className="absolute right-0 top-9 z-50 w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
+                <div className="absolute right-0 top-9 z-[130] w-52 rounded-lg border bg-white p-1.5 shadow-lg" onClick={(e) => e.stopPropagation()}>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Editar código</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('create', null, slug)}>Crear subcódigo</button>
                   <button type="button" className="w-full rounded-md px-2 py-1.5 text-left text-xs hover:bg-slate-100" onClick={() => openCodeEditor('edit', code)}>Mover jerarquía</button>
@@ -4458,7 +4625,7 @@ const CommentsModePage = () => {
             </div>
             <div className="rounded-xl border bg-white p-3">
               <p className="text-xs text-slate-500">Códigos</p>
-              <p className="text-2xl font-semibold text-slate-900">{codes.length}</p>
+              <p className="text-2xl font-semibold text-slate-900">{activeCodes.length}</p>
             </div>
             <div className="rounded-xl border bg-white p-3">
               <p className="text-xs text-slate-500">Clusters</p>
@@ -4601,7 +4768,7 @@ const CommentsModePage = () => {
                     </table>
                   </div>
                   <div className="p-3 border-t flex items-center justify-between text-xs text-slate-600">
-                    <span>Total: {commentsTable.total}</span>
+                    <span>Total: {commentsTable.total} · Página {commentsCurrentPage} de {commentsTotalPages}</span>
                     <div className="flex gap-2">
                       <Button className="bg-white border" disabled={commentsTable.offset <= 0} onClick={() => loadCommentsTable({ offset: Math.max(0, commentsTable.offset - commentsTable.limit), q: commentsTable.q })}>Anterior</Button>
                       <Button className="bg-white border" disabled={commentsTable.offset + commentsTable.limit >= commentsTable.total} onClick={() => loadCommentsTable({ offset: commentsTable.offset + commentsTable.limit, q: commentsTable.q })}>Siguiente</Button>
@@ -4746,7 +4913,7 @@ const CommentsModePage = () => {
               </div>
 
               <div className="space-y-2">
-                {!filteredFragments.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay fragmentos para los filtros aplicados.</p> : filteredFragments.map((fragment) => {
+                {!filteredFragments.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay fragmentos para los filtros aplicados.</p> : paginatedFragments.map((fragment) => {
                   const fragmentId = String(fragment.id);
                   const selected = selectedFragmentId === fragmentId;
                   const linkedCode = codes.find((code) => (fragment.code_slugs || []).includes(code.slug));
@@ -4812,6 +4979,26 @@ const CommentsModePage = () => {
                   );
                 })}
               </div>
+              {filteredFragments.length ? (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 text-xs text-slate-600">
+                  <span>Total filtrado: {filteredFragments.length} · Página {fragmentPage} de {fragmentTotalPages}</span>
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="rounded border bg-white px-2 py-1"
+                      value={fragmentPageSize}
+                      onChange={(event) => {
+                        const nextSize = Math.max(1, Number(event.target.value || 20));
+                        setFragmentPageSize(nextSize);
+                        setFragmentPage(1);
+                      }}
+                    >
+                      {[10, 20, 50, 100].map((size) => <option key={size} value={size}>{size} por página</option>)}
+                    </select>
+                    <Button className="bg-white border" disabled={fragmentPage <= 1} onClick={() => setFragmentPage((current) => Math.max(1, current - 1))}>Anterior</Button>
+                    <Button className="bg-white border" disabled={fragmentPage >= fragmentTotalPages} onClick={() => setFragmentPage((current) => Math.min(fragmentTotalPages, current + 1))}>Siguiente</Button>
+                  </div>
+                </div>
+              ) : null}
 
               {fragmentEditor.open ? (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/45 p-4">
@@ -5012,8 +5199,28 @@ const CommentsModePage = () => {
                   </div>
 
                   <div className="space-y-2">
-                    {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : codeTreeRoots.roots.map((code) => renderCodeNode(code, 0))}
+                    {!codeTreeRoots.roots.length ? <p className="rounded-lg border border-dashed bg-white p-4 text-sm text-slate-500">No hay códigos para los filtros aplicados.</p> : paginatedCodeRoots.map((code) => renderCodeNode(code, 0))}
                   </div>
+                  {codeTreeRoots.roots.length ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-white px-3 py-2 text-xs text-slate-600">
+                      <span>Total filtrado: {codeTreeRoots.roots.length} · Página {codePage} de {codeTotalPages}</span>
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="rounded border bg-white px-2 py-1"
+                          value={codePageSize}
+                          onChange={(event) => {
+                            const nextSize = Math.max(1, Number(event.target.value || 20));
+                            setCodePageSize(nextSize);
+                            setCodePage(1);
+                          }}
+                        >
+                          {[10, 20, 50, 100].map((size) => <option key={size} value={size}>{size} por página</option>)}
+                        </select>
+                        <Button className="bg-white border" disabled={codePage <= 1} onClick={() => setCodePage((current) => Math.max(1, current - 1))}>Anterior</Button>
+                        <Button className="bg-white border" disabled={codePage >= codeTotalPages} onClick={() => setCodePage((current) => Math.min(codeTotalPages, current + 1))}>Siguiente</Button>
+                      </div>
+                    </div>
+                  ) : null}
                 </>
               )}
 
@@ -5346,14 +5553,16 @@ const CommentsModePage = () => {
                             const source = codeMapRenderableNodesById.get(String(edge.source));
                             const target = codeMapRenderableNodesById.get(String(edge.target));
                             if (!source || !target) return null;
+                            const sourceAnchor = resolveCodeMapAnchorPoint(source, target);
+                            const targetAnchor = resolveCodeMapAnchorPoint(target, source);
                             const selected = selectedCodeMapEdge === edge.id;
                             return (
                               <line
                                 key={edge.id}
-                                x1={source.x + 90}
-                                y1={source.y + 26}
-                                x2={target.x + 90}
-                                y2={target.y + 26}
+                                x1={sourceAnchor.x}
+                                y1={sourceAnchor.y}
+                                x2={targetAnchor.x}
+                                y2={targetAnchor.y}
                                 stroke={selected ? '#4f46e5' : edge.type === 'profile_link' ? '#0f766e' : '#9CA3AF'}
                                 strokeWidth={selected ? 2 : 1.5}
                                 className="cursor-pointer"
@@ -5369,13 +5578,14 @@ const CommentsModePage = () => {
 
                         {codeMapProfileNodes.map((profile) => {
                           const isCollapsed = Boolean(codeMapProfileCollapsed[String(profile.id)]);
+                          const isDraggingProfile = String(draggingCodeMapProfileId) === String(profile.id);
                           return (
                             <div
                               key={profile.id}
                               data-code-map-profile="true"
                               data-code-map-profile-id={profile.id}
-                              className="absolute min-w-[160px] rounded-lg border-2 border-teal-300 bg-teal-50/90 px-3 py-2 text-[12px] text-teal-900 shadow-sm"
-                              style={{ left: profile.x, top: profile.y, width: '220px' }}
+                              className={`absolute min-w-[160px] rounded-lg border-2 border-teal-300 bg-teal-50/90 px-3 py-2 text-[12px] text-teal-900 shadow-sm ${isDraggingProfile ? 'cursor-grabbing shadow-md' : 'cursor-grab'}`}
+                              style={{ left: profile.x, top: profile.y, width: `${CODE_MAP_PROFILE_WIDTH}px` }}
                               onMouseDown={(event) => handleCodeMapProfileMouseDown(event, profile.id)}
                               onClick={(event) => {
                                 event.stopPropagation();
@@ -5404,7 +5614,7 @@ const CommentsModePage = () => {
 
                         {visibleCodeMapNodes.map((code) => {
                           const isNodeSelected = selectedCodeMapNode === code.slug;
-                          const nodeWidth = Math.max(100, Math.min(220, 100 + (Number(code.scoreTotal || 0) * 1.1)));
+                          const nodeWidth = Math.max(CODE_MAP_CODE_MIN_WIDTH, Number(code.width) || CODE_MAP_CODE_MIN_WIDTH);
                           return (
                             <div
                               key={code.slug}

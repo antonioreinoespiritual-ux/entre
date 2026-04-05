@@ -29,6 +29,7 @@ export function HypothesisMapModal({
   getNodeMetaLabel,
   persistLayout,
   initialLayout = EMPTY_LAYOUT,
+  persistFullVisibleLayout = false,
   emptyStateText = 'No hay hipótesis para los filtros aplicados.',
   emptyWorkspaceText = 'No hay hipótesis en este workspace todavía.',
 }) {
@@ -42,16 +43,49 @@ export function HypothesisMapModal({
   const [filterId, setFilterId] = useState('');
   const canvasRef = useRef(null);
   const layoutRef = useRef({});
+  const persistDebounceRef = useRef(null);
+  const wasOpenRef = useRef(false);
+  const hydratedContextRef = useRef('');
+
+  const mapContextKey = useMemo(() => (
+    Array.isArray(hypotheses)
+      ? hypotheses
+        .map((hypothesis) => getHypothesisId(hypothesis))
+        .filter(Boolean)
+        .sort((left, right) => left.localeCompare(right))
+        .join('|')
+      : ''
+  ), [hypotheses, getHypothesisId]);
 
   useEffect(() => {
-    if (draggingNode) return;
     const normalizedLayout = initialLayout && typeof initialLayout === 'object' ? initialLayout : EMPTY_LAYOUT;
-    setLayoutById((previousLayout) => (previousLayout === normalizedLayout ? previousLayout : normalizedLayout));
-  }, [draggingNode, initialLayout]);
+    const isOpening = open && !wasOpenRef.current;
+    const contextChanged = hydratedContextRef.current !== mapContextKey;
+
+    if (isOpening || contextChanged) {
+      setLayoutById((previousLayout) => {
+        if (contextChanged) return normalizedLayout;
+        const hasLocalLayout = previousLayout && typeof previousLayout === 'object' && Object.keys(previousLayout).length > 0;
+        return hasLocalLayout ? previousLayout : normalizedLayout;
+      });
+      if (contextChanged) {
+        layoutRef.current = normalizedLayout;
+      }
+      hydratedContextRef.current = mapContextKey;
+    }
+
+    wasOpenRef.current = open;
+  }, [open, mapContextKey, initialLayout]);
 
   useEffect(() => {
     layoutRef.current = layoutById || {};
   }, [layoutById]);
+
+  useEffect(() => () => {
+    if (!persistDebounceRef.current) return;
+    clearTimeout(persistDebounceRef.current);
+    persistDebounceRef.current = null;
+  }, []);
 
   const normalizedHypotheses = useMemo(() => hypotheses.map((hypothesis) => ({
     raw: hypothesis,
@@ -113,6 +147,27 @@ export function HypothesisMapModal({
     };
   }), [layoutById, visibleHypotheses]);
 
+  useEffect(() => {
+    if (!open || !persistFullVisibleLayout || !nodes.length) return;
+    const baseLayout = layoutRef.current && typeof layoutRef.current === 'object' ? layoutRef.current : {};
+    const completeLayout = { ...baseLayout };
+    let hasMissingCoordinates = false;
+
+    nodes.forEach((node) => {
+      const current = completeLayout[node.id];
+      const currentX = Number(current?.x);
+      const currentY = Number(current?.y);
+      if (Number.isFinite(currentX) && Number.isFinite(currentY)) return;
+      completeLayout[node.id] = { x: Number(node.x) || 0, y: Number(node.y) || 0 };
+      hasMissingCoordinates = true;
+    });
+
+    if (!hasMissingCoordinates) return;
+    layoutRef.current = completeLayout;
+    setLayoutById(completeLayout);
+    persistCurrentLayout(completeLayout);
+  }, [open, persistFullVisibleLayout, nodes]);
+
   const visibleIdSet = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
   const edges = useMemo(() => nodes
     .filter((node) => node.parentId && visibleIdSet.has(node.parentId))
@@ -121,6 +176,16 @@ export function HypothesisMapModal({
 
   const persistCurrentLayout = (nextLayout) => {
     if (typeof persistLayout === 'function') persistLayout(nextLayout && typeof nextLayout === 'object' ? nextLayout : {});
+  };
+
+  const schedulePersistLayout = (nextLayout) => {
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+    }
+    persistDebounceRef.current = setTimeout(() => {
+      persistCurrentLayout(nextLayout);
+      persistDebounceRef.current = null;
+    }, 150);
   };
 
   const handleNodeMouseDown = (event, id) => {
@@ -138,16 +203,25 @@ export function HypothesisMapModal({
     const onMove = (moveEvent) => {
       const deltaX = (moveEvent.clientX - startX) / (zoom || 1);
       const deltaY = (moveEvent.clientY - startY) / (zoom || 1);
-      setLayoutById((prev) => ({
-        ...prev,
-        [id]: {
-          x: Math.max(12, Math.round(startNodeX + deltaX)),
-          y: Math.max(12, Math.round(startNodeY + deltaY)),
-        },
-      }));
+      setLayoutById((prev) => {
+        const nextLayout = {
+          ...prev,
+          [id]: {
+            x: Math.max(12, Math.round(startNodeX + deltaX)),
+            y: Math.max(12, Math.round(startNodeY + deltaY)),
+          },
+        };
+        layoutRef.current = nextLayout;
+        schedulePersistLayout(nextLayout);
+        return nextLayout;
+      });
     };
     const onUp = () => {
       setDraggingNode('');
+      if (persistDebounceRef.current) {
+        clearTimeout(persistDebounceRef.current);
+        persistDebounceRef.current = null;
+      }
       persistCurrentLayout(layoutRef.current);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);

@@ -399,3 +399,51 @@ test('comment mode state persistence merges concurrent partial saves instead of 
     server.kill('SIGTERM');
   }
 });
+
+test('comment mode state read keeps payloads that only contain codes/fragments without hypotheses', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-comment-mode-codes-only-'));
+  const dbPath = path.join(tempDir, 'app.sqlite');
+  const port = 4118;
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: String(port), SQLITE_PATH: dbPath }, stdio: 'pipe' });
+
+  try {
+    await waitForHealth(baseUrl);
+    const token = await createSession(baseUrl);
+    const { projectId, campaignId } = await setupEntities(baseUrl, token);
+
+    const workspaceRes = await fetch(`${baseUrl}/api/comment-base/workspaces`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: projectId, campaign_id: campaignId, name: 'Codes-only Workspace', description: '', status: 'active' }),
+    });
+    assert.equal(workspaceRes.status, 200);
+    const workspaceId = (await workspaceRes.json())?.data?.id;
+    assert.ok(workspaceId);
+
+    const storageKey = `comments-mode:${projectId}:${campaignId}:workspace:${workspaceId}`;
+    const payload = {
+      codes: [{ id: 'code-1', slug: 'code-1', label: 'Código 1', updated_at: '2026-02-01T00:00:00.000Z' }],
+      fragments: [{ id: 'fragment-1', excerpt: 'Texto ejemplo', code_slugs: ['code-1'], updated_at: '2026-02-01T00:00:00.000Z' }],
+    };
+
+    const saveRes = await fetch(`${baseUrl}/api/comment-mode/state`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ storageKey, payload }),
+    });
+    assert.equal(saveRes.status, 200);
+
+    const getRes = await fetch(`${baseUrl}/api/comment-mode/state?${new URLSearchParams({ storageKey }).toString()}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(getRes.status, 200);
+    const getJson = await getRes.json();
+    assert.equal(getJson?.data?.payload?.codes?.length, 1);
+    assert.equal(getJson?.data?.payload?.fragments?.length, 1);
+    assert.equal(getJson?.data?.payload?.codes?.[0]?.id, 'code-1');
+    assert.equal(getJson?.data?.payload?.fragments?.[0]?.id, 'fragment-1');
+  } finally {
+    server.kill('SIGTERM');
+  }
+});

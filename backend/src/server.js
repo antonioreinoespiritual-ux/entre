@@ -790,6 +790,22 @@ function normalizeCommentModeStructuralPayload(payload = {}, { storageKey = '' }
   };
 }
 
+function commentModeStructuralPayloadHasContent(payload = {}) {
+  const normalized = normalizeCommentModeStructuralPayload(payload);
+  if (normalized.fragments.length) return true;
+  if (normalized.codes.length) return true;
+  if (normalized.codeProposals.length) return true;
+  if (normalized.hypotheses.length) return true;
+  if (normalized.hypothesisEvolutionLinks.length) return true;
+  if (normalized.hypothesisCrossModeIdentities.length) return true;
+  if (normalized.hypothesisTopology.length) return true;
+  if (Object.keys(normalized.codeMapLayoutsByHypothesis || {}).length) return true;
+  if (Object.keys(normalized.codeMapAnalysisSessions || {}).length) return true;
+  if (Object.keys(normalized.codeMapVisualProfilesByScope || {}).length) return true;
+  if (Object.keys(normalized.hypothesisMapLayout || {}).length) return true;
+  return false;
+}
+
 function commentStoreTimestamp(value) {
   if (value == null || value === '') return 0;
   const timestamp = Date.parse(String(value));
@@ -1129,7 +1145,7 @@ async function readCommentModeStructuralState(userId, storageKey) {
   const row = rows[0] || null;
   if (row) {
     const normalizedPayload = normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {}), { storageKey: parsedKey.storageKey });
-    if (normalizedPayload.hypotheses.length || normalizedPayload.hypothesisEvolutionLinks.length) return normalizedPayload;
+    if (commentModeStructuralPayloadHasContent(normalizedPayload)) return normalizedPayload;
   }
   return rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey);
 }
