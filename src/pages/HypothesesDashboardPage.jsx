@@ -384,13 +384,17 @@ const HypothesesDashboardPage = () => {
     const onMove = (moveEvent) => {
       const deltaX = (moveEvent.clientX - startX) / (hypothesisMapZoom || 1);
       const deltaY = (moveEvent.clientY - startY) / (hypothesisMapZoom || 1);
-      setHypothesisMapLayoutById((prev) => ({
-        ...prev,
-        [id]: {
-          x: Math.max(12, Math.round(startNodeX + deltaX)),
-          y: Math.max(12, Math.round(startNodeY + deltaY)),
-        },
-      }));
+      setHypothesisMapLayoutById((prev) => {
+        const nextLayout = {
+          ...prev,
+          [id]: {
+            x: Math.max(12, Math.round(startNodeX + deltaX)),
+            y: Math.max(12, Math.round(startNodeY + deltaY)),
+          },
+        };
+        hypothesisMapLayoutRef.current = nextLayout;
+        return nextLayout;
+      });
     };
 
     const onUp = () => {
