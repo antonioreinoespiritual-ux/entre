@@ -682,6 +682,7 @@ const HypothesesDashboardPage = () => {
           }}
           getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: ${childHypotheses.length}`}
           initialLayout={hypothesisMapSessionSeed}
+          persistFullVisibleLayout
           persistLayout={(nextLayout) => {
             const normalizedNextLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
             setHypothesisMapLayout((previousLayout) => {

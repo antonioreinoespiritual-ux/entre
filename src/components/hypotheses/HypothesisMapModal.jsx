@@ -29,6 +29,7 @@ export function HypothesisMapModal({
   getNodeMetaLabel,
   persistLayout,
   initialLayout = EMPTY_LAYOUT,
+  persistFullVisibleLayout = false,
   emptyStateText = 'No hay hipótesis para los filtros aplicados.',
   emptyWorkspaceText = 'No hay hipótesis en este workspace todavía.',
 }) {
@@ -145,6 +146,27 @@ export function HypothesisMapModal({
       y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 180),
     };
   }), [layoutById, visibleHypotheses]);
+
+  useEffect(() => {
+    if (!open || !persistFullVisibleLayout || !nodes.length) return;
+    const baseLayout = layoutRef.current && typeof layoutRef.current === 'object' ? layoutRef.current : {};
+    const completeLayout = { ...baseLayout };
+    let hasMissingCoordinates = false;
+
+    nodes.forEach((node) => {
+      const current = completeLayout[node.id];
+      const currentX = Number(current?.x);
+      const currentY = Number(current?.y);
+      if (Number.isFinite(currentX) && Number.isFinite(currentY)) return;
+      completeLayout[node.id] = { x: Number(node.x) || 0, y: Number(node.y) || 0 };
+      hasMissingCoordinates = true;
+    });
+
+    if (!hasMissingCoordinates) return;
+    layoutRef.current = completeLayout;
+    setLayoutById(completeLayout);
+    persistCurrentLayout(completeLayout);
+  }, [open, persistFullVisibleLayout, nodes]);
 
   const visibleIdSet = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
   const edges = useMemo(() => nodes
