@@ -476,6 +476,20 @@ const HypothesesDashboardPage = () => {
             <h2 className="text-xl font-semibold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-purple-600" />Hipótesis</h2>
             <div className="flex items-center gap-2">
               <Button className="bg-purple-600 text-white" onClick={() => { setShowForm((v) => !v); cancelEdit(); }}><Plus className="w-4 h-4 mr-2" />Crear hipótesis</Button>
+              <details className="relative">
+                <summary className="cursor-pointer list-none rounded-lg border border-transparent px-2 py-2 text-sm font-medium text-slate-700 hover:border-slate-200 hover:bg-slate-50">
+                  Menú
+                </summary>
+                <div className="absolute right-0 z-20 mt-2 w-48 rounded-lg border bg-white p-1 shadow-lg">
+                  <button
+                    type="button"
+                    className="w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                    onClick={() => {}}
+                  >
+                    Mapa de hipótesis
+                  </button>
+                </div>
+              </details>
             </div>
           </div>
 
