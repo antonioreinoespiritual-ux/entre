@@ -59,6 +59,15 @@ const readVideoHypothesisMapLayout = (storageKey = '') => {
   }
 };
 
+const mergeVideoHypothesisMapLayouts = (baseLayout = {}, incomingLayout = {}) => {
+  const base = baseLayout && typeof baseLayout === 'object' ? baseLayout : {};
+  const incoming = incomingLayout && typeof incomingLayout === 'object' ? incomingLayout : {};
+  return {
+    ...base,
+    ...incoming,
+  };
+};
+
 const normalizeHypothesisType = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase();
   return hypothesisTypeOptions.some((option) => option.value === normalized) ? normalized : '';
@@ -655,9 +664,18 @@ const HypothesesDashboardPage = () => {
           getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: ${childHypotheses.length}`}
           initialLayout={hypothesisMapLayout}
           persistLayout={(nextLayout) => {
-            setHypothesisMapLayout(nextLayout && typeof nextLayout === 'object' ? nextLayout : {});
+            const normalizedNextLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
+            setHypothesisMapLayout((previousLayout) => {
+              const mergedLayout = mergeVideoHypothesisMapLayouts(previousLayout, normalizedNextLayout);
+              try {
+                localStorage.setItem(mapLayoutStorageKey, JSON.stringify(mergedLayout));
+              } catch {}
+              return mergedLayout;
+            });
             try {
-              localStorage.setItem(mapLayoutStorageKey, JSON.stringify(nextLayout && typeof nextLayout === 'object' ? nextLayout : {}));
+              const storedLayout = readVideoHypothesisMapLayout(mapLayoutStorageKey);
+              const mergedStoredLayout = mergeVideoHypothesisMapLayouts(storedLayout, normalizedNextLayout);
+              localStorage.setItem(mapLayoutStorageKey, JSON.stringify(mergedStoredLayout));
             } catch {}
           }}
           emptyStateText="No hay hipótesis para los filtros aplicados."
