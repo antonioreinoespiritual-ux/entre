@@ -71,6 +71,7 @@ const CampaignDetailPage = () => {
     return <div className="min-h-screen flex items-center justify-center">Campaign not found</div>;
   }
 
+  const campaignHomePath = `/campaigns/${campaign.id}`;
   const audiencesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/audiences`;
   const hypothesesPath = `/projects/${campaign.project_id}/campaigns/${campaign.id}/hypotheses`;
   const videosLibraryPath = `/projects/${campaign.project_id}/videos`;
@@ -80,7 +81,7 @@ const CampaignDetailPage = () => {
   const chooseMode = (mode) => {
     persistCampaignModeSelection(campaign.id, mode);
     setModeModalOpen(false);
-    if (mode === 'videos') navigate(hypothesesPath);
+    if (mode === 'videos') navigate(campaignHomePath);
     if (mode === 'interviews') navigate(interviewsPath);
     if (mode === 'comments') navigate(commentsPath);
   };
