@@ -258,10 +258,28 @@ const HypothesesDashboardPage = () => {
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
   const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
   const [hypothesisMapLayout, setHypothesisMapLayout] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
+  const [hypothesisMapSessionSeed, setHypothesisMapSessionSeed] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
+  const [hypothesisMapSessionVersion, setHypothesisMapSessionVersion] = useState(0);
 
   useEffect(() => {
-    setHypothesisMapLayout(readVideoHypothesisMapLayout(mapLayoutStorageKey));
-  }, [mapLayoutStorageKey]);
+    const storedLayout = readVideoHypothesisMapLayout(mapLayoutStorageKey);
+    setHypothesisMapLayout(storedLayout);
+    if (!hypothesisMapOpen) {
+      setHypothesisMapSessionSeed(storedLayout);
+    }
+  }, [mapLayoutStorageKey, hypothesisMapOpen]);
+
+  const openHypothesisMap = () => {
+    const storedLayout = readVideoHypothesisMapLayout(mapLayoutStorageKey);
+    const seedLayout = mergeVideoHypothesisMapLayouts(storedLayout, hypothesisMapLayout);
+    setHypothesisMapSessionSeed(seedLayout);
+    setHypothesisMapSessionVersion((current) => current + 1);
+    setHypothesisMapOpen(true);
+  };
+
+  const closeHypothesisMap = () => {
+    setHypothesisMapOpen(false);
+  };
 
   useEffect(() => {
     fetchHypotheses(campaignId);
@@ -501,7 +519,7 @@ const HypothesesDashboardPage = () => {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-purple-600" />Hipótesis</h2>
             <div className="flex items-center gap-2">
-              <Button className="bg-white border text-slate-700" onClick={() => setHypothesisMapOpen(true)}><Network className="w-4 h-4 mr-2" />Mapa de hipótesis</Button>
+              <Button className="bg-white border text-slate-700" onClick={openHypothesisMap}><Network className="w-4 h-4 mr-2" />Mapa de hipótesis</Button>
               <Button className="bg-purple-600 text-white" onClick={() => { setShowForm((v) => !v); cancelEdit(); }}><Plus className="w-4 h-4 mr-2" />Crear hipótesis</Button>
             </div>
           </div>
@@ -641,8 +659,9 @@ const HypothesesDashboardPage = () => {
       </div>
 
         <HypothesisMapModal
+          key={`${mapLayoutStorageKey}:${hypothesisMapSessionVersion}`}
           open={hypothesisMapOpen}
-          onClose={() => setHypothesisMapOpen(false)}
+          onClose={closeHypothesisMap}
           title="Mapa de hipótesis"
           description="Vista de grafo para la jerarquía de hipótesis del Modo Video."
           hypotheses={sortedHypotheses}
@@ -662,7 +681,7 @@ const HypothesesDashboardPage = () => {
             };
           }}
           getNodeMetaLabel={(hypothesis, { parentHypothesis, childHypotheses }) => `Padre: ${parentHypothesis ? (getHypothesisDisplayTitle(parentHypothesis) || parentHypothesis.id) : 'Sin padre'} · Hijas: ${childHypotheses.length}`}
-          initialLayout={hypothesisMapLayout}
+          initialLayout={hypothesisMapSessionSeed}
           persistLayout={(nextLayout) => {
             const normalizedNextLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
             setHypothesisMapLayout((previousLayout) => {
