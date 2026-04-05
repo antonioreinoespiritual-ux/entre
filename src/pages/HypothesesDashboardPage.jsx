@@ -58,6 +58,25 @@ const readVideoHypothesisMapLayout = (storageKey = '') => {
   }
 };
 
+const normalizeVideoHypothesisMapLayout = (layout = {}) => {
+  if (!layout || typeof layout !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(layout)
+      .map(([id, point]) => {
+        const x = Number(point?.x);
+        const y = Number(point?.y);
+        if (!String(id || '').trim() || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+        return [String(id).trim(), { x, y }];
+      })
+      .filter(Boolean),
+  );
+};
+
+const mergeVideoHypothesisMapLayout = (baseLayout = {}, incomingLayout = {}) => ({
+  ...normalizeVideoHypothesisMapLayout(baseLayout),
+  ...normalizeVideoHypothesisMapLayout(incomingLayout),
+});
+
 const normalizeHypothesisType = (value = '') => {
   const normalized = String(value || '').trim().toLowerCase();
   return hypothesisTypeOptions.some((option) => option.value === normalized) ? normalized : '';
@@ -250,24 +269,59 @@ const HypothesesDashboardPage = () => {
   const [hypothesisMapZoom, setHypothesisMapZoom] = useState(1);
   const [hypothesisMapPan, setHypothesisMapPan] = useState({ x: 0, y: 0 });
   const [isHypothesisMapPanning, setIsHypothesisMapPanning] = useState(false);
-  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState(() => readVideoHypothesisMapLayout(mapLayoutStorageKey));
+  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState(() => normalizeVideoHypothesisMapLayout(readVideoHypothesisMapLayout(mapLayoutStorageKey)));
   const [draggingHypothesisMapNode, setDraggingHypothesisMapNode] = useState('');
   const [selectedHypothesisMapNode, setSelectedHypothesisMapNode] = useState('');
   const [selectedHypothesisMapEdge, setSelectedHypothesisMapEdge] = useState('');
   const [hypothesisMapFilter, setHypothesisMapFilter] = useState('');
   const hypothesisMapCanvasRef = useRef(null);
   const hypothesisMapLayoutRef = useRef({});
+  const hypothesisMapNodesRef = useRef([]);
 
   useEffect(() => {
-    setHypothesisMapLayoutById(readVideoHypothesisMapLayout(mapLayoutStorageKey));
+    setHypothesisMapLayoutById(normalizeVideoHypothesisMapLayout(readVideoHypothesisMapLayout(mapLayoutStorageKey)));
   }, [mapLayoutStorageKey]);
 
   useEffect(() => {
     hypothesisMapLayoutRef.current = hypothesisMapLayoutById || {};
   }, [hypothesisMapLayoutById]);
 
+  const persistHypothesisMapLayout = (nextLayout, options = {}) => {
+    const preserveExisting = options?.preserveExisting !== false;
+    const normalizedIncoming = normalizeVideoHypothesisMapLayout(nextLayout);
+    const currentLayout = normalizeVideoHypothesisMapLayout(hypothesisMapLayoutRef.current || {});
+    const nextPersistedLayout = preserveExisting
+      ? mergeVideoHypothesisMapLayout(currentLayout, normalizedIncoming)
+      : normalizedIncoming;
+
+    const hasHypotheses = hypothesisMapNodesRef.current.length > 0;
+    if (!Object.keys(nextPersistedLayout).length && hasHypotheses && Object.keys(currentLayout).length) return;
+
+    hypothesisMapLayoutRef.current = nextPersistedLayout;
+    setHypothesisMapLayoutById(nextPersistedLayout);
+    try {
+      localStorage.setItem(mapLayoutStorageKey, JSON.stringify(nextPersistedLayout));
+    } catch {}
+  };
+
+  const buildCompleteHypothesisMapSnapshot = () => {
+    const snapshot = normalizeVideoHypothesisMapLayout(hypothesisMapLayoutRef.current || {});
+    hypothesisMapNodesRef.current.forEach((node) => {
+      const nodeId = String(node?.id || '').trim();
+      if (!nodeId) return;
+      const current = snapshot[nodeId] || {};
+      const currentX = Number(current.x);
+      const currentY = Number(current.y);
+      snapshot[nodeId] = {
+        x: Number.isFinite(currentX) ? currentX : (Number(node.x) || 0),
+        y: Number.isFinite(currentY) ? currentY : (Number(node.y) || 0),
+      };
+    });
+    return snapshot;
+  };
+
   const openHypothesisMap = () => {
-    setHypothesisMapLayoutById(readVideoHypothesisMapLayout(mapLayoutStorageKey));
+    setHypothesisMapLayoutById(normalizeVideoHypothesisMapLayout(readVideoHypothesisMapLayout(mapLayoutStorageKey)));
     setHypothesisMapZoom(1);
     setHypothesisMapPan({ x: 0, y: 0 });
     setHypothesisMapFilter('');
@@ -301,14 +355,6 @@ const HypothesesDashboardPage = () => {
     acc.set(parentId, current);
     return acc;
   }, new Map()), [sortedHypotheses]);
-
-  const persistHypothesisMapLayout = (nextLayout) => {
-    const normalizedLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
-    setHypothesisMapLayoutById(normalizedLayout);
-    try {
-      localStorage.setItem(mapLayoutStorageKey, JSON.stringify(normalizedLayout));
-    } catch {}
-  };
 
   const hypothesisMapFilterOptions = useMemo(
     () => sortedHypotheses.filter((hypothesis) => normalizeHypothesisType(hypothesis?.type) === 'problema'),
@@ -371,6 +417,10 @@ const HypothesesDashboardPage = () => {
   const hypothesisMapRenderableNodesById = useMemo(() => new Map(hypothesisMapNodes.map((node) => [String(node.id), node])), [hypothesisMapNodes]);
 
   useEffect(() => {
+    hypothesisMapNodesRef.current = hypothesisMapNodes || [];
+  }, [hypothesisMapNodes]);
+
+  useEffect(() => {
     if (!hypothesisMapOpen || !hypothesisMapNodes.length) return;
     const snapshot = { ...(hypothesisMapLayoutRef.current || {}) };
     let missingCoordinates = false;
@@ -384,22 +434,8 @@ const HypothesesDashboardPage = () => {
     });
     if (!missingCoordinates) return;
     hypothesisMapLayoutRef.current = snapshot;
-    persistHypothesisMapLayout(snapshot);
+    persistHypothesisMapLayout(snapshot, { preserveExisting: true });
   }, [hypothesisMapOpen, hypothesisMapNodes]);
-
-  const buildCompleteHypothesisMapSnapshot = () => {
-    const snapshot = { ...(hypothesisMapLayoutRef.current || {}) };
-    hypothesisMapNodes.forEach((node) => {
-      const current = snapshot[String(node.id)] || {};
-      const currentX = Number(current.x);
-      const currentY = Number(current.y);
-      snapshot[String(node.id)] = {
-        x: Number.isFinite(currentX) ? currentX : (Number(node.x) || 0),
-        y: Number.isFinite(currentY) ? currentY : (Number(node.y) || 0),
-      };
-    });
-    return snapshot;
-  };
 
   const handleHypothesisMapNodeMouseDown = (event, id) => {
     if (event.button !== 0) return;
@@ -469,6 +505,11 @@ const HypothesesDashboardPage = () => {
     persistHypothesisMapLayout(buildCompleteHypothesisMapSnapshot());
     setHypothesisMapOpen(false);
   };
+
+  useEffect(() => () => {
+    if (!hypothesisMapOpen) return;
+    persistHypothesisMapLayout(buildCompleteHypothesisMapSnapshot());
+  }, [hypothesisMapOpen, mapLayoutStorageKey]);
 
   useEffect(() => {
     let cancelled = false;
