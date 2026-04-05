@@ -46,6 +46,7 @@ export function HypothesisMapModal({
   useEffect(() => {
     if (draggingNode) return;
     const normalizedLayout = initialLayout && typeof initialLayout === 'object' ? initialLayout : EMPTY_LAYOUT;
+    layoutRef.current = normalizedLayout;
     setLayoutById((previousLayout) => (previousLayout === normalizedLayout ? previousLayout : normalizedLayout));
   }, [draggingNode, initialLayout]);
 
@@ -138,13 +139,17 @@ export function HypothesisMapModal({
     const onMove = (moveEvent) => {
       const deltaX = (moveEvent.clientX - startX) / (zoom || 1);
       const deltaY = (moveEvent.clientY - startY) / (zoom || 1);
-      setLayoutById((prev) => ({
-        ...prev,
-        [id]: {
-          x: Math.max(12, Math.round(startNodeX + deltaX)),
-          y: Math.max(12, Math.round(startNodeY + deltaY)),
-        },
-      }));
+      setLayoutById((prev) => {
+        const nextLayout = {
+          ...prev,
+          [id]: {
+            x: Math.max(12, Math.round(startNodeX + deltaX)),
+            y: Math.max(12, Math.round(startNodeY + deltaY)),
+          },
+        };
+        layoutRef.current = nextLayout;
+        return nextLayout;
+      });
     };
     const onUp = () => {
       setDraggingNode('');
