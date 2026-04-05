@@ -161,7 +161,7 @@ export function HypothesisMapModal({
     const isOpening = open && !wasOpenRef.current;
     const contextChanged = hydratedContextRef.current !== mapContextKey;
 
-    if (isOpening || contextChanged) {
+    if (isOpening || (open && contextChanged)) {
       // Read the persisted snapshot at the moment this effect runs.
       // Using a ref ensures we always get the latest value without re-triggering
       // the effect on every drag-save that updates initialLayout in the parent.
