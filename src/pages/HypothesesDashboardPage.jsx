@@ -3,6 +3,7 @@ import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Brain, Edit, Gauge, Lightbulb, MoreHorizontal, Plus, Save, Trash2, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import HypothesisMapModal from '@/components/hypotheses/HypothesisMapModal';
 import { useHypotheses } from '@/contexts/HypothesisContext';
 import { listActiveEvolutionLinksForDestinationMode, markHypothesisEvolutionLinksDeleted } from '@/modules/comments/services/hypothesisEvolutionService';
 
@@ -234,12 +235,34 @@ const HypothesesDashboardPage = () => {
   const [validationFilter, setValidationFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
+  const [headerTextMenuOpen, setHeaderTextMenuOpen] = useState(false);
+  const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
+  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState({});
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
+
+  const hypothesisMapStorageKey = useMemo(
+    () => `video:hypothesis-map-layout:${String(projectId || 'no-project')}:${String(campaignId || 'no-campaign')}`,
+    [projectId, campaignId],
+  );
 
   useEffect(() => {
     fetchHypotheses(campaignId);
   }, [campaignId, fetchHypotheses]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(hypothesisMapStorageKey);
+      if (!raw) {
+        setHypothesisMapLayoutById({});
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      setHypothesisMapLayoutById(parsed && typeof parsed === 'object' ? parsed : {});
+    } catch {
+      setHypothesisMapLayoutById({});
+    }
+  }, [hypothesisMapStorageKey]);
 
   const sortedHypotheses = useMemo(() => [...(hypotheses || [])].sort((left, right) => {
     const leftScore = Number(left?.hypothesis_score);
@@ -377,6 +400,24 @@ const HypothesesDashboardPage = () => {
     });
   }, [sortedHypotheses, searchTerm, statusFilter, validationFilter]);
 
+  const persistHypothesisMapLayout = (nextLayout) => {
+    const normalizedLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
+    setHypothesisMapLayoutById(normalizedLayout);
+    try {
+      localStorage.setItem(hypothesisMapStorageKey, JSON.stringify(normalizedLayout));
+    } catch {
+      // noop
+    }
+  };
+
+  const hypothesisMapStatusStyle = (hypothesis) => {
+    const rawStatus = getHypothesisRawStatus(hypothesis);
+    const validated = isValidatedStatus(rawStatus);
+    return validated
+      ? { label: 'VALIDADA', color: '#065f46', backgroundColor: '#d1fae5' }
+      : { label: 'NO VALIDADA', color: '#991b1b', backgroundColor: '#fee2e2' };
+  };
+
   const createAllowedParents = (currentType, editingId = '') => {
     const requiredParentType = parentTypeByChild[normalizeHypothesisType(currentType)] || '';
     if (!requiredParentType) return [];
@@ -476,20 +517,29 @@ const HypothesesDashboardPage = () => {
             <h2 className="text-xl font-semibold flex items-center gap-2"><Lightbulb className="w-5 h-5 text-purple-600" />Hipótesis</h2>
             <div className="flex items-center gap-2">
               <Button className="bg-purple-600 text-white" onClick={() => { setShowForm((v) => !v); cancelEdit(); }}><Plus className="w-4 h-4 mr-2" />Crear hipótesis</Button>
-              <details className="relative">
-                <summary className="cursor-pointer list-none rounded-lg border border-transparent px-2 py-2 text-sm font-medium text-slate-700 hover:border-slate-200 hover:bg-slate-50">
+              <div className="relative">
+                <button
+                  type="button"
+                  className="rounded-lg border border-transparent px-2 py-2 text-sm font-medium text-slate-700 hover:border-slate-200 hover:bg-slate-50"
+                  onClick={() => setHeaderTextMenuOpen((prev) => !prev)}
+                >
                   Menú
-                </summary>
-                <div className="absolute right-0 z-20 mt-2 w-48 rounded-lg border bg-white p-1 shadow-lg">
-                  <button
-                    type="button"
-                    className="w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
-                    onClick={() => {}}
-                  >
-                    Mapa de hipótesis
-                  </button>
-                </div>
-              </details>
+                </button>
+                {headerTextMenuOpen ? (
+                  <div className="absolute right-0 z-20 mt-2 w-48 rounded-lg border bg-white p-1 shadow-lg">
+                    <button
+                      type="button"
+                      className="w-full rounded-md px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                      onClick={() => {
+                        setHeaderTextMenuOpen(false);
+                        setHypothesisMapOpen(true);
+                      }}
+                    >
+                      Mapa de hipótesis
+                    </button>
+                  </div>
+                ) : null}
+              </div>
             </div>
           </div>
 
@@ -625,6 +675,25 @@ const HypothesesDashboardPage = () => {
             </div>
           )}
         </div>
+      <HypothesisMapModal
+        open={hypothesisMapOpen}
+        onClose={() => setHypothesisMapOpen(false)}
+        hypotheses={filteredHypotheses}
+        title="Mapa de hipótesis"
+        description="Vista de grafo para la jerarquía de hipótesis en Modo Video."
+        getHypothesisId={(hypothesis) => String(hypothesis?.id || '').trim()}
+        getHypothesisTitle={(hypothesis) => getHypothesisDisplayTitle(hypothesis) || 'Sin título'}
+        getParentId={(hypothesis) => getParentHypothesisId(hypothesis)}
+        getType={(hypothesis) => normalizeHypothesisType(hypothesis?.type)}
+        getTypeLabel={(value) => hypothesisTypeLabel(value)}
+        getStatus={(hypothesis) => getHypothesisRawStatus(hypothesis)}
+        getStatusStyle={(hypothesis) => hypothesisMapStatusStyle(hypothesis)}
+        persistLayout={persistHypothesisMapLayout}
+        initialLayout={hypothesisMapLayoutById}
+        persistFullVisibleLayout
+        emptyStateText="No hay hipótesis para los filtros aplicados."
+        emptyWorkspaceText="No hay hipótesis en este modo todavía."
+      />
       </div>
         <div className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 ${deleteEvolutionModal.open ? '' : 'pointer-events-none hidden'}`}>
           <div className="w-full max-w-lg rounded-2xl border bg-white p-6 shadow-2xl">
