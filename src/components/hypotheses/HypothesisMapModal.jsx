@@ -42,6 +42,7 @@ export function HypothesisMapModal({
   const [filterId, setFilterId] = useState('');
   const canvasRef = useRef(null);
   const layoutRef = useRef({});
+  const persistDebounceRef = useRef(null);
 
   useEffect(() => {
     if (draggingNode) return;
@@ -53,6 +54,12 @@ export function HypothesisMapModal({
   useEffect(() => {
     layoutRef.current = layoutById || {};
   }, [layoutById]);
+
+  useEffect(() => () => {
+    if (!persistDebounceRef.current) return;
+    clearTimeout(persistDebounceRef.current);
+    persistDebounceRef.current = null;
+  }, []);
 
   const normalizedHypotheses = useMemo(() => hypotheses.map((hypothesis) => ({
     raw: hypothesis,
@@ -124,6 +131,16 @@ export function HypothesisMapModal({
     if (typeof persistLayout === 'function') persistLayout(nextLayout && typeof nextLayout === 'object' ? nextLayout : {});
   };
 
+  const schedulePersistLayout = (nextLayout) => {
+    if (persistDebounceRef.current) {
+      clearTimeout(persistDebounceRef.current);
+    }
+    persistDebounceRef.current = setTimeout(() => {
+      persistCurrentLayout(nextLayout);
+      persistDebounceRef.current = null;
+    }, 150);
+  };
+
   const handleNodeMouseDown = (event, id) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -148,11 +165,16 @@ export function HypothesisMapModal({
           },
         };
         layoutRef.current = nextLayout;
+        schedulePersistLayout(nextLayout);
         return nextLayout;
       });
     };
     const onUp = () => {
       setDraggingNode('');
+      if (persistDebounceRef.current) {
+        clearTimeout(persistDebounceRef.current);
+        persistDebounceRef.current = null;
+      }
       persistCurrentLayout(layoutRef.current);
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
