@@ -402,12 +402,15 @@ const HypothesesDashboardPage = () => {
 
   const persistHypothesisMapLayout = (nextLayout) => {
     const normalizedLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
-    setHypothesisMapLayoutById(normalizedLayout);
-    try {
-      localStorage.setItem(hypothesisMapStorageKey, JSON.stringify(normalizedLayout));
-    } catch {
-      // noop
-    }
+    setHypothesisMapLayoutById((previousLayout) => {
+      const mergedLayout = { ...(previousLayout && typeof previousLayout === 'object' ? previousLayout : {}), ...normalizedLayout };
+      try {
+        localStorage.setItem(hypothesisMapStorageKey, JSON.stringify(mergedLayout));
+      } catch {
+        // noop
+      }
+      return mergedLayout;
+    });
   };
 
   const hypothesisMapStatusStyle = (hypothesis) => {
