@@ -206,6 +206,19 @@ const parseThresholdValue = (hypothesis) => {
   return parsed ? Number(parsed[2]) : 0;
 };
 
+const readVideoHypothesisMapLayout = (storageKey) => {
+  const normalizedKey = String(storageKey || '').trim();
+  if (!normalizedKey) return {};
+  try {
+    const raw = localStorage.getItem(normalizedKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
 const HypothesisFormFields = ({ form, setForm, projectId, availableParents = [], requiredParentType = '', allowedChildType = '' }) => (
   <>
     <div><label className="block text-sm font-medium mb-1">Project ID</label><input disabled className="w-full rounded-lg border p-2 bg-gray-100" value={projectId} /></div>
@@ -227,6 +240,10 @@ const HypothesesDashboardPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
   const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis, deleteHypothesis } = useHypotheses();
+  const hypothesisMapStorageKey = useMemo(
+    () => `video:hypothesis-map-layout:${String(projectId || 'no-project')}:${String(campaignId || 'no-campaign')}`,
+    [projectId, campaignId],
+  );
   const [showForm, setShowForm] = useState(false);
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
@@ -237,31 +254,16 @@ const HypothesesDashboardPage = () => {
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
   const [headerTextMenuOpen, setHeaderTextMenuOpen] = useState(false);
   const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
-  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState({});
+  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState(() => readVideoHypothesisMapLayout(hypothesisMapStorageKey));
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
-
-  const hypothesisMapStorageKey = useMemo(
-    () => `video:hypothesis-map-layout:${String(projectId || 'no-project')}:${String(campaignId || 'no-campaign')}`,
-    [projectId, campaignId],
-  );
 
   useEffect(() => {
     fetchHypotheses(campaignId);
   }, [campaignId, fetchHypotheses]);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(hypothesisMapStorageKey);
-      if (!raw) {
-        setHypothesisMapLayoutById({});
-        return;
-      }
-      const parsed = JSON.parse(raw);
-      setHypothesisMapLayoutById(parsed && typeof parsed === 'object' ? parsed : {});
-    } catch {
-      setHypothesisMapLayoutById({});
-    }
+    setHypothesisMapLayoutById(readVideoHypothesisMapLayout(hypothesisMapStorageKey));
   }, [hypothesisMapStorageKey]);
 
   const sortedHypotheses = useMemo(() => [...(hypotheses || [])].sort((left, right) => {
@@ -403,15 +405,18 @@ const HypothesesDashboardPage = () => {
   const persistHypothesisMapLayout = (nextLayout) => {
     const normalizedLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
     setHypothesisMapLayoutById((previousLayout) => {
-      const mergedLayout = { ...(previousLayout && typeof previousLayout === 'object' ? previousLayout : {}), ...normalizedLayout };
-      try {
-        localStorage.setItem(hypothesisMapStorageKey, JSON.stringify(mergedLayout));
-      } catch {
-        // noop
-      }
-      return mergedLayout;
+      const safePreviousLayout = previousLayout && typeof previousLayout === 'object' ? previousLayout : {};
+      return { ...safePreviousLayout, ...normalizedLayout };
     });
   };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(hypothesisMapStorageKey, JSON.stringify(hypothesisMapLayoutById && typeof hypothesisMapLayoutById === 'object' ? hypothesisMapLayoutById : {}));
+    } catch {
+      // noop
+    }
+  }, [hypothesisMapLayoutById, hypothesisMapStorageKey]);
 
   const hypothesisMapStatusStyle = (hypothesis) => {
     const rawStatus = getHypothesisRawStatus(hypothesis);
