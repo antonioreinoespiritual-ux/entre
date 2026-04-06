@@ -208,7 +208,6 @@ function createTemplateBannerPlugin() {
 // Visual tooling is explicitly opt-in to keep dev/build startup stable.
 
 export default defineConfig(({ command }) => {
-  const isServe = command === 'serve';
   // Keep config resolution synchronous so `npm run dev` does not pay async/dynamic-import overhead on every startup.
   const enableVisualEditor = false;
   const enableHorizonDevOverlay = false;
@@ -240,12 +239,31 @@ export default defineConfig(({ command }) => {
         'Cross-Origin-Embedder-Policy': 'credentialless',
       },
       allowedHosts: true,
+      watch: {
+        // Restrict chokidar to only directories relevant to the frontend.
+        // Without this, Vite watches backend/, plugins/, tools/, tests/ —
+        // wasting inotify instances and generating HMR noise on every
+        // server-side file change. Each watched dir = 1 inotify instance;
+        // the system default limit (128) gets exhausted quickly when
+        // git, npm, and vite run concurrently, causing >10s lags.
+        ignored: [
+          '**/node_modules/**',
+          '**/.git/**',
+          '**/backend/**',
+          '**/plugins/**',
+          '**/tools/**',
+          '**/tests/**',
+        ],
+      },
     },
     resolve: {
       extensions: ['.jsx', '.js', '.tsx', '.ts', '.json'],
       alias: {
         '@': path.resolve(__dirname, './src'),
       },
+    },
+    optimizeDeps: {
+      exclude: ['@babel/parser', '@babel/traverse', '@babel/generator', '@babel/types'],
     },
     build: {
       rollupOptions: {
