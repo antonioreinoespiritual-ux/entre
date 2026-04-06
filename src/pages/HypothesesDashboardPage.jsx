@@ -678,7 +678,7 @@ const HypothesesDashboardPage = () => {
       <HypothesisMapModal
         open={hypothesisMapOpen}
         onClose={() => setHypothesisMapOpen(false)}
-        hypotheses={filteredHypotheses}
+        hypotheses={sortedHypotheses}
         title="Mapa de hipótesis"
         description="Vista de grafo para la jerarquía de hipótesis en Modo Video."
         getHypothesisId={(hypothesis) => String(hypothesis?.id || '').trim()}
