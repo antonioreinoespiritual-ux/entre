@@ -252,6 +252,21 @@ const requestBackend = async (path, options = {}) => {
   throw new Error(lastError?.message || 'No se pudo conectar al backend del modo comentarios.');
 };
 
+const isIdbStructuralError = (error) => {
+  // Only reset the DB for schema/version errors where the DB itself is
+  // unrecoverable.  Timeouts and transient errors must NOT destroy data.
+  if (!error) return false;
+  const name = error?.name || '';
+  const msg = String(error?.message || '');
+  return (
+    name === 'VersionError' ||
+    name === 'InvalidStateError' ||
+    msg.includes('VersionError') ||
+    msg.includes('upgrade needed') ||
+    msg.includes('object store was deleted')
+  );
+};
+
 const readCachedCommentsModeStore = async (storageKey) => {
   if (!storageKey || typeof window === 'undefined' || !window.indexedDB) return null;
   try {
@@ -261,8 +276,14 @@ const readCachedCommentsModeStore = async (storageKey) => {
     const value = await withTimeout(runIdbRequest(store.get(storageKey)), idbRequestTimeoutMs, 'IndexedDB read');
     db.close();
     return value || null;
-  } catch {
-    await resetCommentsModeIndexedDb();
+  } catch (error) {
+    if (isIdbStructuralError(error)) {
+      console.warn('[IDB] Structural schema error — resetting database:', error?.message);
+      await resetCommentsModeIndexedDb();
+    } else {
+      // Timeouts, blocked connections, transient errors: log but keep data intact.
+      console.warn('[IDB] Transient read error (no data destroyed):', error?.message);
+    }
     return null;
   }
 };
@@ -278,8 +299,13 @@ const writeCachedCommentsModeStore = async (storageKey, payload) => {
     const store = tx.objectStore(STORE_NAME);
     await withTimeout(runIdbRequest(store.put(mergedPayload, storageKey)), idbRequestTimeoutMs, 'IndexedDB write');
     db.close();
-  } catch {
-    await resetCommentsModeIndexedDb();
+  } catch (error) {
+    if (isIdbStructuralError(error)) {
+      console.warn('[IDB] Structural schema error on write — resetting database:', error?.message);
+      await resetCommentsModeIndexedDb();
+    } else {
+      console.warn('[IDB] Transient write error (no data destroyed):', error?.message);
+    }
   }
   return mergedPayload;
 };
