@@ -667,6 +667,19 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
       operation: 'insert',
       payload: { campaign_id: campaign[0].id, type: 'B', condition: 'views > 0' },
     });
+    // audience_id ahora tiene foreign key real hacia audiences(id) (ver
+    // auditoria F-08), asi que estos vinculos necesitan audiencias reales
+    // en vez de strings inventados.
+    const audienceB = await api(baseUrl, token, {
+      table: 'audiences',
+      operation: 'insert',
+      payload: { campaign_id: campaign[0].id, name: 'Audience B' },
+    });
+    const audienceRoute = await api(baseUrl, token, {
+      table: 'audiences',
+      operation: 'insert',
+      payload: { campaign_id: campaign[0].id, name: 'Audience Route' },
+    });
 
     const created = await api(baseUrl, token, {
       table: 'videos',
@@ -730,12 +743,12 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        audience_id: 'aud-b',
+        audience_id: audienceB[0].id,
       }),
     });
     assert.equal(contextPatchRes.status, 200);
     const contextPatchJson = await contextPatchRes.json();
-    assert.equal(contextPatchJson.video.audience_id, 'aud-b');
+    assert.equal(contextPatchJson.video.audience_id, audienceB[0].id);
     assert.equal(contextPatchJson.video.views, 777);
 
 
@@ -748,12 +761,12 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
       body: JSON.stringify({
         hypothesis_id: hypothesisB[0].id,
         video_id: videoId,
-        audience_id: 'aud-route',
+        audience_id: audienceRoute[0].id,
       }),
     });
     assert.equal(hypothesisAudienceRes.status, 200);
     const hypothesisAudienceJson = await hypothesisAudienceRes.json();
-    assert.equal(hypothesisAudienceJson.data.audience_id, 'aud-route');
+    assert.equal(hypothesisAudienceJson.data.audience_id, audienceRoute[0].id);
 
     const forbiddenContextRes = await fetch(`${baseUrl}/api/hypotheses/${hypothesisB[0].id}/videos/${videoId}`, {
       method: 'PATCH',
@@ -762,7 +775,7 @@ test('patch /api/videos/:id updates global editable fields and keeps hypothesis 
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        audience_id: 'aud-b2',
+        audience_id: audienceB[0].id,
         views: 999,
       }),
     });
