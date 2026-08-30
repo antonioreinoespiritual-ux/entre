@@ -15,6 +15,20 @@ import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypot
 import { buildLegacyIdentityRecords, buildLegacyTopologyRecords, collectLegacyEvolutionLinks, normalizeLegacyCommentHypothesis } from '../../shared/hypothesisLegacyCompat.js';
 
 
+// Sin esto, un error no controlado tumba el proceso con un stack trace
+// generico y sin aviso (y con el, todas las sesiones en memoria -- ver
+// auditoria F-09). El proceso ya no es seguro para seguir despues de una
+// excepcion no controlada, asi que se loguea con contexto y se sale con
+// codigo de error para que quede claro en los logs por que se detuvo.
+process.on('uncaughtException', (error) => {
+  console.error('[uncaughtException] El backend se va a detener:', error);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] El backend se va a detener:', reason);
+  process.exit(1);
+});
+
 const envSource = loadBackendEnv();
 
 try {
@@ -260,6 +274,21 @@ const schemaSql = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)',
   'CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)',
+  `CREATE TABLE IF NOT EXISTS video_hypothesis_map_layouts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    storage_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, storage_key)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_video_hypothesis_map_layouts_scope ON video_hypothesis_map_layouts(user_id, project_id, campaign_id)',
   `CREATE TABLE IF NOT EXISTS hypothesis_analysis_runs (
     id TEXT PRIMARY KEY,
     hypothesis_id TEXT NOT NULL,
@@ -1045,15 +1074,14 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
   const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
   const now = nowIso();
 
-  await pool.query('BEGIN IMMEDIATE');
-  try {
-    const [existingRows] = await pool.query(
+  await pool.withTransaction(async (query) => {
+    const [existingRows] = await query(
       'SELECT id, created_at FROM comment_mode_states WHERE user_id = ? AND storage_key = ? LIMIT 1',
       [userId, parsedKey.storageKey],
     );
     const stateId = existingRows[0]?.id || buildEntityId('comment_workspace', 'cms_');
     const createdAt = existingRows[0]?.created_at || now;
-    await pool.query(
+    await query(
       `INSERT INTO comment_mode_states (id, user_id, project_id, campaign_id, workspace_id, storage_key, payload_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id, storage_key) DO UPDATE SET
@@ -1065,14 +1093,14 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
       [stateId, userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, JSON.stringify(normalizedPayload), createdAt, now],
     );
 
-    await pool.query('DELETE FROM comment_mode_hypothesis_profiles WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
-    await pool.query('DELETE FROM comment_mode_evolution_links WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
-    await pool.query('DELETE FROM comment_mode_hypotheses WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await query('DELETE FROM comment_mode_hypothesis_profiles WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await query('DELETE FROM comment_mode_evolution_links WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await query('DELETE FROM comment_mode_hypotheses WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
 
     for (const hypothesis of normalizedPayload.hypotheses) {
       const hypothesisId = String(hypothesis?.id || '').trim();
       if (!hypothesisId) continue;
-      await pool.query(
+      await query(
         `INSERT INTO comment_mode_hypotheses (id, hypothesis_id, user_id, project_id, campaign_id, workspace_id, storage_key, lineage_id, parent_hypothesis_id, validation_status, payload_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -1094,7 +1122,7 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
 
       const linkedProfileIds = Array.isArray(hypothesis?.linked_profile_ids) ? hypothesis.linked_profile_ids : [];
       for (const profileId of linkedProfileIds.map((value) => String(value || '').trim()).filter(Boolean)) {
-        await pool.query(
+        await query(
           `INSERT OR IGNORE INTO comment_mode_hypothesis_profiles (id, user_id, project_id, campaign_id, workspace_id, storage_key, hypothesis_id, profile_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [buildEntityId('comment_workspace', 'cmp_'), userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, hypothesisId, profileId, now, now],
@@ -1105,7 +1133,7 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
     for (const link of normalizedPayload.hypothesisEvolutionLinks) {
       const linkId = String(link?.id || `${link?.source_hypothesis_id || ''}:${link?.destination_mode || ''}:${link?.destination_hypothesis_id || ''}`).trim();
       if (!linkId) continue;
-      await pool.query(
+      await query(
         `INSERT INTO comment_mode_evolution_links (id, link_id, user_id, project_id, campaign_id, workspace_id, storage_key, source_hypothesis_id, destination_mode, destination_hypothesis_id, payload_json, deleted_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -1126,12 +1154,7 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
         ],
       );
     }
-
-    await pool.query('COMMIT');
-  } catch (error) {
-    await pool.query('ROLLBACK');
-    throw error;
-  }
+  });
 
   return normalizedPayload;
 }
@@ -2516,6 +2539,209 @@ async function ensureHypothesisVideosVideoForeignKeyTarget() {
   }
 }
 
+// videos.project_id y videos.campaign_id se usan en casi toda query de video
+// pero nunca tuvieron foreign key -- ver auditoria F-02. Sin esto, borrar una
+// campana o un proyecto por otra via deja videos "huerfanos": la fila sigue
+// en la base pero apunta a un id que ya no existe, y desaparece de cualquier
+// navegacion normal (que siempre filtra por project_id/campaign_id).
+async function ensureVideosProjectCampaignForeignKeys() {
+  if (!(await tableExists('videos'))) return;
+
+  const [fkRows] = await pool.query('PRAGMA foreign_key_list(videos)');
+  const hasProjectFk = fkRows.some((row) => String(row.from) === 'project_id');
+  const hasCampaignFk = fkRows.some((row) => String(row.from) === 'campaign_id');
+  if (hasProjectFk && hasCampaignFk) return;
+
+  // Limpiar referencias ya rotas antes de que la nueva constraint las bloquee:
+  // se preserva la fila y todos sus datos, solo se limpia el vinculo roto.
+  await pool.query(
+    `UPDATE videos SET project_id = NULL
+     WHERE project_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = videos.project_id)`,
+  );
+  await pool.query(
+    `UPDATE videos SET campaign_id = NULL
+     WHERE campaign_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM campaigns c WHERE c.id = videos.campaign_id)`,
+  );
+
+  const legacyTableName = `videos_legacy_before_project_campaign_fk_${Date.now()}`;
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE videos RENAME TO ${normalizeIdentifier(legacyTableName)}`);
+    await pool.query(`CREATE TABLE videos (
+      id TEXT PRIMARY KEY,
+      hypothesis_id TEXT,
+      audience_id TEXT,
+      user_id TEXT NOT NULL,
+      video_type TEXT NOT NULL DEFAULT 'organic',
+      title TEXT NOT NULL,
+      url TEXT,
+      external_id TEXT,
+      external_id_type TEXT,
+      hook_texto TEXT,
+      hook_tipo TEXT,
+      cta_texto TEXT,
+      cta_tipo TEXT,
+      creative_id TEXT,
+      contexto_cualitativo TEXT,
+      clicks INTEGER DEFAULT 0,
+      views_profile INTEGER DEFAULT 0,
+      initiatest INTEGER DEFAULT 0,
+      initiate_checkouts INTEGER DEFAULT 0,
+      view_content INTEGER DEFAULT 0,
+      formulario_lead INTEGER DEFAULT 0,
+      purchase INTEGER DEFAULT 0,
+      pico_viewers INTEGER DEFAULT 0,
+      viewers_prom REAL DEFAULT 0,
+      duracion_min REAL DEFAULT 0,
+      nuevos_seguidores INTEGER DEFAULT 0,
+      saves INTEGER DEFAULT 0,
+      organic_piece_type TEXT,
+      views_finish_pct REAL DEFAULT 0,
+      retencion_pct REAL DEFAULT 0,
+      tiempo_prom_seg REAL DEFAULT 0,
+      duracion_seg REAL DEFAULT 0,
+      campaign_id_ref TEXT,
+      ad_set_id TEXT,
+      cpc REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      duracion_del_video_seg REAL DEFAULT 0,
+      views INTEGER DEFAULT 0,
+      engagement REAL DEFAULT 0,
+      likes INTEGER DEFAULT 0,
+      shares INTEGER DEFAULT 0,
+      comments INTEGER DEFAULT 0,
+      funnel TEXT,
+      content_format TEXT,
+      content_objective TEXT,
+      video_score REAL,
+      campaign_id TEXT,
+      project_id TEXT,
+      ad_id TEXT,
+      video_id INTEGER,
+      cloud_folder_id TEXT,
+      metrics_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+      FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+    )`);
+
+    const [oldInfo] = await pool.query(`PRAGMA table_info(${normalizeIdentifier(legacyTableName)})`);
+    const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+    const targetColumns = [
+      'id', 'hypothesis_id', 'audience_id', 'user_id', 'video_type', 'title', 'url', 'external_id', 'external_id_type',
+      'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views_profile',
+      'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'pico_viewers', 'viewers_prom',
+      'duracion_min', 'nuevos_seguidores', 'saves', 'organic_piece_type', 'views_finish_pct', 'retencion_pct',
+      'tiempo_prom_seg', 'duracion_seg', 'campaign_id_ref', 'ad_set_id', 'cpc', 'ctr', 'duracion_del_video_seg', 'views',
+      'engagement', 'likes', 'shares', 'comments', 'funnel', 'content_format', 'content_objective', 'video_score',
+      'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id', 'metrics_json', 'created_at', 'updated_at',
+    ];
+    const selectExpressions = targetColumns.map((column) => {
+      if (oldColumns.has(column)) return normalizeIdentifier(column);
+      if (column === 'created_at' || column === 'updated_at') return `CURRENT_TIMESTAMP AS ${normalizeIdentifier(column)}`;
+      if (column === 'video_type') return `'organic' AS ${normalizeIdentifier(column)}`;
+      if (column === 'title') return `'' AS ${normalizeIdentifier(column)}`;
+      return `NULL AS ${normalizeIdentifier(column)}`;
+    });
+
+    await pool.query(
+      `INSERT INTO videos (${targetColumns.map((column) => normalizeIdentifier(column)).join(', ')})
+       SELECT ${selectExpressions.join(', ')}
+       FROM ${normalizeIdentifier(legacyTableName)}`,
+    );
+
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_campaign_id ON videos(campaign_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)');
+
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTableName)}`);
+  } catch (error) {
+    if (!(await tableExists('videos')) && (await tableExists(legacyTableName))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(legacyTableName)} RENAME TO videos`);
+    }
+    throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
+// hypothesis_videos.audience_id nunca tuvo foreign key -- ver auditoria F-08.
+// Mismo patron de riesgo que F-02, pero sin filas huerfanas conocidas todavia.
+async function ensureHypothesisVideosAudienceForeignKey() {
+  if (!(await tableExists('hypothesis_videos'))) return;
+
+  const [fkRows] = await pool.query('PRAGMA foreign_key_list(hypothesis_videos)');
+  const hasAudienceFk = fkRows.some((row) => String(row.from) === 'audience_id');
+  if (hasAudienceFk) return;
+
+  await pool.query(
+    `UPDATE hypothesis_videos SET audience_id = NULL
+     WHERE audience_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM audiences a WHERE a.id = hypothesis_videos.audience_id)`,
+  );
+
+  const legacyTableName = `hypothesis_videos_legacy_before_audience_fk_${Date.now()}`;
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE hypothesis_videos RENAME TO ${normalizeIdentifier(legacyTableName)}`);
+    await pool.query(`CREATE TABLE hypothesis_videos (
+      id TEXT PRIMARY KEY,
+      hypothesis_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      audience_id TEXT,
+      hook_texto TEXT,
+      hook_tipo TEXT,
+      cta_texto TEXT,
+      cta_tipo TEXT,
+      video_type TEXT DEFAULT 'organic',
+      contexto_cualitativo TEXT,
+      FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+      FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+      UNIQUE(hypothesis_id, video_id)
+    )`);
+
+    const [oldInfo] = await pool.query(`PRAGMA table_info(${normalizeIdentifier(legacyTableName)})`);
+    const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+    const targetColumns = [
+      'id', 'hypothesis_id', 'video_id', 'user_id', 'created_at',
+      'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'video_type', 'contexto_cualitativo',
+    ];
+    const selectExpr = targetColumns.map((col) => {
+      if (oldColumns.has(col)) return normalizeIdentifier(col);
+      if (col === 'created_at') return `CURRENT_TIMESTAMP AS ${normalizeIdentifier(col)}`;
+      if (col === 'video_type') return `'organic' AS ${normalizeIdentifier(col)}`;
+      return `NULL AS ${normalizeIdentifier(col)}`;
+    });
+
+    await pool.query(
+      `INSERT INTO hypothesis_videos (${targetColumns.map((column) => normalizeIdentifier(column)).join(', ')})
+       SELECT ${selectExpr.join(', ')} FROM ${normalizeIdentifier(legacyTableName)}`,
+    );
+
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)');
+
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTableName)}`);
+  } catch (error) {
+    if (!(await tableExists('hypothesis_videos')) && (await tableExists(legacyTableName))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(legacyTableName)} RENAME TO hypothesis_videos`);
+    }
+    throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
 
 async function rebuildInterviewSemanticFragmentsWithNullableDocumentNode() {
   const hasTable = await tableExists('interview_semantic_fragments');
@@ -2801,6 +3027,8 @@ async function ensureVideoHierarchyMigration() {
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
+  await ensureVideosProjectCampaignForeignKeys();
+  await ensureHypothesisVideosAudienceForeignKey();
   const forceCloudReset = String(process.env.RESET_CLOUD_SCHEMA || '').trim() === '1';
   if (forceCloudReset) {
     await pool.query('DROP TABLE IF EXISTS cloud_events');
@@ -7057,21 +7285,21 @@ async function executeCrudQuery(body, currentUserId) {
         }
       }
     }
-    const insertRow = async () => {
+    const insertRow = async (query = pool.query) => {
       const fields = Object.keys(writeRow);
       const placeholders = fields.map(() => '?').join(', ');
-      await pool.query(
+      await query(
         `INSERT INTO ${quotedTable} (${fields.map(normalizeIdentifier).join(', ')}) VALUES (${placeholders})`,
         fields.map((field) => writeRow[field]),
       );
     };
 
-    const assignAutoIdentifiersForVideo = async () => {
+    const assignAutoIdentifiersForVideo = async (query = pool.query) => {
       if (table !== 'videos') return;
 
       if (writeRow.video_id == null || String(writeRow.video_id).trim() === '') {
         const hasProjectScope = String(writeRow.project_id || '').trim() !== '';
-        const [maxRows] = await pool.query(
+        const [maxRows] = await query(
           `SELECT COALESCE(MAX(CASE
             WHEN trim(CAST(video_id AS TEXT)) <> '' AND trim(CAST(video_id AS TEXT)) GLOB '[0-9]*'
             THEN CAST(video_id AS INTEGER)
@@ -7088,13 +7316,13 @@ async function executeCrudQuery(body, currentUserId) {
         const generatedExternalId = autoExternalIdForVideo(writeRow.video_type, writeRow.video_id);
         if (generatedExternalId) {
           if (String(writeRow.project_id || '').trim()) {
-            const [existsRows] = await pool.query(
+            const [existsRows] = await query(
               'SELECT id FROM videos WHERE user_id = ? AND project_id = ? AND external_id = ? LIMIT 1',
               [currentUserId, writeRow.project_id, generatedExternalId],
             );
             if (existsRows.length) {
               const prefix = generatedExternalId.split('-')[0] || 'session';
-              const [maxRows] = await pool.query(
+              const [maxRows] = await query(
                 `SELECT COALESCE(MAX(CASE
                   WHEN external_id LIKE ? AND trim(substr(external_id, instr(external_id, '-') + 1)) GLOB '[0-9]*'
                   THEN CAST(substr(external_id, instr(external_id, '-') + 1) AS INTEGER)
@@ -7117,15 +7345,10 @@ async function executeCrudQuery(body, currentUserId) {
     };
 
     if (table === 'videos') {
-      await pool.query('BEGIN IMMEDIATE');
-      try {
-        await assignAutoIdentifiersForVideo();
-        await insertRow();
-        await pool.query('COMMIT');
-      } catch (error) {
-        await pool.query('ROLLBACK');
-        throw error;
-      }
+      await pool.withTransaction(async (query) => {
+        await assignAutoIdentifiersForVideo(query);
+        await insertRow(query);
+      });
     } else {
       await insertRow();
     }
@@ -8238,6 +8461,64 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
     }
 
 
+
+    if (url.pathname === '/api/video-hypothesis-map/layout' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+      const storageKey = `video-hypothesis-map:${projectId}:${campaignId}`;
+      const [rows] = await pool.query(
+        'SELECT payload_json FROM video_hypothesis_map_layouts WHERE user_id = ? AND storage_key = ? LIMIT 1',
+        [user.id, storageKey],
+      );
+      const payload = rows[0] ? safeParseJsonField(rows[0].payload_json, {}) : {};
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload } });
+    }
+
+    if (url.pathname === '/api/video-hypothesis-map/layout' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const projectId = String(body.projectId || '').trim();
+      const campaignId = String(body.campaignId || '').trim();
+      const incomingPayload = body.payload && typeof body.payload === 'object' ? body.payload : {};
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [campaignRows] = await pool.query(
+        'SELECT id FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+        [campaignId, projectId, user.id],
+      );
+      if (!campaignRows[0]) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      const storageKey = `video-hypothesis-map:${projectId}:${campaignId}`;
+      const now = nowIso();
+      const mergedPayload = await pool.withTransaction(async (query) => {
+        const [existingRows] = await query(
+          'SELECT id, payload_json, created_at FROM video_hypothesis_map_layouts WHERE user_id = ? AND storage_key = ? LIMIT 1',
+          [user.id, storageKey],
+        );
+        const existing = existingRows[0] || null;
+        const basePayload = existing ? safeParseJsonField(existing.payload_json, {}) : {};
+        const merged = mergeCommentStoreObjectMaps(basePayload, incomingPayload);
+        const id = existing?.id || buildEntityId('video_hypothesis_map_layout', 'vhml_');
+        const createdAt = existing?.created_at || now;
+        await query(
+          `INSERT INTO video_hypothesis_map_layouts (id, user_id, project_id, campaign_id, storage_key, payload_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, storage_key) DO UPDATE SET
+             project_id = excluded.project_id,
+             campaign_id = excluded.campaign_id,
+             payload_json = excluded.payload_json,
+             updated_at = excluded.updated_at`,
+          [id, user.id, projectId, campaignId, storageKey, JSON.stringify(merged), createdAt, now],
+        );
+        return merged;
+      });
+
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload: mergedPayload } });
+    }
 
     if (url.pathname === '/api/comment-mode/state' && req.method === 'GET') {
       const user = authFromRequest(req);
@@ -9847,18 +10128,19 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
 
       if (!dryRun) {
         try {
-          await pool.query('BEGIN');
+          await pool.withTransaction(async (query) => {
+            for (const entry of mergedByVideoId.values()) {
+              const setEntries = Object.entries(entry.normalizedFields);
+              if (!setEntries.length) continue;
+              const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+              const values = setEntries.map(([, value]) => value);
+              await query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.matchedVideoId, user.id]);
+            }
+          });
           for (const entry of mergedByVideoId.values()) {
-            const setEntries = Object.entries(entry.normalizedFields);
-            if (!setEntries.length) continue;
-            const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
-            const values = setEntries.map(([, value]) => value);
-            await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.matchedVideoId, user.id]);
             await recalculateVideoModeScoresForVideo(user.id, entry.matchedVideoId);
           }
-          await pool.query('COMMIT');
         } catch (error) {
-          await pool.query('ROLLBACK');
           sendJson(req, res, 500, { error: error?.message || String(error) });
           return;
         }
@@ -9967,15 +10249,10 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       try {
         await purgeVideoCloudArtifacts(user.id, existing.id);
 
-        await pool.query('BEGIN');
-        try {
-          await pool.query('DELETE FROM hypothesis_videos WHERE video_id = ? AND user_id = ?', [existing.id, user.id]);
-          await pool.query('DELETE FROM videos WHERE id = ? AND user_id = ?', [existing.id, user.id]);
-          await pool.query('COMMIT');
-        } catch (dbError) {
-          await pool.query('ROLLBACK');
-          throw dbError;
-        }
+        await pool.withTransaction(async (query) => {
+          await query('DELETE FROM hypothesis_videos WHERE video_id = ? AND user_id = ?', [existing.id, user.id]);
+          await query('DELETE FROM videos WHERE id = ? AND user_id = ?', [existing.id, user.id]);
+        });
 
         await syncCloudForUser(user.id);
         for (const linkedHypothesisId of linkedHypothesisIds) {
@@ -11096,15 +11373,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         return;
       }
 
-      await pool.query('BEGIN IMMEDIATE');
-      try {
-        await pool.query(
+      await pool.withTransaction(async (query) => {
+        await query(
           'UPDATE hypotheses SET campaign_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
           [targetCampaignId, hypothesisId, user.id],
         );
 
         for (const video of videosToMove) {
-          await pool.query(
+          await query(
             'UPDATE videos SET campaign_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
             [targetCampaignId, video.id, user.id],
           );
@@ -11113,12 +11389,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         if (body?.options?.force_fail_for_test) {
           throw new Error('forced_failure_for_test');
         }
-
-        await pool.query('COMMIT');
-      } catch (error) {
-        await pool.query('ROLLBACK');
-        throw error;
-      }
+      });
 
       for (const video of videosToMove) {
         await ensureVideoCanonicalFolder(user.id, { ...video, campaign_id: targetCampaignId }, targetCampaignId);
