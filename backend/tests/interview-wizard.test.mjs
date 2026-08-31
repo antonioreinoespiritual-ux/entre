@@ -164,3 +164,57 @@ test('db query allows interview_hypotheses with user scoping intact', async () =
     assert.equal(selectedByOtherUser.length, 0);
   } finally { server.kill('SIGTERM'); }
 });
+
+test('creating an interview client returns the created record (regression: INSERT column/placeholder mismatch)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-iv-5-'));
+  const baseUrl = 'http://127.0.0.1:4124';
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: '4124', SQLITE_PATH: path.join(dir, 'db.sqlite') } });
+  try {
+    await waitForHealth(baseUrl);
+    const token = await authed(baseUrl);
+    const { projectId, campaignId, audienceId } = await setup(baseUrl, token);
+    const res = await fetch(`${baseUrl}/api/projects/${projectId}/campaigns/${campaignId}/interviews/clients`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Cliente Nuevo', contact: 'cliente@example.com', audience_id: audienceId }),
+    });
+    assert.equal(res.status, 200);
+    const client = (await res.json()).data;
+    assert.ok(client && client.id, 'la respuesta debe incluir el cliente creado con id');
+    assert.equal(client.name, 'Cliente Nuevo');
+    assert.equal(client.contact, 'cliente@example.com');
+    assert.equal(client.status, 'active');
+  } finally { server.kill('SIGTERM'); }
+});
+
+test('archiving a client persists and reactivating restores it', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-iv-6-'));
+  const baseUrl = 'http://127.0.0.1:4125';
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: '4125', SQLITE_PATH: path.join(dir, 'db.sqlite') } });
+  try {
+    await waitForHealth(baseUrl);
+    const token = await authed(baseUrl);
+    const { projectId, campaignId, audienceId } = await setup(baseUrl, token);
+    const client = await createClient(baseUrl, token, projectId, campaignId, audienceId);
+    assert.equal(client.status, 'active');
+
+    const archiveRes = await fetch(`${baseUrl}/api/interview-clients/${client.id}`, {
+      method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...client, status: 'archived' }),
+    });
+    const archived = (await archiveRes.json()).data;
+    assert.equal(archived.status, 'archived');
+
+    const listRes = await fetch(`${baseUrl}/api/projects/${projectId}/campaigns/${campaignId}/interviews/clients`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const list = (await listRes.json()).data;
+    assert.equal(list.find((c) => c.id === client.id).status, 'archived');
+
+    const reactivateRes = await fetch(`${baseUrl}/api/interview-clients/${client.id}`, {
+      method: 'PUT', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...archived, status: 'active' }),
+    });
+    const reactivated = (await reactivateRes.json()).data;
+    assert.equal(reactivated.status, 'active');
+  } finally { server.kill('SIGTERM'); }
+});

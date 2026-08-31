@@ -333,6 +333,7 @@ const schemaSql = [
     name TEXT NOT NULL,
     contact TEXT,
     notes TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -2146,9 +2147,14 @@ function normalizeInterviewQuestion(question, index = 0) {
     required: Boolean(question?.required),
     options: Array.isArray(question?.options) ? question.options.map((v) => String(v)) : [],
     placeholder: String(question?.placeholder || ''),
+    // El frontend (FormBuilder.jsx / InterviewRunner.jsx) usa campos planos
+    // scale_min_label/scale_max_label, no un objeto scale.{minLabel,maxLabel}.
+    // Mantener ambas formas para no romper a nadie que ya lea `scale`.
+    scale_min_label: String(question?.scale_min_label || question?.scale?.minLabel || ''),
+    scale_max_label: String(question?.scale_max_label || question?.scale?.maxLabel || ''),
     scale: {
-      minLabel: String(question?.scale?.minLabel || ''),
-      maxLabel: String(question?.scale?.maxLabel || ''),
+      minLabel: String(question?.scale_min_label || question?.scale?.minLabel || ''),
+      maxLabel: String(question?.scale_max_label || question?.scale?.maxLabel || ''),
     },
   };
 }
@@ -2743,6 +2749,15 @@ async function ensureHypothesisVideosAudienceForeignKey() {
 }
 
 
+// El frontend ya enviaba { status: 'archived' } al editar un cliente, pero la
+// columna nunca existio -- "Archivar" mostraba un toast de exito sin cambiar
+// nada (ver auditoria de Modo Entrevista, BUG-03).
+async function ensureInterviewClientStatusColumn() {
+  if (!(await tableExists('interview_clients'))) return;
+  if (await hasColumn('interview_clients', 'status')) return;
+  await pool.query("ALTER TABLE interview_clients ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+}
+
 async function rebuildInterviewSemanticFragmentsWithNullableDocumentNode() {
   const hasTable = await tableExists('interview_semantic_fragments');
   if (!hasTable) return;
@@ -3029,6 +3044,7 @@ async function ensureVideoHierarchyMigration() {
   await ensureHypothesisVideosVideoForeignKeyTarget();
   await ensureVideosProjectCampaignForeignKeys();
   await ensureHypothesisVideosAudienceForeignKey();
+  await ensureInterviewClientStatusColumn();
   const forceCloudReset = String(process.env.RESET_CLOUD_SCHEMA || '').trim() === '1';
   if (forceCloudReset) {
     await pool.query('DROP TABLE IF EXISTS cloud_events');
@@ -10538,7 +10554,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const now = nowIso();
       await pool.query(
         `INSERT INTO interview_clients (id, project_id, campaign_id, audience_id, user_id, name, contact, notes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [buildEntityId('interview_client'), projectId, campaignId, body.audience_id || null, user.id, body.name || 'Cliente', body.contact || null, body.notes || null, now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_clients WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
@@ -10555,9 +10571,10 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         return sendJson(req, res, 200, { ok: true });
       }
       const body = await readBody(req);
+      const status = body.status === 'archived' ? 'archived' : 'active';
       await pool.query(
-        'UPDATE interview_clients SET name = ?, contact = ?, notes = ?, audience_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
-        [body.name || 'Cliente', body.contact || null, body.notes || null, body.audience_id || null, nowIso(), id, user.id],
+        'UPDATE interview_clients SET name = ?, contact = ?, notes = ?, audience_id = ?, status = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        [body.name || 'Cliente', body.contact || null, body.notes || null, body.audience_id || null, status, nowIso(), id, user.id],
       );
       const [rows] = await pool.query('SELECT * FROM interview_clients WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
       return sendJson(req, res, 200, { data: rows[0] || null });

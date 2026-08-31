@@ -57,7 +57,6 @@ export const useInterviewCenterData = ({ projectId, campaignId, toast }) => {
   }, [clients, forms, hypotheses, sessions, toast, loadAll]);
 
   const kpis = useMemo(() => {
-    const activeForms = forms.filter((form) => form.status !== 'inactive').length;
     const byAudienceMap = sessions.reduce((acc, session) => {
       const key = session.audience_name || 'Sin audiencia';
       acc[key] = (acc[key] || 0) + 1;
@@ -67,7 +66,7 @@ export const useInterviewCenterData = ({ projectId, campaignId, toast }) => {
     return {
       totalClients: clients.length,
       totalSessions: sessions.length,
-      activeForms,
+      totalForms: forms.length,
       topAudience,
       recentSessions: [...sessions].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 5),
     };

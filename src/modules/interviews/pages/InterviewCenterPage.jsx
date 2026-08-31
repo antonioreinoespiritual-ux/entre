@@ -461,10 +461,15 @@ const InterviewCenterPage = () => {
   };
 
   const createClient = async (payload) => {
-    const created = await interviewsModuleApi.createClient(projectId, campaignId, payload);
-    toast({ title: 'Cliente creado' });
-    await center.reload();
-    return created;
+    try {
+      const created = await interviewsModuleApi.createClient(projectId, campaignId, payload);
+      toast({ title: 'Cliente creado' });
+      await center.reload();
+      return created;
+    } catch (error) {
+      toast({ title: 'No se pudo crear el cliente', description: error.message, variant: 'destructive' });
+      throw error;
+    }
   };
 
   const buildInterviewAllowedParents = useCallback((currentType, editingId = '') => {
@@ -881,6 +886,9 @@ const InterviewCenterPage = () => {
       const created = await interviewsModuleApi.createSession(projectId, campaignId, payload);
       await center.reload();
       return created;
+    } catch (error) {
+      toast({ title: 'No se pudo iniciar la entrevista', description: error.message, variant: 'destructive' });
+      throw error;
     } finally {
       setSaving(false);
     }
@@ -899,6 +907,9 @@ const InterviewCenterPage = () => {
       toast({ title: 'Entrevista guardada' });
       await center.reload();
       return saved;
+    } catch (error) {
+      toast({ title: 'No se pudo finalizar la entrevista', description: error.message, variant: 'destructive' });
+      throw error;
     } finally {
       setSaving(false);
     }
@@ -1379,7 +1390,7 @@ const InterviewCenterPage = () => {
             <div className="grid md:grid-cols-4 gap-3">
               <div className="bg-white border rounded-xl p-4"><p className="text-sm text-slate-500">Total clientes</p><p className="text-2xl font-bold">{center.kpis.totalClients}</p></div>
               <div className="bg-white border rounded-xl p-4"><p className="text-sm text-slate-500">Total entrevistas</p><p className="text-2xl font-bold">{center.kpis.totalSessions}</p></div>
-              <div className="bg-white border rounded-xl p-4"><p className="text-sm text-slate-500">Formularios activos</p><p className="text-2xl font-bold">{center.kpis.activeForms}</p></div>
+              <div className="bg-white border rounded-xl p-4"><p className="text-sm text-slate-500">Formularios</p><p className="text-2xl font-bold">{center.kpis.totalForms}</p></div>
               <div className="bg-white border rounded-xl p-4"><p className="text-sm text-slate-500">Top audiencias</p>{center.kpis.topAudience.map(([name, count]) => <p key={name} className="text-sm">{name}: {count}</p>)}</div>
             </div>
             <div className="bg-white border rounded-xl p-4 space-y-2">
@@ -1429,6 +1440,7 @@ const InterviewCenterPage = () => {
                       <div className="mt-1 flex flex-wrap gap-1.5">
                         <span className="inline-flex rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs text-slate-700">{client.audience_name || 'Sin audiencia'}</span>
                         <span className="inline-flex rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">{client.contact || 'Sin contacto'}</span>
+                        {client.status === 'archived' && <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs text-amber-700">Archivado</span>}
                       </div>
                     </div>
 
@@ -1519,7 +1531,6 @@ const InterviewCenterPage = () => {
                 {!center.forms.length ? <EmptyState title="No hay formularios" description="Crea un formulario para ejecutar entrevistas." action={<Button className="bg-indigo-600 text-white" onClick={openCreateForm}>Crear formulario</Button>} /> : (
                   <div className="space-y-2">
                     {center.forms.map((form) => {
-                      const isActive = (form.status || 'active') === 'active';
                       const hasDescription = Boolean(form.description?.trim());
 
                       return (
@@ -1537,7 +1548,6 @@ const InterviewCenterPage = () => {
                               <p className="text-sm text-slate-500 line-clamp-2">{hasDescription ? form.description : 'Sin descripción'}</p>
                               <div className="flex flex-wrap items-center gap-2 pt-1">
                                 <span className="text-xs px-2 py-1 rounded-full border border-slate-200 bg-slate-50 text-slate-600">{form.questions?.length || 0} preguntas</span>
-                                <span className={`text-xs px-2 py-1 rounded-full border ${isActive ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-slate-100 text-slate-600'}`}>{isActive ? 'activo' : 'inactivo'}</span>
                                 {!hasDescription && <span className="text-xs px-2 py-1 rounded-full border border-amber-200 bg-amber-50 text-amber-700">sin descripción</span>}
                               </div>
                             </div>

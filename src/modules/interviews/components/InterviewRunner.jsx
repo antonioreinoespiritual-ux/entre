@@ -13,6 +13,8 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
   const [sessionId, setSessionId] = useState(null);
   const [completedSessionId, setCompletedSessionId] = useState(null);
   const [leanEvaluation, setLeanEvaluation] = useState({});
+  const [runnerError, setRunnerError] = useState('');
+  const [finishing, setFinishing] = useState(false);
 
   const [draft, setDraft] = useState({
     audience_id: '',
@@ -72,6 +74,7 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
   }, [draft.responses, draft.question_notes, draft.notes, step, sessionId]);
 
   const updateAnswer = (question, value) => {
+    setRunnerError('');
     setDraft((prev) => ({ ...prev, responses: { ...prev.responses, [question.id]: value } }));
   };
 
@@ -79,17 +82,38 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
     setDraft((prev) => ({ ...prev, question_notes: { ...prev.question_notes, [questionId]: value } }));
   };
 
+  const findFirstMissingRequiredIndex = () => questions.findIndex((question) => getRequiredMissing(question, draft.responses[question.id]));
+
   const startGuidedInterview = async () => {
-    const created = await onStartInterview({ ...buildPayload(), status: 'draft' });
-    setSessionId(created.id);
-    setCurrentQuestionIndex(0);
-    setStep(6);
+    setRunnerError('');
+    try {
+      const created = await onStartInterview({ ...buildPayload(), status: 'draft' });
+      setSessionId(created.id);
+      setCurrentQuestionIndex(0);
+      setStep(6);
+    } catch (error) {
+      setRunnerError(error.message || 'No se pudo iniciar la entrevista.');
+    }
   };
 
   const finishInterview = async () => {
-    const completed = await onCompleteInterview(sessionId, { ...buildPayload(), status: 'completed' });
-    setCompletedSessionId(completed.id);
-    setStep(7);
+    setRunnerError('');
+    const missingIndex = findFirstMissingRequiredIndex();
+    if (missingIndex !== -1) {
+      setCurrentQuestionIndex(missingIndex);
+      setRunnerError(`Falta responder: "${questions[missingIndex].title}"`);
+      return;
+    }
+    setFinishing(true);
+    try {
+      const completed = await onCompleteInterview(sessionId, { ...buildPayload(), status: 'completed' });
+      setCompletedSessionId(completed.id);
+      setStep(7);
+    } catch (error) {
+      setRunnerError(error.message || 'No se pudo finalizar la entrevista.');
+    } finally {
+      setFinishing(false);
+    }
   };
 
   const resetAll = () => {
@@ -138,11 +162,17 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
             <input className={inputClass} placeholder="Contacto" value={quickClient.contact} onChange={(e) => setQuickClient((prev) => ({ ...prev, contact: e.target.value }))} />
             <input className={inputClass} placeholder="Notas" value={quickClient.notes} onChange={(e) => setQuickClient((prev) => ({ ...prev, notes: e.target.value }))} />
             <Button className="bg-white border" onClick={async () => {
-              const created = await onCreateClient({ ...quickClient, audience_id: draft.audience_id || null });
-              setDraft((prev) => ({ ...prev, client_id: created.id }));
-              setQuickClient({ name: '', contact: '', notes: '' });
+              setRunnerError('');
+              try {
+                const created = await onCreateClient({ ...quickClient, audience_id: draft.audience_id || null });
+                setDraft((prev) => ({ ...prev, client_id: created.id }));
+                setQuickClient({ name: '', contact: '', notes: '' });
+              } catch (error) {
+                setRunnerError(error.message || 'No se pudo crear el cliente.');
+              }
             }}>Crear cliente rápido</Button>
           </div>
+          {!!runnerError && <p className="text-xs text-red-600 font-medium">{runnerError}</p>}
         </div>
       )}
 
@@ -167,6 +197,7 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
           <p className="text-sm"><b>Formulario:</b> {selectedForm?.title || '—'} · {questions.length} preguntas</p>
           <textarea className={inputClass} rows={3} placeholder="Notas generales de la entrevista" value={draft.notes} onChange={(e) => setDraft((prev) => ({ ...prev, notes: e.target.value }))} />
           <Button className="bg-indigo-600 text-white" onClick={startGuidedInterview} disabled={loading || !draft.client_id || !draft.form_id}>Iniciar entrevista guiada</Button>
+          {!!runnerError && <p className="text-xs text-red-600 font-medium">{runnerError}</p>}
         </div>
       )}
 
@@ -243,14 +274,15 @@ export const InterviewRunner = ({ audiences, clients, forms, hypotheses, onCreat
           </div>
 
           <div className="flex items-center justify-between">
-            <Button className="bg-white border" onClick={() => setCurrentQuestionIndex((prev) => Math.max(0, prev - 1))} disabled={currentQuestionIndex === 0}>Atrás</Button>
+            <Button className="bg-white border" onClick={() => { setRunnerError(''); setCurrentQuestionIndex((prev) => Math.max(0, prev - 1)); }} disabled={currentQuestionIndex === 0}>Atrás</Button>
             <p className={`text-xs ${saveState === 'error' ? 'text-red-600' : 'text-slate-500'}`}>{saveState === 'saving' ? 'Guardando automáticamente…' : saveState === 'saved' ? 'Guardado automático' : saveState === 'error' ? 'Error de guardado' : ''}</p>
             {currentQuestionIndex < questions.length - 1 ? (
-              <Button className="bg-indigo-600 text-white" onClick={() => setCurrentQuestionIndex((prev) => Math.min(questions.length - 1, prev + 1))}>Siguiente</Button>
+              <Button className="bg-indigo-600 text-white" onClick={() => { setRunnerError(''); setCurrentQuestionIndex((prev) => Math.min(questions.length - 1, prev + 1)); }}>Siguiente</Button>
             ) : (
-              <Button className="bg-emerald-600 text-white" onClick={finishInterview} disabled={loading}>Finalizar entrevista</Button>
+              <Button className="bg-emerald-600 text-white" onClick={finishInterview} disabled={loading || finishing}>{finishing ? 'Finalizando…' : 'Finalizar entrevista'}</Button>
             )}
           </div>
+          {!!runnerError && <p className="text-sm text-red-600 font-medium bg-red-50 border border-red-200 rounded-xl px-3 py-2">{runnerError}</p>}
         </div>
       )}
 
