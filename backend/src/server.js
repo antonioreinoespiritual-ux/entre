@@ -9927,7 +9927,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       await pool.query(
         `INSERT INTO interview_semantic_fragments
          (id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           fragment.id,
           fragment.user_id,

@@ -6,3 +6,4 @@ vite.config.js.timestamp-*
 node_modules/.vite
 backend/data/
 backend/backups/
+backend/storage/

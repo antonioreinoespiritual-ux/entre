@@ -68,6 +68,15 @@ const composeClientNotes = (plainNotes = '', profile = emptyClientProfile) => {
 };
 
 
+// Si el backend filtra un error tecnico (SQL, stack trace) en vez de un
+// mensaje de validacion pensado para el usuario, mostrar algo entendible
+// en su lugar en vez del texto crudo.
+const friendlyFragmentError = (error) => {
+  const message = String(error?.message || '');
+  const looksTechnical = /values for|SQLITE|constraint failed|column|syntax error/i.test(message);
+  return looksTechnical ? 'No se pudo guardar el fragmento. Intenta de nuevo en unos segundos.' : (message || 'No se pudo guardar el fragmento.');
+};
+
 const getClientScoreTone = (score, type = 'problem') => {
   if (score == null) return 'border-slate-200 bg-slate-50 text-slate-500';
   if (score >= 4) return type === 'problem' ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-sky-200 bg-sky-50 text-sky-700';
@@ -1074,7 +1083,7 @@ const InterviewCenterPage = () => {
       await loadSemanticCloudFragments();
       toast({ title: 'Fragmento creado', description: 'Se guardó desde selección con trazabilidad y contexto de Cloud.' });
     } catch (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: friendlyFragmentError(error), variant: 'destructive' });
     }
   }, [center.sessions, docReader.document, docReader.selectionRange, docReader.selectionText, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
@@ -1113,7 +1122,7 @@ const InterviewCenterPage = () => {
       await loadSemanticCloudFragments();
       toast({ title: 'Fragmento manual creado' });
     } catch (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: friendlyFragmentError(error), variant: 'destructive' });
     }
   }, [docReader.document, docReader.manualClientId, docReader.manualCode, docReader.manualInterviewId, docReader.manualText, docReader.manualTitle, loadDocumentFragments, loadSemanticCloudFragments, toast]);
 
@@ -1366,7 +1375,7 @@ const InterviewCenterPage = () => {
       await loadSemanticCloudFragments();
       toast({ title: 'Fragmento registrado', description: 'Se guardó en la entidad única de fragmentos.' });
     } catch (error) {
-      toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      toast({ title: 'Error', description: friendlyFragmentError(error), variant: 'destructive' });
     }
   }, [loadSemanticCloudFragments, toast]);
 
@@ -1472,7 +1481,14 @@ const InterviewCenterPage = () => {
                           <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { openClientEditor(client); setClientActionsMenuId(null); }}>Editar</button>
                           <button className="w-full text-left text-sm px-3 py-2 rounded hover:bg-slate-100" onClick={() => { setRunInterviewPrefill({ clientId: client.id, audienceId: client.audience_id || null }); setRunModalOpen(true); setClientActionsMenuId(null); }}>Entrevistar</button>
                           <button className="w-full text-left text-sm px-3 py-2 rounded text-amber-700 hover:bg-amber-50" onClick={() => { center.runMutation(() => interviewsModuleApi.updateClient(client.id, { ...client, status: client.status === 'archived' ? 'active' : 'archived' }), client.status === 'archived' ? 'Cliente reactivado' : 'Cliente archivado'); setClientActionsMenuId(null); }}>{client.status === 'archived' ? 'Reactivar' : 'Archivar'}</button>
-                          <button className="w-full text-left text-sm px-3 py-2 rounded text-red-700 hover:bg-red-50" onClick={() => { center.runMutation(() => interviewsModuleApi.deleteClient(client.id), 'Cliente eliminado'); setClientActionsMenuId(null); }}>Borrar</button>
+                          <button className="w-full text-left text-sm px-3 py-2 rounded text-red-700 hover:bg-red-50" onClick={() => {
+                            const warning = client.interviewsCount
+                              ? `¿Borrar a ${client.name}? Esto también borrará sus ${client.interviewsCount} entrevista${client.interviewsCount === 1 ? '' : 's'} grabada${client.interviewsCount === 1 ? '' : 's'}, sin posibilidad de deshacerlo.`
+                              : `¿Borrar a ${client.name}? No tiene entrevistas registradas.`;
+                            if (!window.confirm(warning)) return;
+                            center.runMutation(() => interviewsModuleApi.deleteClient(client.id), 'Cliente eliminado');
+                            setClientActionsMenuId(null);
+                          }}>Borrar</button>
                         </div>
                       )}
                     </div>
@@ -1568,7 +1584,11 @@ const InterviewCenterPage = () => {
                                     toast({ title: 'Formulario duplicado' });
                                   }}>Duplicar</button>
                                   <button className="w-full text-left text-sm px-3 py-2 rounded text-red-700 hover:bg-red-50" onClick={async () => {
-                                    if (!window.confirm('¿Borrar formulario?')) return;
+                                    const usedByCount = center.sessions.filter((session) => String(session.form_id) === String(form.id)).length;
+                                    const warning = usedByCount
+                                      ? `¿Borrar "${form.title}"? Esto también borrará las ${usedByCount} entrevista${usedByCount === 1 ? '' : 's'} hecha${usedByCount === 1 ? '' : 's'} con este formulario, sin posibilidad de deshacerlo.`
+                                      : `¿Borrar "${form.title}"? No tiene entrevistas registradas.`;
+                                    if (!window.confirm(warning)) return;
                                     await center.runMutation(() => interviewsModuleApi.deleteForm(form.id), 'Formulario eliminado');
                                     setFormsMenuOpenId(null);
                                   }}>Borrar</button>
@@ -1753,7 +1773,11 @@ const InterviewCenterPage = () => {
                               Eliminar evolución
                             </button>
                           ) : null}
-                          <button type="button" className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50" onClick={() => { setHypothesisEvolutionMenuId(''); center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada'); }}>Borrar hipótesis</button>
+                          <button type="button" className="w-full rounded-lg px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50" onClick={() => {
+                            if (!window.confirm(`¿Borrar la hipótesis "${hypothesis.title}"? Las entrevistas vinculadas se conservan, pero pierden el vínculo y toda la evaluación acumulada de esta hipótesis se pierde. No se puede deshacer.`)) return;
+                            setHypothesisEvolutionMenuId('');
+                            center.runMutation(() => interviewsModuleApi.deleteHypothesis(hypothesis.id), 'Hipótesis eliminada');
+                          }}>Borrar hipótesis</button>
                         </div>
                       ) : null}
                     </div>

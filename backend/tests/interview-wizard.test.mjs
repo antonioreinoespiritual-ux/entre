@@ -218,3 +218,117 @@ test('archiving a client persists and reactivating restores it', async () => {
     assert.equal(reactivated.status, 'active');
   } finally { server.kill('SIGTERM'); }
 });
+
+test('creating a semantic fragment succeeds (regression: INSERT column/placeholder mismatch)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-iv-7-'));
+  const baseUrl = 'http://127.0.0.1:4126';
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: '4126', SQLITE_PATH: path.join(dir, 'db.sqlite') } });
+  try {
+    await waitForHealth(baseUrl);
+    const token = await authed(baseUrl);
+    const { projectId, campaignId, audienceId } = await setup(baseUrl, token);
+    const client = await createClient(baseUrl, token, projectId, campaignId, audienceId);
+    const form = await createForm(baseUrl, token, projectId, campaignId);
+    const sessionRes = await fetch(`${baseUrl}/api/projects/${projectId}/campaigns/${campaignId}/interviews/sessions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: client.id, form_id: form.id, status: 'completed', responses: { q1: 'ok' } }),
+    });
+    const session = (await sessionRes.json()).data;
+
+    const fragmentRes = await fetch(`${baseUrl}/api/interviews/fragments`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ interview_session_id: session.id, source_type: 'manual', selected_text: 'cita de prueba' }),
+    });
+    assert.equal(fragmentRes.status, 201);
+    const fragment = (await fragmentRes.json()).data;
+    assert.ok(fragment?.id, 'la respuesta debe incluir el fragmento creado con id');
+    assert.equal(fragment.selected_text, 'cita de prueba');
+
+    const listRes = await fetch(`${baseUrl}/api/interviews/fragments?documentNodeId=&projectId=${projectId}&campaignId=${campaignId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const list = (await listRes.json()).data || [];
+    assert.ok(list.some((item) => item.id === fragment.id));
+  } finally { server.kill('SIGTERM'); }
+});
+
+test('deleting a client cascades and removes its interview sessions', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-iv-8-'));
+  const baseUrl = 'http://127.0.0.1:4127';
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: '4127', SQLITE_PATH: path.join(dir, 'db.sqlite') } });
+  try {
+    await waitForHealth(baseUrl);
+    const token = await authed(baseUrl);
+    const { projectId, campaignId, audienceId } = await setup(baseUrl, token);
+    const client = await createClient(baseUrl, token, projectId, campaignId, audienceId);
+    const form = await createForm(baseUrl, token, projectId, campaignId);
+    const sessionRes = await fetch(`${baseUrl}/api/projects/${projectId}/campaigns/${campaignId}/interviews/sessions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: client.id, form_id: form.id, status: 'completed', responses: { q1: 'respuesta grabada' } }),
+    });
+    const session = (await sessionRes.json()).data;
+    assert.equal((await fetch(`${baseUrl}/api/interview-sessions/${session.id}`, { headers: { Authorization: `Bearer ${token}` } })).status, 200);
+
+    const deleteRes = await fetch(`${baseUrl}/api/interview-clients/${client.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(deleteRes.status, 200);
+
+    const afterRes = await fetch(`${baseUrl}/api/interview-sessions/${session.id}`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(afterRes.status, 404, 'la sesion debe desaparecer en cascada al borrar el cliente (ON DELETE CASCADE documentado)');
+  } finally { server.kill('SIGTERM'); }
+});
+
+test('deleting a form cascades and removes its interview sessions', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-iv-9-'));
+  const baseUrl = 'http://127.0.0.1:4128';
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: '4128', SQLITE_PATH: path.join(dir, 'db.sqlite') } });
+  try {
+    await waitForHealth(baseUrl);
+    const token = await authed(baseUrl);
+    const { projectId, campaignId, audienceId } = await setup(baseUrl, token);
+    const client = await createClient(baseUrl, token, projectId, campaignId, audienceId);
+    const form = await createForm(baseUrl, token, projectId, campaignId);
+    const sessionRes = await fetch(`${baseUrl}/api/projects/${projectId}/campaigns/${campaignId}/interviews/sessions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: client.id, form_id: form.id, status: 'completed', responses: { q1: 'respuesta grabada' } }),
+    });
+    const session = (await sessionRes.json()).data;
+    assert.equal((await fetch(`${baseUrl}/api/interview-sessions/${session.id}`, { headers: { Authorization: `Bearer ${token}` } })).status, 200);
+
+    const deleteRes = await fetch(`${baseUrl}/api/interview-forms/${form.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(deleteRes.status, 200);
+
+    const afterRes = await fetch(`${baseUrl}/api/interview-sessions/${session.id}`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(afterRes.status, 404, 'la sesion debe desaparecer en cascada al borrar el formulario (ON DELETE CASCADE documentado)');
+  } finally { server.kill('SIGTERM'); }
+});
+
+test('deleting a hypothesis does NOT cascade to interview sessions (ON DELETE SET NULL)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'entre-iv-10-'));
+  const baseUrl = 'http://127.0.0.1:4129';
+  const server = spawn('node', ['backend/src/server.js'], { cwd: process.cwd(), env: { ...process.env, BACKEND_PORT: '4129', SQLITE_PATH: path.join(dir, 'db.sqlite') } });
+  try {
+    await waitForHealth(baseUrl);
+    const token = await authed(baseUrl);
+    const { projectId, campaignId, audienceId } = await setup(baseUrl, token);
+    const client = await createClient(baseUrl, token, projectId, campaignId, audienceId);
+    const form = await createForm(baseUrl, token, projectId, campaignId);
+    const hypRes = await fetch(`${baseUrl}/api/projects/${projectId}/campaigns/${campaignId}/interviews/hypotheses`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'problema', title: 'Hipotesis' }),
+    });
+    const hypothesis = (await hypRes.json()).data;
+    const sessionRes = await fetch(`${baseUrl}/api/projects/${projectId}/campaigns/${campaignId}/interviews/sessions`, {
+      method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: client.id, form_id: form.id, interview_hypothesis_id: hypothesis.id, status: 'completed', responses: { q1: 'x' } }),
+    });
+    const session = (await sessionRes.json()).data;
+
+    const deleteRes = await fetch(`${baseUrl}/api/interview-hypotheses/${hypothesis.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(deleteRes.status, 200);
+
+    const afterRes = await fetch(`${baseUrl}/api/interview-sessions/${session.id}`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(afterRes.status, 200, 'la sesion debe sobrevivir al borrar la hipotesis');
+    const after = (await afterRes.json()).data;
+    assert.equal(after.interview_hypothesis_id, null, 'el vinculo a la hipotesis debe quedar en null, no seguir apuntando a una hipotesis borrada');
+  } finally { server.kill('SIGTERM'); }
+});
