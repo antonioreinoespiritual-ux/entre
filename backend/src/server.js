@@ -15,6 +15,20 @@ import { HYPOTHESIS_MODES, HYPOTHESIS_STATE, buildModeStatePatch, normalizeHypot
 import { buildLegacyIdentityRecords, buildLegacyTopologyRecords, collectLegacyEvolutionLinks, normalizeLegacyCommentHypothesis } from '../../shared/hypothesisLegacyCompat.js';
 
 
+// Sin esto, un error no controlado tumba el proceso con un stack trace
+// generico y sin aviso (y con el, todas las sesiones en memoria -- ver
+// auditoria F-09). El proceso ya no es seguro para seguir despues de una
+// excepcion no controlada, asi que se loguea con contexto y se sale con
+// codigo de error para que quede claro en los logs por que se detuvo.
+process.on('uncaughtException', (error) => {
+  console.error('[uncaughtException] El backend se va a detener:', error);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection] El backend se va a detener:', reason);
+  process.exit(1);
+});
+
 const envSource = loadBackendEnv();
 
 try {
@@ -260,6 +274,21 @@ const schemaSql = [
   )`,
   'CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)',
   'CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)',
+  `CREATE TABLE IF NOT EXISTS video_hypothesis_map_layouts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    campaign_id TEXT NOT NULL,
+    storage_key TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+    UNIQUE(user_id, storage_key)
+  )`,
+  'CREATE INDEX IF NOT EXISTS idx_video_hypothesis_map_layouts_scope ON video_hypothesis_map_layouts(user_id, project_id, campaign_id)',
   `CREATE TABLE IF NOT EXISTS hypothesis_analysis_runs (
     id TEXT PRIMARY KEY,
     hypothesis_id TEXT NOT NULL,
@@ -304,6 +333,7 @@ const schemaSql = [
     name TEXT NOT NULL,
     contact TEXT,
     notes TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
@@ -984,14 +1014,14 @@ function applyManualCommentHypothesisStateChange(payload = {}, hypothesisId = ''
   };
 }
 
-async function rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey) {
-  const [hypothesisRows] = await pool.query(
+async function rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey, queryFn = pool.query) {
+  const [hypothesisRows] = await queryFn(
     `SELECT payload_json FROM comment_mode_hypotheses
      WHERE user_id = ? AND storage_key = ?
      ORDER BY created_at ASC, hypothesis_id ASC`,
     [userId, parsedKey.storageKey],
   );
-  const [linkRows] = await pool.query(
+  const [linkRows] = await queryFn(
     `SELECT payload_json FROM comment_mode_evolution_links
      WHERE user_id = ? AND storage_key = ?
      ORDER BY created_at ASC, link_id ASC`,
@@ -1040,20 +1070,25 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
   if (!campaign) throw new Error('Campaign not found');
 
   const workspace = await ensureCommentWorkspaceRecord(userId, parsedKey.projectId, parsedKey.campaignId, parsedKey.workspaceId);
-  const existingPayload = await readCommentModeStructuralState(userId, parsedKey.storageKey);
-  const normalizedPayload = mergeCommentModeStructuralPayload(existingPayload || {}, payload, { storageKey: parsedKey.storageKey });
-  const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
   const now = nowIso();
 
-  await pool.query('BEGIN IMMEDIATE');
-  try {
-    const [existingRows] = await pool.query(
+  // La lectura que decide la fusión ocurre DENTRO de la transacción, con el
+  // mismo candado que protege la escritura: ninguna otra petición puede leer
+  // "el estado de antes" mientras esta petición está fusionando y escribiendo
+  // el suyo, así que dos guardados que se solapan ya no pueden basarse en el
+  // mismo snapshot desactualizado y pisarse entre sí.
+  return pool.withTransaction(async (query) => {
+    const existingPayload = await readCommentModeStructuralState(userId, parsedKey.storageKey, query);
+    const normalizedPayload = mergeCommentModeStructuralPayload(existingPayload || {}, payload, { storageKey: parsedKey.storageKey });
+    const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
+
+    const [existingRows] = await query(
       'SELECT id, created_at FROM comment_mode_states WHERE user_id = ? AND storage_key = ? LIMIT 1',
       [userId, parsedKey.storageKey],
     );
     const stateId = existingRows[0]?.id || buildEntityId('comment_workspace', 'cms_');
     const createdAt = existingRows[0]?.created_at || now;
-    await pool.query(
+    await query(
       `INSERT INTO comment_mode_states (id, user_id, project_id, campaign_id, workspace_id, storage_key, payload_json, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(user_id, storage_key) DO UPDATE SET
@@ -1065,14 +1100,14 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
       [stateId, userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, JSON.stringify(normalizedPayload), createdAt, now],
     );
 
-    await pool.query('DELETE FROM comment_mode_hypothesis_profiles WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
-    await pool.query('DELETE FROM comment_mode_evolution_links WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
-    await pool.query('DELETE FROM comment_mode_hypotheses WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await query('DELETE FROM comment_mode_hypothesis_profiles WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await query('DELETE FROM comment_mode_evolution_links WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
+    await query('DELETE FROM comment_mode_hypotheses WHERE user_id = ? AND storage_key = ?', [userId, parsedKey.storageKey]);
 
     for (const hypothesis of normalizedPayload.hypotheses) {
       const hypothesisId = String(hypothesis?.id || '').trim();
       if (!hypothesisId) continue;
-      await pool.query(
+      await query(
         `INSERT INTO comment_mode_hypotheses (id, hypothesis_id, user_id, project_id, campaign_id, workspace_id, storage_key, lineage_id, parent_hypothesis_id, validation_status, payload_json, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -1094,7 +1129,7 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
 
       const linkedProfileIds = Array.isArray(hypothesis?.linked_profile_ids) ? hypothesis.linked_profile_ids : [];
       for (const profileId of linkedProfileIds.map((value) => String(value || '').trim()).filter(Boolean)) {
-        await pool.query(
+        await query(
           `INSERT OR IGNORE INTO comment_mode_hypothesis_profiles (id, user_id, project_id, campaign_id, workspace_id, storage_key, hypothesis_id, profile_id, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [buildEntityId('comment_workspace', 'cmp_'), userId, parsedKey.projectId, parsedKey.campaignId, String(workspace?.id || parsedKey.workspaceId), parsedKey.storageKey, hypothesisId, profileId, now, now],
@@ -1105,7 +1140,7 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
     for (const link of normalizedPayload.hypothesisEvolutionLinks) {
       const linkId = String(link?.id || `${link?.source_hypothesis_id || ''}:${link?.destination_mode || ''}:${link?.destination_hypothesis_id || ''}`).trim();
       if (!linkId) continue;
-      await pool.query(
+      await query(
         `INSERT INTO comment_mode_evolution_links (id, link_id, user_id, project_id, campaign_id, workspace_id, storage_key, source_hypothesis_id, destination_mode, destination_hypothesis_id, payload_json, deleted_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
@@ -1127,18 +1162,13 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
       );
     }
 
-    await pool.query('COMMIT');
-  } catch (error) {
-    await pool.query('ROLLBACK');
-    throw error;
-  }
-
-  return normalizedPayload;
+    return normalizedPayload;
+  });
 }
 
-async function readCommentModeStructuralState(userId, storageKey) {
+async function readCommentModeStructuralState(userId, storageKey, queryFn = pool.query) {
   const parsedKey = parseCommentModeStorageKey(storageKey);
-  const [rows] = await pool.query(
+  const [rows] = await queryFn(
     `SELECT * FROM comment_mode_states WHERE user_id = ? AND storage_key = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
     [userId, parsedKey.storageKey, parsedKey.projectId, parsedKey.campaignId],
   );
@@ -1147,7 +1177,7 @@ async function readCommentModeStructuralState(userId, storageKey) {
     const normalizedPayload = normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {}), { storageKey: parsedKey.storageKey });
     if (commentModeStructuralPayloadHasContent(normalizedPayload)) return normalizedPayload;
   }
-  return rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey);
+  return rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey, queryFn);
 }
 
 function autoExternalIdForVideo(videoType, videoId) {
@@ -2123,9 +2153,14 @@ function normalizeInterviewQuestion(question, index = 0) {
     required: Boolean(question?.required),
     options: Array.isArray(question?.options) ? question.options.map((v) => String(v)) : [],
     placeholder: String(question?.placeholder || ''),
+    // El frontend (FormBuilder.jsx / InterviewRunner.jsx) usa campos planos
+    // scale_min_label/scale_max_label, no un objeto scale.{minLabel,maxLabel}.
+    // Mantener ambas formas para no romper a nadie que ya lea `scale`.
+    scale_min_label: String(question?.scale_min_label || question?.scale?.minLabel || ''),
+    scale_max_label: String(question?.scale_max_label || question?.scale?.maxLabel || ''),
     scale: {
-      minLabel: String(question?.scale?.minLabel || ''),
-      maxLabel: String(question?.scale?.maxLabel || ''),
+      minLabel: String(question?.scale_min_label || question?.scale?.minLabel || ''),
+      maxLabel: String(question?.scale_max_label || question?.scale?.maxLabel || ''),
     },
   };
 }
@@ -2516,6 +2551,218 @@ async function ensureHypothesisVideosVideoForeignKeyTarget() {
   }
 }
 
+// videos.project_id y videos.campaign_id se usan en casi toda query de video
+// pero nunca tuvieron foreign key -- ver auditoria F-02. Sin esto, borrar una
+// campana o un proyecto por otra via deja videos "huerfanos": la fila sigue
+// en la base pero apunta a un id que ya no existe, y desaparece de cualquier
+// navegacion normal (que siempre filtra por project_id/campaign_id).
+async function ensureVideosProjectCampaignForeignKeys() {
+  if (!(await tableExists('videos'))) return;
+
+  const [fkRows] = await pool.query('PRAGMA foreign_key_list(videos)');
+  const hasProjectFk = fkRows.some((row) => String(row.from) === 'project_id');
+  const hasCampaignFk = fkRows.some((row) => String(row.from) === 'campaign_id');
+  if (hasProjectFk && hasCampaignFk) return;
+
+  // Limpiar referencias ya rotas antes de que la nueva constraint las bloquee:
+  // se preserva la fila y todos sus datos, solo se limpia el vinculo roto.
+  await pool.query(
+    `UPDATE videos SET project_id = NULL
+     WHERE project_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = videos.project_id)`,
+  );
+  await pool.query(
+    `UPDATE videos SET campaign_id = NULL
+     WHERE campaign_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM campaigns c WHERE c.id = videos.campaign_id)`,
+  );
+
+  const legacyTableName = `videos_legacy_before_project_campaign_fk_${Date.now()}`;
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE videos RENAME TO ${normalizeIdentifier(legacyTableName)}`);
+    await pool.query(`CREATE TABLE videos (
+      id TEXT PRIMARY KEY,
+      hypothesis_id TEXT,
+      audience_id TEXT,
+      user_id TEXT NOT NULL,
+      video_type TEXT NOT NULL DEFAULT 'organic',
+      title TEXT NOT NULL,
+      url TEXT,
+      external_id TEXT,
+      external_id_type TEXT,
+      hook_texto TEXT,
+      hook_tipo TEXT,
+      cta_texto TEXT,
+      cta_tipo TEXT,
+      creative_id TEXT,
+      contexto_cualitativo TEXT,
+      clicks INTEGER DEFAULT 0,
+      views_profile INTEGER DEFAULT 0,
+      initiatest INTEGER DEFAULT 0,
+      initiate_checkouts INTEGER DEFAULT 0,
+      view_content INTEGER DEFAULT 0,
+      formulario_lead INTEGER DEFAULT 0,
+      purchase INTEGER DEFAULT 0,
+      pico_viewers INTEGER DEFAULT 0,
+      viewers_prom REAL DEFAULT 0,
+      duracion_min REAL DEFAULT 0,
+      nuevos_seguidores INTEGER DEFAULT 0,
+      saves INTEGER DEFAULT 0,
+      organic_piece_type TEXT,
+      views_finish_pct REAL DEFAULT 0,
+      retencion_pct REAL DEFAULT 0,
+      tiempo_prom_seg REAL DEFAULT 0,
+      duracion_seg REAL DEFAULT 0,
+      campaign_id_ref TEXT,
+      ad_set_id TEXT,
+      cpc REAL DEFAULT 0,
+      ctr REAL DEFAULT 0,
+      duracion_del_video_seg REAL DEFAULT 0,
+      views INTEGER DEFAULT 0,
+      engagement REAL DEFAULT 0,
+      likes INTEGER DEFAULT 0,
+      shares INTEGER DEFAULT 0,
+      comments INTEGER DEFAULT 0,
+      funnel TEXT,
+      content_format TEXT,
+      content_objective TEXT,
+      video_score REAL,
+      campaign_id TEXT,
+      project_id TEXT,
+      ad_id TEXT,
+      video_id INTEGER,
+      cloud_folder_id TEXT,
+      metrics_json TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+      FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+    )`);
+
+    const [oldInfo] = await pool.query(`PRAGMA table_info(${normalizeIdentifier(legacyTableName)})`);
+    const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+    const targetColumns = [
+      'id', 'hypothesis_id', 'audience_id', 'user_id', 'video_type', 'title', 'url', 'external_id', 'external_id_type',
+      'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'creative_id', 'contexto_cualitativo', 'clicks', 'views_profile',
+      'initiatest', 'initiate_checkouts', 'view_content', 'formulario_lead', 'purchase', 'pico_viewers', 'viewers_prom',
+      'duracion_min', 'nuevos_seguidores', 'saves', 'organic_piece_type', 'views_finish_pct', 'retencion_pct',
+      'tiempo_prom_seg', 'duracion_seg', 'campaign_id_ref', 'ad_set_id', 'cpc', 'ctr', 'duracion_del_video_seg', 'views',
+      'engagement', 'likes', 'shares', 'comments', 'funnel', 'content_format', 'content_objective', 'video_score',
+      'campaign_id', 'project_id', 'ad_id', 'video_id', 'cloud_folder_id', 'metrics_json', 'created_at', 'updated_at',
+    ];
+    const selectExpressions = targetColumns.map((column) => {
+      if (oldColumns.has(column)) return normalizeIdentifier(column);
+      if (column === 'created_at' || column === 'updated_at') return `CURRENT_TIMESTAMP AS ${normalizeIdentifier(column)}`;
+      if (column === 'video_type') return `'organic' AS ${normalizeIdentifier(column)}`;
+      if (column === 'title') return `'' AS ${normalizeIdentifier(column)}`;
+      return `NULL AS ${normalizeIdentifier(column)}`;
+    });
+
+    await pool.query(
+      `INSERT INTO videos (${targetColumns.map((column) => normalizeIdentifier(column)).join(', ')})
+       SELECT ${selectExpressions.join(', ')}
+       FROM ${normalizeIdentifier(legacyTableName)}`,
+    );
+
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_hypothesis_id ON videos(hypothesis_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_campaign_id ON videos(campaign_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_project_id ON videos(project_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_type ON videos(video_type)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_audience_id ON videos(audience_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_videos_user_id ON videos(user_id)');
+
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTableName)}`);
+  } catch (error) {
+    if (!(await tableExists('videos')) && (await tableExists(legacyTableName))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(legacyTableName)} RENAME TO videos`);
+    }
+    throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
+// hypothesis_videos.audience_id nunca tuvo foreign key -- ver auditoria F-08.
+// Mismo patron de riesgo que F-02, pero sin filas huerfanas conocidas todavia.
+async function ensureHypothesisVideosAudienceForeignKey() {
+  if (!(await tableExists('hypothesis_videos'))) return;
+
+  const [fkRows] = await pool.query('PRAGMA foreign_key_list(hypothesis_videos)');
+  const hasAudienceFk = fkRows.some((row) => String(row.from) === 'audience_id');
+  if (hasAudienceFk) return;
+
+  await pool.query(
+    `UPDATE hypothesis_videos SET audience_id = NULL
+     WHERE audience_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM audiences a WHERE a.id = hypothesis_videos.audience_id)`,
+  );
+
+  const legacyTableName = `hypothesis_videos_legacy_before_audience_fk_${Date.now()}`;
+  await pool.query('PRAGMA foreign_keys = OFF');
+  try {
+    await pool.query(`ALTER TABLE hypothesis_videos RENAME TO ${normalizeIdentifier(legacyTableName)}`);
+    await pool.query(`CREATE TABLE hypothesis_videos (
+      id TEXT PRIMARY KEY,
+      hypothesis_id TEXT NOT NULL,
+      video_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      audience_id TEXT,
+      hook_texto TEXT,
+      hook_tipo TEXT,
+      cta_texto TEXT,
+      cta_tipo TEXT,
+      video_type TEXT DEFAULT 'organic',
+      contexto_cualitativo TEXT,
+      FOREIGN KEY (hypothesis_id) REFERENCES hypotheses(id) ON DELETE CASCADE,
+      FOREIGN KEY (video_id) REFERENCES videos(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (audience_id) REFERENCES audiences(id) ON DELETE SET NULL,
+      UNIQUE(hypothesis_id, video_id)
+    )`);
+
+    const [oldInfo] = await pool.query(`PRAGMA table_info(${normalizeIdentifier(legacyTableName)})`);
+    const oldColumns = new Set(oldInfo.map((row) => String(row.name)));
+    const targetColumns = [
+      'id', 'hypothesis_id', 'video_id', 'user_id', 'created_at',
+      'audience_id', 'hook_texto', 'hook_tipo', 'cta_texto', 'cta_tipo', 'video_type', 'contexto_cualitativo',
+    ];
+    const selectExpr = targetColumns.map((col) => {
+      if (oldColumns.has(col)) return normalizeIdentifier(col);
+      if (col === 'created_at') return `CURRENT_TIMESTAMP AS ${normalizeIdentifier(col)}`;
+      if (col === 'video_type') return `'organic' AS ${normalizeIdentifier(col)}`;
+      return `NULL AS ${normalizeIdentifier(col)}`;
+    });
+
+    await pool.query(
+      `INSERT INTO hypothesis_videos (${targetColumns.map((column) => normalizeIdentifier(column)).join(', ')})
+       SELECT ${selectExpr.join(', ')} FROM ${normalizeIdentifier(legacyTableName)}`,
+    );
+
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_hypothesis_id ON hypothesis_videos(hypothesis_id)');
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_hypothesis_videos_video_id ON hypothesis_videos(video_id)');
+
+    await pool.query(`DROP TABLE ${normalizeIdentifier(legacyTableName)}`);
+  } catch (error) {
+    if (!(await tableExists('hypothesis_videos')) && (await tableExists(legacyTableName))) {
+      await pool.query(`ALTER TABLE ${normalizeIdentifier(legacyTableName)} RENAME TO hypothesis_videos`);
+    }
+    throw error;
+  } finally {
+    await pool.query('PRAGMA foreign_keys = ON');
+  }
+}
+
+
+// El frontend ya enviaba { status: 'archived' } al editar un cliente, pero la
+// columna nunca existio -- "Archivar" mostraba un toast de exito sin cambiar
+// nada (ver auditoria de Modo Entrevista, BUG-03).
+async function ensureInterviewClientStatusColumn() {
+  if (!(await tableExists('interview_clients'))) return;
+  if (await hasColumn('interview_clients', 'status')) return;
+  await pool.query("ALTER TABLE interview_clients ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+}
 
 async function rebuildInterviewSemanticFragmentsWithNullableDocumentNode() {
   const hasTable = await tableExists('interview_semantic_fragments');
@@ -2801,6 +3048,9 @@ async function ensureVideoHierarchyMigration() {
   }
 
   await ensureHypothesisVideosVideoForeignKeyTarget();
+  await ensureVideosProjectCampaignForeignKeys();
+  await ensureHypothesisVideosAudienceForeignKey();
+  await ensureInterviewClientStatusColumn();
   const forceCloudReset = String(process.env.RESET_CLOUD_SCHEMA || '').trim() === '1';
   if (forceCloudReset) {
     await pool.query('DROP TABLE IF EXISTS cloud_events');
@@ -3214,6 +3464,8 @@ function resolveAiBaseUrl(integration) {
   if (provider === 'openrouter') return 'https://openrouter.ai/api/v1';
   if (provider === 'groq') return 'https://api.groq.com/openai/v1';
   if (provider === 'ollama') return 'http://localhost:11434/v1';
+  if (provider === 'anthropic') return 'https://api.anthropic.com/v1';
+  if (provider === 'gemini') return 'https://generativelanguage.googleapis.com/v1beta';
   return '';
 }
 
@@ -3326,23 +3578,118 @@ function buildProjectScopedSystemPrompt(project, projectSummary) {
   ].join('\n');
 }
 
-async function requestAiChatCompletion(integration, payload) {
-  const provider = String(integration?.provider || '').trim().toLowerCase();
-  const model = normalizeAiModel(provider, integration?.model);
-  const apiKey = String(integration?.api_key || '').trim();
-  const baseUrl = resolveAiBaseUrl(integration);
+function splitSystemAndTurns(payload) {
+  const messages = Array.isArray(payload) ? payload : [];
+  const systemText = messages
+    .filter((m) => m?.role === 'system')
+    .map((m) => String(m?.content || ''))
+    .join('\n\n')
+    .trim();
+  const turns = messages.filter((m) => m?.role === 'user' || m?.role === 'assistant');
+  return { systemText, turns };
+}
 
-  if (!model) throw new Error('La integración de IA no tiene un modelo válido configurado.');
-  if (!baseUrl) throw new Error(`El proveedor ${provider || 'seleccionado'} requiere base_url compatible para chat.`);
-  if (provider !== 'ollama' && !apiKey) {
-    throw new Error('La integración de IA requiere API key para enviar mensajes.');
+async function requestAnthropicChatCompletion({ baseUrl, model, apiKey, organization, payload }) {
+  const { systemText, turns } = splitSystemAndTurns(payload);
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+  };
+  if (organization) headers['anthropic-organization'] = String(organization);
+
+  const response = await fetch(`${baseUrl}/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      max_tokens: 4096,
+      temperature: 0.2,
+      ...(systemText ? { system: systemText } : {}),
+      messages: turns.map((m) => ({ role: m.role, content: String(m.content || '') })),
+    }),
+  });
+
+  const raw = await response.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
   }
 
+  if (!response.ok) {
+    const apiError = json?.error?.message || raw || `HTTP ${response.status}`;
+    throw new Error(`No se pudo completar el chat con IA: ${apiError}`);
+  }
+
+  const content = Array.isArray(json?.content)
+    ? json.content.filter((block) => block?.type === 'text').map((block) => block.text).join('')
+    : '';
+  if (!content) throw new Error('El proveedor de IA no devolvió contenido de respuesta.');
+  return {
+    content: content.trim(),
+    usage: json?.usage
+      ? {
+        prompt_tokens: json.usage.input_tokens ?? null,
+        completion_tokens: json.usage.output_tokens ?? null,
+        total_tokens: (json.usage.input_tokens ?? 0) + (json.usage.output_tokens ?? 0),
+      }
+      : null,
+  };
+}
+
+async function requestGeminiChatCompletion({ baseUrl, model, apiKey, payload }) {
+  const { systemText, turns } = splitSystemAndTurns(payload);
+  const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+      contents: turns.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: String(m.content || '') }],
+      })),
+      generationConfig: { temperature: 0.2 },
+    }),
+  });
+
+  const raw = await response.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
+  }
+
+  if (!response.ok) {
+    const apiError = json?.error?.message || raw || `HTTP ${response.status}`;
+    throw new Error(`No se pudo completar el chat con IA: ${apiError}`);
+  }
+
+  const parts = json?.candidates?.[0]?.content?.parts;
+  const content = Array.isArray(parts) ? parts.map((part) => part?.text || '').join('') : '';
+  if (!content) throw new Error('El proveedor de IA no devolvió contenido de respuesta.');
+  return {
+    content: content.trim(),
+    usage: json?.usageMetadata
+      ? {
+        prompt_tokens: json.usageMetadata.promptTokenCount ?? null,
+        completion_tokens: json.usageMetadata.candidatesTokenCount ?? null,
+        total_tokens: json.usageMetadata.totalTokenCount ?? null,
+      }
+      : null,
+  };
+}
+
+async function requestOpenAiCompatibleChatCompletion({ baseUrl, model, apiKey, provider, organization, payload }) {
   const headers = {
     'Content-Type': 'application/json',
   };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  if (integration?.organization) headers['OpenAI-Organization'] = String(integration.organization);
+  if (organization) headers['OpenAI-Organization'] = String(organization);
   if (provider === 'openrouter') {
     headers['HTTP-Referer'] = 'https://marketclaw.local';
     headers['X-Title'] = 'MarketClaw Chat IA';
@@ -3377,6 +3724,27 @@ async function requestAiChatCompletion(integration, payload) {
     content: String(content).trim(),
     usage: json?.usage || null,
   };
+}
+
+async function requestAiChatCompletion(integration, payload) {
+  const provider = String(integration?.provider || '').trim().toLowerCase();
+  const model = normalizeAiModel(provider, integration?.model);
+  const apiKey = String(integration?.api_key || '').trim();
+  const baseUrl = resolveAiBaseUrl(integration);
+
+  if (!model) throw new Error('La integración de IA no tiene un modelo válido configurado.');
+  if (!baseUrl) throw new Error(`El proveedor ${provider || 'seleccionado'} requiere base_url compatible para chat.`);
+  if (provider !== 'ollama' && !apiKey) {
+    throw new Error('La integración de IA requiere API key para enviar mensajes.');
+  }
+
+  if (provider === 'anthropic') {
+    return requestAnthropicChatCompletion({ baseUrl, model, apiKey, organization: integration?.organization, payload });
+  }
+  if (provider === 'gemini') {
+    return requestGeminiChatCompletion({ baseUrl, model, apiKey, payload });
+  }
+  return requestOpenAiCompatibleChatCompletion({ baseUrl, model, apiKey, provider, organization: integration?.organization, payload });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
@@ -7057,21 +7425,21 @@ async function executeCrudQuery(body, currentUserId) {
         }
       }
     }
-    const insertRow = async () => {
+    const insertRow = async (query = pool.query) => {
       const fields = Object.keys(writeRow);
       const placeholders = fields.map(() => '?').join(', ');
-      await pool.query(
+      await query(
         `INSERT INTO ${quotedTable} (${fields.map(normalizeIdentifier).join(', ')}) VALUES (${placeholders})`,
         fields.map((field) => writeRow[field]),
       );
     };
 
-    const assignAutoIdentifiersForVideo = async () => {
+    const assignAutoIdentifiersForVideo = async (query = pool.query) => {
       if (table !== 'videos') return;
 
       if (writeRow.video_id == null || String(writeRow.video_id).trim() === '') {
         const hasProjectScope = String(writeRow.project_id || '').trim() !== '';
-        const [maxRows] = await pool.query(
+        const [maxRows] = await query(
           `SELECT COALESCE(MAX(CASE
             WHEN trim(CAST(video_id AS TEXT)) <> '' AND trim(CAST(video_id AS TEXT)) GLOB '[0-9]*'
             THEN CAST(video_id AS INTEGER)
@@ -7088,13 +7456,13 @@ async function executeCrudQuery(body, currentUserId) {
         const generatedExternalId = autoExternalIdForVideo(writeRow.video_type, writeRow.video_id);
         if (generatedExternalId) {
           if (String(writeRow.project_id || '').trim()) {
-            const [existsRows] = await pool.query(
+            const [existsRows] = await query(
               'SELECT id FROM videos WHERE user_id = ? AND project_id = ? AND external_id = ? LIMIT 1',
               [currentUserId, writeRow.project_id, generatedExternalId],
             );
             if (existsRows.length) {
               const prefix = generatedExternalId.split('-')[0] || 'session';
-              const [maxRows] = await pool.query(
+              const [maxRows] = await query(
                 `SELECT COALESCE(MAX(CASE
                   WHEN external_id LIKE ? AND trim(substr(external_id, instr(external_id, '-') + 1)) GLOB '[0-9]*'
                   THEN CAST(substr(external_id, instr(external_id, '-') + 1) AS INTEGER)
@@ -7117,15 +7485,10 @@ async function executeCrudQuery(body, currentUserId) {
     };
 
     if (table === 'videos') {
-      await pool.query('BEGIN IMMEDIATE');
-      try {
-        await assignAutoIdentifiersForVideo();
-        await insertRow();
-        await pool.query('COMMIT');
-      } catch (error) {
-        await pool.query('ROLLBACK');
-        throw error;
-      }
+      await pool.withTransaction(async (query) => {
+        await assignAutoIdentifiersForVideo(query);
+        await insertRow(query);
+      });
     } else {
       await insertRow();
     }
@@ -7453,6 +7816,46 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (url.pathname === '/api/integrations/ai/test' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+
+      // Prueba con lo que el usuario tiene escrito en el formulario (aunque
+      // todavía no lo haya guardado); si un campo viene vacío, cae a lo que
+      // ya está guardado para esa integración.
+      const saved = await getAiIntegrationByUserId(user.id);
+      const provider = String(body.provider || saved?.provider || '').trim().toLowerCase();
+      const model = normalizeAiModel(provider, body.model || saved?.model);
+      const apiKey = String(body.api_key || saved?.api_key || '').trim();
+      const baseUrl = String(body.base_url || saved?.base_url || '').trim();
+      const organization = String(body.organization || saved?.organization || '').trim();
+
+      if (!AI_PROVIDERS.has(provider)) {
+        return sendJson(req, res, 200, { data: { ok: false, error: 'Proveedor de IA inválido.' } });
+      }
+      if (!model) {
+        return sendJson(req, res, 200, { data: { ok: false, error: 'Debes especificar el modelo para la integración de IA.' } });
+      }
+
+      try {
+        const completion = await requestAiChatCompletion(
+          { provider, model, api_key: apiKey, base_url: baseUrl, organization },
+          [
+            { role: 'system', content: 'Responde únicamente con la palabra: ok' },
+            { role: 'user', content: 'ok' },
+          ],
+        );
+        return sendJson(req, res, 200, {
+          data: { ok: true, message: `Conexión exitosa con ${provider} (${model}).`, sample: completion.content.slice(0, 120) },
+        });
+      } catch (error) {
+        return sendJson(req, res, 200, {
+          data: { ok: false, error: error?.message || 'No se pudo conectar con el proveedor de IA.' },
+        });
+      }
+    }
+
     if (url.pathname === '/api/integrations/openclaw/config' && req.method === 'GET') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
@@ -7565,6 +7968,15 @@ const server = http.createServer(async (req, res) => {
         { role: 'user', content: message },
       ];
 
+      let completion;
+      try {
+        completion = await requestAiChatCompletion(integration, messages);
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo generar respuesta de IA para este proyecto.',
+        });
+      }
+
       const userMessageRow = {
         id: buildEntityId('ai_chat_message'),
         user_id: user.id,
@@ -7573,41 +7985,38 @@ const server = http.createServer(async (req, res) => {
         content: message,
         created_at: nowIso(),
       };
-      await pool.query(
-        `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [userMessageRow.id, userMessageRow.user_id, userMessageRow.project_id, userMessageRow.role, userMessageRow.content, userMessageRow.created_at],
-      );
-
-      try {
-        const completion = await requestAiChatCompletion(integration, messages);
-        const assistantMessageRow = {
-          id: buildEntityId('ai_chat_message'),
-          user_id: user.id,
-          project_id: projectId,
-          role: 'assistant',
-          content: completion.content,
-          created_at: nowIso(),
-        };
-        await pool.query(
+      const assistantMessageRow = {
+        id: buildEntityId('ai_chat_message'),
+        user_id: user.id,
+        project_id: projectId,
+        role: 'assistant',
+        content: completion.content,
+        created_at: nowIso(),
+      };
+      // El mensaje del usuario solo se persiste junto con la respuesta de la
+      // IA: si la llamada de arriba falla, no debe quedar una pregunta
+      // huérfana en el historial sin ninguna respuesta.
+      await pool.withTransaction(async (txQuery) => {
+        await txQuery(
+          `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [userMessageRow.id, userMessageRow.user_id, userMessageRow.project_id, userMessageRow.role, userMessageRow.content, userMessageRow.created_at],
+        );
+        await txQuery(
           `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
            VALUES (?, ?, ?, ?, ?, ?)`,
           [assistantMessageRow.id, assistantMessageRow.user_id, assistantMessageRow.project_id, assistantMessageRow.role, assistantMessageRow.content, assistantMessageRow.created_at],
         );
+      });
 
-        return sendJson(req, res, 200, {
-          data: {
-            project: { id: project.id, name: project.name },
-            user_message: userMessageRow,
-            assistant_message: assistantMessageRow,
-            usage: completion.usage,
-          },
-        });
-      } catch (error) {
-        return sendJson(req, res, 502, {
-          error: error?.message || 'No se pudo generar respuesta de IA para este proyecto.',
-        });
-      }
+      return sendJson(req, res, 200, {
+        data: {
+          project: { id: project.id, name: project.name },
+          user_message: userMessageRow,
+          assistant_message: assistantMessageRow,
+          usage: completion.usage,
+        },
+      });
     }
 
     if (url.pathname === '/api/comment-base/semantic-fragment-agent' && req.method === 'POST') {
@@ -8238,6 +8647,64 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
     }
 
 
+
+    if (url.pathname === '/api/video-hypothesis-map/layout' && req.method === 'GET') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const projectId = String(url.searchParams.get('projectId') || '').trim();
+      const campaignId = String(url.searchParams.get('campaignId') || '').trim();
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+      const storageKey = `video-hypothesis-map:${projectId}:${campaignId}`;
+      const [rows] = await pool.query(
+        'SELECT payload_json FROM video_hypothesis_map_layouts WHERE user_id = ? AND storage_key = ? LIMIT 1',
+        [user.id, storageKey],
+      );
+      const payload = rows[0] ? safeParseJsonField(rows[0].payload_json, {}) : {};
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload } });
+    }
+
+    if (url.pathname === '/api/video-hypothesis-map/layout' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+      const projectId = String(body.projectId || '').trim();
+      const campaignId = String(body.campaignId || '').trim();
+      const incomingPayload = body.payload && typeof body.payload === 'object' ? body.payload : {};
+      if (!projectId || !campaignId) return sendJson(req, res, 400, { error: 'projectId and campaignId are required' });
+
+      const [campaignRows] = await pool.query(
+        'SELECT id FROM campaigns WHERE id = ? AND project_id = ? AND user_id = ? LIMIT 1',
+        [campaignId, projectId, user.id],
+      );
+      if (!campaignRows[0]) return sendJson(req, res, 404, { error: 'Campaign not found' });
+
+      const storageKey = `video-hypothesis-map:${projectId}:${campaignId}`;
+      const now = nowIso();
+      const mergedPayload = await pool.withTransaction(async (query) => {
+        const [existingRows] = await query(
+          'SELECT id, payload_json, created_at FROM video_hypothesis_map_layouts WHERE user_id = ? AND storage_key = ? LIMIT 1',
+          [user.id, storageKey],
+        );
+        const existing = existingRows[0] || null;
+        const basePayload = existing ? safeParseJsonField(existing.payload_json, {}) : {};
+        const merged = mergeCommentStoreObjectMaps(basePayload, incomingPayload);
+        const id = existing?.id || buildEntityId('video_hypothesis_map_layout', 'vhml_');
+        const createdAt = existing?.created_at || now;
+        await query(
+          `INSERT INTO video_hypothesis_map_layouts (id, user_id, project_id, campaign_id, storage_key, payload_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(user_id, storage_key) DO UPDATE SET
+             project_id = excluded.project_id,
+             campaign_id = excluded.campaign_id,
+             payload_json = excluded.payload_json,
+             updated_at = excluded.updated_at`,
+          [id, user.id, projectId, campaignId, storageKey, JSON.stringify(merged), createdAt, now],
+        );
+        return merged;
+      });
+
+      return sendJson(req, res, 200, { data: { storage_key: storageKey, payload: mergedPayload } });
+    }
 
     if (url.pathname === '/api/comment-mode/state' && req.method === 'GET') {
       const user = authFromRequest(req);
@@ -9630,7 +10097,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       await pool.query(
         `INSERT INTO interview_semantic_fragments
          (id, user_id, project_id, campaign_id, interview_session_id, document_node_id, source_type, selected_text, start_offset, end_offset, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           fragment.id,
           fragment.user_id,
@@ -9847,18 +10314,19 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
 
       if (!dryRun) {
         try {
-          await pool.query('BEGIN');
+          await pool.withTransaction(async (query) => {
+            for (const entry of mergedByVideoId.values()) {
+              const setEntries = Object.entries(entry.normalizedFields);
+              if (!setEntries.length) continue;
+              const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
+              const values = setEntries.map(([, value]) => value);
+              await query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.matchedVideoId, user.id]);
+            }
+          });
           for (const entry of mergedByVideoId.values()) {
-            const setEntries = Object.entries(entry.normalizedFields);
-            if (!setEntries.length) continue;
-            const setSql = setEntries.map(([field]) => `${normalizeIdentifier(field)} = ?`).join(', ');
-            const values = setEntries.map(([, value]) => value);
-            await pool.query(`UPDATE videos SET ${setSql}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?`, [...values, entry.matchedVideoId, user.id]);
             await recalculateVideoModeScoresForVideo(user.id, entry.matchedVideoId);
           }
-          await pool.query('COMMIT');
         } catch (error) {
-          await pool.query('ROLLBACK');
           sendJson(req, res, 500, { error: error?.message || String(error) });
           return;
         }
@@ -9967,15 +10435,10 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       try {
         await purgeVideoCloudArtifacts(user.id, existing.id);
 
-        await pool.query('BEGIN');
-        try {
-          await pool.query('DELETE FROM hypothesis_videos WHERE video_id = ? AND user_id = ?', [existing.id, user.id]);
-          await pool.query('DELETE FROM videos WHERE id = ? AND user_id = ?', [existing.id, user.id]);
-          await pool.query('COMMIT');
-        } catch (dbError) {
-          await pool.query('ROLLBACK');
-          throw dbError;
-        }
+        await pool.withTransaction(async (query) => {
+          await query('DELETE FROM hypothesis_videos WHERE video_id = ? AND user_id = ?', [existing.id, user.id]);
+          await query('DELETE FROM videos WHERE id = ? AND user_id = ?', [existing.id, user.id]);
+        });
 
         await syncCloudForUser(user.id);
         for (const linkedHypothesisId of linkedHypothesisIds) {
@@ -10261,7 +10724,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
       const now = nowIso();
       await pool.query(
         `INSERT INTO interview_clients (id, project_id, campaign_id, audience_id, user_id, name, contact, notes, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [buildEntityId('interview_client'), projectId, campaignId, body.audience_id || null, user.id, body.name || 'Cliente', body.contact || null, body.notes || null, now, now],
       );
       const [rows] = await pool.query('SELECT * FROM interview_clients WHERE user_id = ? AND campaign_id = ? ORDER BY created_at DESC LIMIT 1', [user.id, campaignId]);
@@ -10278,9 +10741,10 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         return sendJson(req, res, 200, { ok: true });
       }
       const body = await readBody(req);
+      const status = body.status === 'archived' ? 'archived' : 'active';
       await pool.query(
-        'UPDATE interview_clients SET name = ?, contact = ?, notes = ?, audience_id = ?, updated_at = ? WHERE id = ? AND user_id = ?',
-        [body.name || 'Cliente', body.contact || null, body.notes || null, body.audience_id || null, nowIso(), id, user.id],
+        'UPDATE interview_clients SET name = ?, contact = ?, notes = ?, audience_id = ?, status = ?, updated_at = ? WHERE id = ? AND user_id = ?',
+        [body.name || 'Cliente', body.contact || null, body.notes || null, body.audience_id || null, status, nowIso(), id, user.id],
       );
       const [rows] = await pool.query('SELECT * FROM interview_clients WHERE id = ? AND user_id = ? LIMIT 1', [id, user.id]);
       return sendJson(req, res, 200, { data: rows[0] || null });
@@ -11096,15 +11560,14 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         return;
       }
 
-      await pool.query('BEGIN IMMEDIATE');
-      try {
-        await pool.query(
+      await pool.withTransaction(async (query) => {
+        await query(
           'UPDATE hypotheses SET campaign_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
           [targetCampaignId, hypothesisId, user.id],
         );
 
         for (const video of videosToMove) {
-          await pool.query(
+          await query(
             'UPDATE videos SET campaign_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?',
             [targetCampaignId, video.id, user.id],
           );
@@ -11113,12 +11576,7 @@ INSTRUCCION_ADICIONAL: optimiza para síntesis estratégica de PERFIL compuesto.
         if (body?.options?.force_fail_for_test) {
           throw new Error('forced_failure_for_test');
         }
-
-        await pool.query('COMMIT');
-      } catch (error) {
-        await pool.query('ROLLBACK');
-        throw error;
-      }
+      });
 
       for (const video of videosToMove) {
         await ensureVideoCanonicalFolder(user.id, { ...video, campaign_id: targetCampaignId }, targetCampaignId);

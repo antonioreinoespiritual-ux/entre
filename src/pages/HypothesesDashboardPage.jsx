@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, Brain, Edit, Gauge, Lightbulb, MoreHorizontal, Plus, Save, Trash2, X } from 'lucide-react';
@@ -206,6 +206,61 @@ const parseThresholdValue = (hypothesis) => {
   return parsed ? Number(parsed[2]) : 0;
 };
 
+const readVideoHypothesisMapLayout = (storageKey) => {
+  const normalizedKey = String(storageKey || '').trim();
+  if (!normalizedKey) return {};
+  try {
+    const raw = localStorage.getItem(normalizedKey);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+// El layout del mapa de hipótesis de video se persiste en el backend
+// (tabla video_hypothesis_map_layouts, con merge server-side) para que
+// sobreviva a limpiar datos del navegador o cambiar de dispositivo.
+// localStorage se conserva solo como cache local de lectura instantánea.
+const videoHypothesisMapBackendBaseUrl = () => import.meta.env.VITE_BACKEND_URL || 'http://localhost:4000';
+const videoHypothesisMapSessionToken = () => {
+  try {
+    const session = JSON.parse(localStorage.getItem('mysql_backend_session') || 'null');
+    return session?.access_token || '';
+  } catch {
+    return '';
+  }
+};
+
+const fetchVideoHypothesisMapLayoutFromBackend = async (projectId, campaignId) => {
+  if (!projectId || !campaignId) return null;
+  try {
+    const params = new URLSearchParams({ projectId: String(projectId), campaignId: String(campaignId) });
+    const response = await fetch(`${videoHypothesisMapBackendBaseUrl()}/api/video-hypothesis-map/layout?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${videoHypothesisMapSessionToken()}` },
+    });
+    if (!response.ok) return null;
+    const json = await response.json();
+    return json?.data?.payload && typeof json.data.payload === 'object' ? json.data.payload : null;
+  } catch {
+    return null;
+  }
+};
+
+const saveVideoHypothesisMapLayoutToBackend = async (projectId, campaignId, payload) => {
+  if (!projectId || !campaignId) return;
+  try {
+    await fetch(`${videoHypothesisMapBackendBaseUrl()}/api/video-hypothesis-map/layout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${videoHypothesisMapSessionToken()}` },
+      body: JSON.stringify({ projectId, campaignId, payload: payload && typeof payload === 'object' ? payload : {} }),
+    });
+  } catch {
+    // El layout sigue disponible en localStorage como cache local si falla la red.
+  }
+};
+
 const HypothesisFormFields = ({ form, setForm, projectId, availableParents = [], requiredParentType = '', allowedChildType = '' }) => (
   <>
     <div><label className="block text-sm font-medium mb-1">Project ID</label><input disabled className="w-full rounded-lg border p-2 bg-gray-100" value={projectId} /></div>
@@ -227,6 +282,10 @@ const HypothesesDashboardPage = () => {
   const { projectId, campaignId } = useParams();
   const navigate = useNavigate();
   const { hypotheses, fetchHypotheses, createHypothesis, updateHypothesis, deleteHypothesis } = useHypotheses();
+  const hypothesisMapStorageKey = useMemo(
+    () => `video:hypothesis-map-layout:${String(projectId || 'no-project')}:${String(campaignId || 'no-campaign')}`,
+    [projectId, campaignId],
+  );
   const [showForm, setShowForm] = useState(false);
   const [editingHypothesisId, setEditingHypothesisId] = useState(null);
   const [form, setForm] = useState(initialForm);
@@ -237,32 +296,33 @@ const HypothesesDashboardPage = () => {
   const [hypothesisMenuId, setHypothesisMenuId] = useState('');
   const [headerTextMenuOpen, setHeaderTextMenuOpen] = useState(false);
   const [hypothesisMapOpen, setHypothesisMapOpen] = useState(false);
-  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState({});
+  const [hypothesisMapLayoutById, setHypothesisMapLayoutById] = useState(() => readVideoHypothesisMapLayout(hypothesisMapStorageKey));
   const [activeEvolutionLinksByDestinationId, setActiveEvolutionLinksByDestinationId] = useState(new Map());
   const [deleteEvolutionModal, setDeleteEvolutionModal] = useState({ open: false, hypothesisId: '', deleting: false, error: '', link: null, branchIds: [] });
-
-  const hypothesisMapStorageKey = useMemo(
-    () => `video:hypothesis-map-layout:${String(projectId || 'no-project')}:${String(campaignId || 'no-campaign')}`,
-    [projectId, campaignId],
-  );
+  const hypothesisMapLoadedFromBackendRef = useRef(false);
+  const hypothesisMapSaveTimeoutRef = useRef(null);
 
   useEffect(() => {
     fetchHypotheses(campaignId);
   }, [campaignId, fetchHypotheses]);
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(hypothesisMapStorageKey);
-      if (!raw) {
-        setHypothesisMapLayoutById({});
-        return;
-      }
-      const parsed = JSON.parse(raw);
-      setHypothesisMapLayoutById(parsed && typeof parsed === 'object' ? parsed : {});
-    } catch {
-      setHypothesisMapLayoutById({});
-    }
-  }, [hypothesisMapStorageKey]);
+    hypothesisMapLoadedFromBackendRef.current = false;
+    setHypothesisMapLayoutById(readVideoHypothesisMapLayout(hypothesisMapStorageKey));
+
+    let cancelled = false;
+    fetchVideoHypothesisMapLayoutFromBackend(projectId, campaignId).then((backendLayout) => {
+      if (cancelled || !backendLayout) return;
+      setHypothesisMapLayoutById((previousLayout) => ({
+        ...(previousLayout && typeof previousLayout === 'object' ? previousLayout : {}),
+        ...backendLayout,
+      }));
+    }).finally(() => {
+      if (!cancelled) hypothesisMapLoadedFromBackendRef.current = true;
+    });
+
+    return () => { cancelled = true; };
+  }, [hypothesisMapStorageKey, projectId, campaignId]);
 
   const sortedHypotheses = useMemo(() => [...(hypotheses || [])].sort((left, right) => {
     const leftScore = Number(left?.hypothesis_score);
@@ -402,13 +462,31 @@ const HypothesesDashboardPage = () => {
 
   const persistHypothesisMapLayout = (nextLayout) => {
     const normalizedLayout = nextLayout && typeof nextLayout === 'object' ? nextLayout : {};
-    setHypothesisMapLayoutById(normalizedLayout);
+    setHypothesisMapLayoutById((previousLayout) => {
+      const safePreviousLayout = previousLayout && typeof previousLayout === 'object' ? previousLayout : {};
+      return { ...safePreviousLayout, ...normalizedLayout };
+    });
+  };
+
+  useEffect(() => {
+    const safeLayout = hypothesisMapLayoutById && typeof hypothesisMapLayoutById === 'object' ? hypothesisMapLayoutById : {};
     try {
-      localStorage.setItem(hypothesisMapStorageKey, JSON.stringify(normalizedLayout));
+      localStorage.setItem(hypothesisMapStorageKey, JSON.stringify(safeLayout));
     } catch {
       // noop
     }
-  };
+
+    // No enviar al backend hasta que la carga inicial desde el backend haya
+    // resuelto: evita pisar con un snapshot local viejo justo al montar.
+    if (!hypothesisMapLoadedFromBackendRef.current) return undefined;
+
+    clearTimeout(hypothesisMapSaveTimeoutRef.current);
+    hypothesisMapSaveTimeoutRef.current = setTimeout(() => {
+      saveVideoHypothesisMapLayoutToBackend(projectId, campaignId, safeLayout);
+    }, 600);
+
+    return () => clearTimeout(hypothesisMapSaveTimeoutRef.current);
+  }, [hypothesisMapLayoutById, hypothesisMapStorageKey, projectId, campaignId]);
 
   const hypothesisMapStatusStyle = (hypothesis) => {
     const rawStatus = getHypothesisRawStatus(hypothesis);
@@ -678,7 +756,7 @@ const HypothesesDashboardPage = () => {
       <HypothesisMapModal
         open={hypothesisMapOpen}
         onClose={() => setHypothesisMapOpen(false)}
-        hypotheses={filteredHypotheses}
+        hypotheses={sortedHypotheses}
         title="Mapa de hipótesis"
         description="Vista de grafo para la jerarquía de hipótesis en Modo Video."
         getHypothesisId={(hypothesis) => String(hypothesis?.id || '').trim()}

@@ -565,6 +565,12 @@ const CommentsModePage = () => {
 
   const persist = (next) => {
     const normalizedNext = mergeCommentsModeStorePayloads(storeRef.current, next);
+    // storeRef.current se actualiza aquí mismo, de forma síncrona - el
+    // useEffect de abajo también lo hace, pero corre después del repintado.
+    // Dos llamadas a persist() disparadas antes de ese repintado (p. ej. dos
+    // conexiones seguidas en el mapa de códigos) necesitan ver el resultado
+    // de la primera al calcular la segunda, o la segunda pisa a la primera.
+    storeRef.current = normalizedNext;
     setStore(normalizedNext);
     try {
       localStorage.setItem(storageKey, JSON.stringify(normalizedNext));
@@ -572,7 +578,9 @@ const CommentsModePage = () => {
       // Fallback para datasets grandes: el guardado principal vive en IndexedDB.
     }
     saveCommentsModeStore(storageKey, normalizedNext).then((savedPayload) => {
-      setStore((current) => mergeCommentsModeStorePayloads(current, savedPayload));
+      const merged = mergeCommentsModeStorePayloads(storeRef.current, savedPayload);
+      storeRef.current = merged;
+      setStore(merged);
     }).catch(() => {
       // Silencio controlado: no bloquear UX si IndexedDB falla en navegador restringido.
     });
@@ -1590,6 +1598,7 @@ const CommentsModePage = () => {
         tags,
         score_consistencia: scoreConsistencia,
         score_intensidad: scoreIntensidad,
+        updated_at: new Date().toISOString(),
       };
     });
     persist({ ...store, codes: nextCodes });
@@ -1691,6 +1700,7 @@ const CommentsModePage = () => {
       return {
         ...code,
         parent_slug: normalizedParent || null,
+        updated_at: new Date().toISOString(),
       };
     });
     persist({ ...store, codes: nextCodes });
@@ -3458,6 +3468,26 @@ const CommentsModePage = () => {
         };
       };
 
+      // Errores de configuración de la integración de IA (proveedor no
+      // soportado, falta API key/modelo, integración no configurada,
+      // credenciales inválidas): nunca van a resolverse reintentando o
+      // dividiendo el batch, y no deben confundirse con un rechazo por
+      // contenido (riqueza semántica insuficiente, etc.).
+      const AI_CONFIG_ERROR_PATTERNS = [
+        /debes configurar la integraci[oó]n/i,
+        /requiere base_url/i,
+        /requiere api key/i,
+        /no tiene un modelo v[aá]lido/i,
+        /unauthorized/i,
+        /invalid.*api.?key/i,
+        /authentication_error/i,
+        /permission.?denied/i,
+        /\bforbidden\b/i,
+        /\b401\b|\b403\b/,
+      ];
+      const isAiConfigError = (error) => AI_CONFIG_ERROR_PATTERNS.some((pattern) => pattern.test(String(error?.message || '')));
+      let aiConfigError = null;
+
       const MAX_SPLIT_DEPTH = 3;
       const queue = [...initialBatches];
       const workers = Array.from({ length: Math.min(MAX_CONCURRENCY, queue.length) }, async () => {
@@ -3476,7 +3506,19 @@ const CommentsModePage = () => {
               done: Math.min(processed, pendingComments.length),
               total: pendingComments.length,
             });
-          } catch {
+          } catch (error) {
+            if (isAiConfigError(error)) {
+              aiConfigError = aiConfigError || error;
+              queue.length = 0;
+              failed += nextBatch.comments.length;
+              processed += nextBatch.comments.length;
+              setSemanticAgentProgress({
+                done: Math.min(processed, pendingComments.length),
+                total: pendingComments.length,
+              });
+              continue;
+            }
+
             if (nextBatch.attempts + 1 < MAX_BATCH_RETRIES) {
               queue.push({ ...nextBatch, attempts: nextBatch.attempts + 1 });
               continue;
@@ -3520,6 +3562,13 @@ const CommentsModePage = () => {
       });
 
       await Promise.all(workers);
+
+      if (aiConfigError && !createdFragments.length) {
+        setSemanticAgentError(
+          `No se pudo usar la IA: ${aiConfigError.message} Revisa la configuración de tu integración de IA en Proyectos → Configuración.`,
+        );
+        return;
+      }
 
       if (!createdFragments.length) {
         setSemanticAgentError(

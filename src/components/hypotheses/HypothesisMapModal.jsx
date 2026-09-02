@@ -12,6 +12,22 @@ const DEFAULT_TYPE_COLORS = {
 const DEFAULT_STATUS_STYLE = () => ({ label: '', color: '#475569', backgroundColor: '#f1f5f9' });
 const EMPTY_LAYOUT = {};
 
+/**
+ * Computes a deterministic, stable initial position for a new node based on its ID.
+ * This is completely independent of list order, sort, or render index.
+ * The same ID always yields the same position, so the result is stable across
+ * re-renders, re-fetches, score changes, and session boundaries.
+ */
+function computeStableInitialPosition(id) {
+  const s = String(id);
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  }
+  const abs = Math.abs(h);
+  return { x: 120 + (abs % 7) * 270, y: 80 + (Math.floor(abs / 7) % 7) * 190 };
+}
+
 export function HypothesisMapModal({
   open,
   onClose,
@@ -47,6 +63,16 @@ export function HypothesisMapModal({
   const wasOpenRef = useRef(false);
   const hydratedContextRef = useRef('');
 
+  // Mutable refs to always expose current prop values to effects
+  // without making those props trigger effect re-runs unnecessarily.
+  const initialLayoutRef = useRef(initialLayout);
+  const persistLayoutRef = useRef(persistLayout);
+  const visibleHypothesesRef = useRef([]);
+
+  // Update mutable refs synchronously on every render, before effects run.
+  initialLayoutRef.current = initialLayout;
+  persistLayoutRef.current = persistLayout;
+
   const mapContextKey = useMemo(() => (
     Array.isArray(hypotheses)
       ? hypotheses
@@ -56,36 +82,6 @@ export function HypothesisMapModal({
         .join('|')
       : ''
   ), [hypotheses, getHypothesisId]);
-
-  useEffect(() => {
-    const normalizedLayout = initialLayout && typeof initialLayout === 'object' ? initialLayout : EMPTY_LAYOUT;
-    const isOpening = open && !wasOpenRef.current;
-    const contextChanged = hydratedContextRef.current !== mapContextKey;
-
-    if (isOpening || contextChanged) {
-      setLayoutById((previousLayout) => {
-        if (contextChanged) return normalizedLayout;
-        const hasLocalLayout = previousLayout && typeof previousLayout === 'object' && Object.keys(previousLayout).length > 0;
-        return hasLocalLayout ? previousLayout : normalizedLayout;
-      });
-      if (contextChanged) {
-        layoutRef.current = normalizedLayout;
-      }
-      hydratedContextRef.current = mapContextKey;
-    }
-
-    wasOpenRef.current = open;
-  }, [open, mapContextKey, initialLayout]);
-
-  useEffect(() => {
-    layoutRef.current = layoutById || {};
-  }, [layoutById]);
-
-  useEffect(() => () => {
-    if (!persistDebounceRef.current) return;
-    clearTimeout(persistDebounceRef.current);
-    persistDebounceRef.current = null;
-  }, []);
 
   const normalizedHypotheses = useMemo(() => hypotheses.map((hypothesis) => ({
     raw: hypothesis,
@@ -136,37 +132,101 @@ export function HypothesisMapModal({
     return normalizedHypotheses.filter((hypothesis) => visible.has(hypothesis.id));
   }, [childHypothesesByParentId, filterId, hypothesisById, normalizedHypotheses]);
 
-  const nodes = useMemo(() => visibleHypotheses.map((hypothesis, index) => {
-    const saved = layoutById[hypothesis.id] || {};
-    const x = Number(saved.x);
-    const y = Number(saved.y);
-    return {
-      ...hypothesis,
-      x: Number.isFinite(x) ? x : 120 + ((index % 4) * 300),
-      y: Number.isFinite(y) ? y : 80 + (Math.floor(index / 4) * 180),
-    };
-  }), [layoutById, visibleHypotheses]);
+  // Keep the ref current so the snapshot initialization effect always
+  // sees the latest visible set without depending on it directly.
+  visibleHypothesesRef.current = visibleHypotheses;
+
+  /**
+   * SNAPSHOT-FIRST INITIALIZATION
+   *
+   * This is the architectural core of the video hypothesis map.
+   * The spatial snapshot (initialLayout / initialLayoutRef.current) is the
+   * primary source of truth for node geometry.  The list of hypotheses only
+   * determines which nodes must exist — never where they should go.
+   *
+   * On every open or hypothesis-set change:
+   *   1. Start from the persisted snapshot — every existing position is respected.
+   *   2. For nodes that are genuinely new (not yet in the snapshot), compute a
+   *      stable, deterministic initial position using the node ID as the seed.
+   *      This is completely independent of list order or sort index.
+   *   3. Persist new positions immediately so the snapshot is complete before
+   *      the user interacts with the map.
+   *
+   * What this prevents:
+   *   - Index-based positioning that shifts when hypotheses are reordered.
+   *   - Any re-computation of existing node geometry on re-fetches or renders.
+   *   - Loss of manual arrangement after close / navigate / reload.
+   */
+  useEffect(() => {
+    const isOpening = open && !wasOpenRef.current;
+    const contextChanged = hydratedContextRef.current !== mapContextKey;
+
+    if (isOpening || (open && contextChanged)) {
+      // Read the persisted snapshot at the moment this effect runs.
+      // Using a ref ensures we always get the latest value without re-triggering
+      // the effect on every drag-save that updates initialLayout in the parent.
+      const snapshot = initialLayoutRef.current && typeof initialLayoutRef.current === 'object'
+        ? initialLayoutRef.current
+        : EMPTY_LAYOUT;
+
+      // Start from the snapshot — this is the source of truth.
+      const nextLayout = { ...snapshot };
+      let hasNewNodes = false;
+
+      if (persistFullVisibleLayout) {
+        // Only assign positions to nodes that do not already exist in the snapshot.
+        // Existing nodes keep their persisted positions, unchanged.
+        (visibleHypothesesRef.current || []).forEach((hypothesis) => {
+          const id = hypothesis.id;
+          const existing = snapshot[id];
+          if (Number.isFinite(Number(existing?.x)) && Number.isFinite(Number(existing?.y))) return;
+          // New node: assign a stable position derived from its ID, never from its
+          // index in the list.  The position is the same every time for this ID.
+          nextLayout[id] = computeStableInitialPosition(id);
+          hasNewNodes = true;
+        });
+      }
+
+      setLayoutById(nextLayout);
+      layoutRef.current = nextLayout;
+      hydratedContextRef.current = mapContextKey;
+
+      // Persist new positions immediately so the snapshot is complete.
+      // This prevents a future context reset from losing the initial placements.
+      if (hasNewNodes && typeof persistLayoutRef.current === 'function') {
+        persistLayoutRef.current(nextLayout);
+      }
+    }
+
+    wasOpenRef.current = open;
+  }, [open, mapContextKey, persistFullVisibleLayout]);
 
   useEffect(() => {
-    if (!open || !persistFullVisibleLayout || !nodes.length) return;
-    const baseLayout = layoutRef.current && typeof layoutRef.current === 'object' ? layoutRef.current : {};
-    const completeLayout = { ...baseLayout };
-    let hasMissingCoordinates = false;
+    layoutRef.current = layoutById || {};
+  }, [layoutById]);
 
-    nodes.forEach((node) => {
-      const current = completeLayout[node.id];
-      const currentX = Number(current?.x);
-      const currentY = Number(current?.y);
-      if (Number.isFinite(currentX) && Number.isFinite(currentY)) return;
-      completeLayout[node.id] = { x: Number(node.x) || 0, y: Number(node.y) || 0 };
-      hasMissingCoordinates = true;
-    });
+  useEffect(() => () => {
+    if (!persistDebounceRef.current) return;
+    clearTimeout(persistDebounceRef.current);
+    persistDebounceRef.current = null;
+  }, []);
 
-    if (!hasMissingCoordinates) return;
-    layoutRef.current = completeLayout;
-    setLayoutById(completeLayout);
-    persistCurrentLayout(completeLayout);
-  }, [open, persistFullVisibleLayout, nodes]);
+  /**
+   * NODE POSITION RESOLUTION
+   *
+   * Positions always come from layoutById (which is seeded from the snapshot).
+   * For any node not yet in layoutById, a stable ID-hash position is used as
+   * a fallback — never an array index.  This means sort order, score changes,
+   * and re-fetches never affect node geometry.
+   */
+  const nodes = useMemo(() => visibleHypotheses.map((hypothesis) => {
+    const saved = layoutById[hypothesis.id];
+    const x = Number(saved?.x);
+    const y = Number(saved?.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) return { ...hypothesis, x, y };
+    // Fallback for nodes not yet in layoutById: stable, deterministic position.
+    return { ...hypothesis, ...computeStableInitialPosition(hypothesis.id) };
+  }), [layoutById, visibleHypotheses]);
 
   const visibleIdSet = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
   const edges = useMemo(() => nodes
@@ -175,7 +235,9 @@ export function HypothesisMapModal({
   const renderableNodesById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
 
   const persistCurrentLayout = (nextLayout) => {
-    if (typeof persistLayout === 'function') persistLayout(nextLayout && typeof nextLayout === 'object' ? nextLayout : {});
+    if (typeof persistLayoutRef.current === 'function') {
+      persistLayoutRef.current(nextLayout && typeof nextLayout === 'object' ? nextLayout : {});
+    }
   };
 
   const schedulePersistLayout = (nextLayout) => {
