@@ -26,6 +26,7 @@ async function request(path, options = {}) {
 export const accountIntegrationsApi = {
   getAiConfig: () => request('/api/integrations/ai/config').then((r) => r.data || {}),
   saveAiSettings: (payload) => request('/api/integrations/ai/settings', { method: 'PUT', body: JSON.stringify(payload) }).then((r) => r.data || {}),
+  testAiSettings: (payload) => request('/api/integrations/ai/test', { method: 'POST', body: JSON.stringify(payload) }).then((r) => r.data || {}),
   getOpenClawConfig: () => request('/api/integrations/openclaw/config').then((r) => r.data || {}),
   saveOpenClawSettings: (payload) => request('/api/integrations/openclaw/settings', { method: 'PUT', body: JSON.stringify(payload) }).then((r) => r.data || {}),
 };
