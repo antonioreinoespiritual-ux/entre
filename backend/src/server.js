@@ -1014,14 +1014,14 @@ function applyManualCommentHypothesisStateChange(payload = {}, hypothesisId = ''
   };
 }
 
-async function rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey) {
-  const [hypothesisRows] = await pool.query(
+async function rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey, queryFn = pool.query) {
+  const [hypothesisRows] = await queryFn(
     `SELECT payload_json FROM comment_mode_hypotheses
      WHERE user_id = ? AND storage_key = ?
      ORDER BY created_at ASC, hypothesis_id ASC`,
     [userId, parsedKey.storageKey],
   );
-  const [linkRows] = await pool.query(
+  const [linkRows] = await queryFn(
     `SELECT payload_json FROM comment_mode_evolution_links
      WHERE user_id = ? AND storage_key = ?
      ORDER BY created_at ASC, link_id ASC`,
@@ -1070,12 +1070,18 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
   if (!campaign) throw new Error('Campaign not found');
 
   const workspace = await ensureCommentWorkspaceRecord(userId, parsedKey.projectId, parsedKey.campaignId, parsedKey.workspaceId);
-  const existingPayload = await readCommentModeStructuralState(userId, parsedKey.storageKey);
-  const normalizedPayload = mergeCommentModeStructuralPayload(existingPayload || {}, payload, { storageKey: parsedKey.storageKey });
-  const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
   const now = nowIso();
 
-  await pool.withTransaction(async (query) => {
+  // La lectura que decide la fusión ocurre DENTRO de la transacción, con el
+  // mismo candado que protege la escritura: ninguna otra petición puede leer
+  // "el estado de antes" mientras esta petición está fusionando y escribiendo
+  // el suyo, así que dos guardados que se solapan ya no pueden basarse en el
+  // mismo snapshot desactualizado y pisarse entre sí.
+  return pool.withTransaction(async (query) => {
+    const existingPayload = await readCommentModeStructuralState(userId, parsedKey.storageKey, query);
+    const normalizedPayload = mergeCommentModeStructuralPayload(existingPayload || {}, payload, { storageKey: parsedKey.storageKey });
+    const lineageByCommentId = createCommentLineageIndex(normalizedPayload);
+
     const [existingRows] = await query(
       'SELECT id, created_at FROM comment_mode_states WHERE user_id = ? AND storage_key = ? LIMIT 1',
       [userId, parsedKey.storageKey],
@@ -1155,14 +1161,14 @@ async function persistCommentModeStructuralState(userId, storageKey, payload = {
         ],
       );
     }
-  });
 
-  return normalizedPayload;
+    return normalizedPayload;
+  });
 }
 
-async function readCommentModeStructuralState(userId, storageKey) {
+async function readCommentModeStructuralState(userId, storageKey, queryFn = pool.query) {
   const parsedKey = parseCommentModeStorageKey(storageKey);
-  const [rows] = await pool.query(
+  const [rows] = await queryFn(
     `SELECT * FROM comment_mode_states WHERE user_id = ? AND storage_key = ? AND project_id = ? AND campaign_id = ? LIMIT 1`,
     [userId, parsedKey.storageKey, parsedKey.projectId, parsedKey.campaignId],
   );
@@ -1171,7 +1177,7 @@ async function readCommentModeStructuralState(userId, storageKey) {
     const normalizedPayload = normalizeCommentModeStructuralPayload(safeParseJsonField(row.payload_json, {}), { storageKey: parsedKey.storageKey });
     if (commentModeStructuralPayloadHasContent(normalizedPayload)) return normalizedPayload;
   }
-  return rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey);
+  return rebuildCommentModeStructuralPayloadFromRows(userId, parsedKey, queryFn);
 }
 
 function autoExternalIdForVideo(videoType, videoId) {
@@ -3458,6 +3464,8 @@ function resolveAiBaseUrl(integration) {
   if (provider === 'openrouter') return 'https://openrouter.ai/api/v1';
   if (provider === 'groq') return 'https://api.groq.com/openai/v1';
   if (provider === 'ollama') return 'http://localhost:11434/v1';
+  if (provider === 'anthropic') return 'https://api.anthropic.com/v1';
+  if (provider === 'gemini') return 'https://generativelanguage.googleapis.com/v1beta';
   return '';
 }
 
@@ -3570,23 +3578,118 @@ function buildProjectScopedSystemPrompt(project, projectSummary) {
   ].join('\n');
 }
 
-async function requestAiChatCompletion(integration, payload) {
-  const provider = String(integration?.provider || '').trim().toLowerCase();
-  const model = normalizeAiModel(provider, integration?.model);
-  const apiKey = String(integration?.api_key || '').trim();
-  const baseUrl = resolveAiBaseUrl(integration);
+function splitSystemAndTurns(payload) {
+  const messages = Array.isArray(payload) ? payload : [];
+  const systemText = messages
+    .filter((m) => m?.role === 'system')
+    .map((m) => String(m?.content || ''))
+    .join('\n\n')
+    .trim();
+  const turns = messages.filter((m) => m?.role === 'user' || m?.role === 'assistant');
+  return { systemText, turns };
+}
 
-  if (!model) throw new Error('La integración de IA no tiene un modelo válido configurado.');
-  if (!baseUrl) throw new Error(`El proveedor ${provider || 'seleccionado'} requiere base_url compatible para chat.`);
-  if (provider !== 'ollama' && !apiKey) {
-    throw new Error('La integración de IA requiere API key para enviar mensajes.');
+async function requestAnthropicChatCompletion({ baseUrl, model, apiKey, organization, payload }) {
+  const { systemText, turns } = splitSystemAndTurns(payload);
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+  };
+  if (organization) headers['anthropic-organization'] = String(organization);
+
+  const response = await fetch(`${baseUrl}/messages`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model,
+      max_tokens: 4096,
+      temperature: 0.2,
+      ...(systemText ? { system: systemText } : {}),
+      messages: turns.map((m) => ({ role: m.role, content: String(m.content || '') })),
+    }),
+  });
+
+  const raw = await response.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
   }
 
+  if (!response.ok) {
+    const apiError = json?.error?.message || raw || `HTTP ${response.status}`;
+    throw new Error(`No se pudo completar el chat con IA: ${apiError}`);
+  }
+
+  const content = Array.isArray(json?.content)
+    ? json.content.filter((block) => block?.type === 'text').map((block) => block.text).join('')
+    : '';
+  if (!content) throw new Error('El proveedor de IA no devolvió contenido de respuesta.');
+  return {
+    content: content.trim(),
+    usage: json?.usage
+      ? {
+        prompt_tokens: json.usage.input_tokens ?? null,
+        completion_tokens: json.usage.output_tokens ?? null,
+        total_tokens: (json.usage.input_tokens ?? 0) + (json.usage.output_tokens ?? 0),
+      }
+      : null,
+  };
+}
+
+async function requestGeminiChatCompletion({ baseUrl, model, apiKey, payload }) {
+  const { systemText, turns } = splitSystemAndTurns(payload);
+  const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(systemText ? { systemInstruction: { parts: [{ text: systemText }] } } : {}),
+      contents: turns.map((m) => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: String(m.content || '') }],
+      })),
+      generationConfig: { temperature: 0.2 },
+    }),
+  });
+
+  const raw = await response.text();
+  let json = {};
+  try {
+    json = raw ? JSON.parse(raw) : {};
+  } catch {
+    json = {};
+  }
+
+  if (!response.ok) {
+    const apiError = json?.error?.message || raw || `HTTP ${response.status}`;
+    throw new Error(`No se pudo completar el chat con IA: ${apiError}`);
+  }
+
+  const parts = json?.candidates?.[0]?.content?.parts;
+  const content = Array.isArray(parts) ? parts.map((part) => part?.text || '').join('') : '';
+  if (!content) throw new Error('El proveedor de IA no devolvió contenido de respuesta.');
+  return {
+    content: content.trim(),
+    usage: json?.usageMetadata
+      ? {
+        prompt_tokens: json.usageMetadata.promptTokenCount ?? null,
+        completion_tokens: json.usageMetadata.candidatesTokenCount ?? null,
+        total_tokens: json.usageMetadata.totalTokenCount ?? null,
+      }
+      : null,
+  };
+}
+
+async function requestOpenAiCompatibleChatCompletion({ baseUrl, model, apiKey, provider, organization, payload }) {
   const headers = {
     'Content-Type': 'application/json',
   };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  if (integration?.organization) headers['OpenAI-Organization'] = String(integration.organization);
+  if (organization) headers['OpenAI-Organization'] = String(organization);
   if (provider === 'openrouter') {
     headers['HTTP-Referer'] = 'https://marketclaw.local';
     headers['X-Title'] = 'MarketClaw Chat IA';
@@ -3621,6 +3724,27 @@ async function requestAiChatCompletion(integration, payload) {
     content: String(content).trim(),
     usage: json?.usage || null,
   };
+}
+
+async function requestAiChatCompletion(integration, payload) {
+  const provider = String(integration?.provider || '').trim().toLowerCase();
+  const model = normalizeAiModel(provider, integration?.model);
+  const apiKey = String(integration?.api_key || '').trim();
+  const baseUrl = resolveAiBaseUrl(integration);
+
+  if (!model) throw new Error('La integración de IA no tiene un modelo válido configurado.');
+  if (!baseUrl) throw new Error(`El proveedor ${provider || 'seleccionado'} requiere base_url compatible para chat.`);
+  if (provider !== 'ollama' && !apiKey) {
+    throw new Error('La integración de IA requiere API key para enviar mensajes.');
+  }
+
+  if (provider === 'anthropic') {
+    return requestAnthropicChatCompletion({ baseUrl, model, apiKey, organization: integration?.organization, payload });
+  }
+  if (provider === 'gemini') {
+    return requestGeminiChatCompletion({ baseUrl, model, apiKey, payload });
+  }
+  return requestOpenAiCompatibleChatCompletion({ baseUrl, model, apiKey, provider, organization: integration?.organization, payload });
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
@@ -7692,6 +7816,46 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (url.pathname === '/api/integrations/ai/test' && req.method === 'POST') {
+      const user = authFromRequest(req);
+      if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
+      const body = await readBody(req);
+
+      // Prueba con lo que el usuario tiene escrito en el formulario (aunque
+      // todavía no lo haya guardado); si un campo viene vacío, cae a lo que
+      // ya está guardado para esa integración.
+      const saved = await getAiIntegrationByUserId(user.id);
+      const provider = String(body.provider || saved?.provider || '').trim().toLowerCase();
+      const model = normalizeAiModel(provider, body.model || saved?.model);
+      const apiKey = String(body.api_key || saved?.api_key || '').trim();
+      const baseUrl = String(body.base_url || saved?.base_url || '').trim();
+      const organization = String(body.organization || saved?.organization || '').trim();
+
+      if (!AI_PROVIDERS.has(provider)) {
+        return sendJson(req, res, 200, { data: { ok: false, error: 'Proveedor de IA inválido.' } });
+      }
+      if (!model) {
+        return sendJson(req, res, 200, { data: { ok: false, error: 'Debes especificar el modelo para la integración de IA.' } });
+      }
+
+      try {
+        const completion = await requestAiChatCompletion(
+          { provider, model, api_key: apiKey, base_url: baseUrl, organization },
+          [
+            { role: 'system', content: 'Responde únicamente con la palabra: ok' },
+            { role: 'user', content: 'ok' },
+          ],
+        );
+        return sendJson(req, res, 200, {
+          data: { ok: true, message: `Conexión exitosa con ${provider} (${model}).`, sample: completion.content.slice(0, 120) },
+        });
+      } catch (error) {
+        return sendJson(req, res, 200, {
+          data: { ok: false, error: error?.message || 'No se pudo conectar con el proveedor de IA.' },
+        });
+      }
+    }
+
     if (url.pathname === '/api/integrations/openclaw/config' && req.method === 'GET') {
       const user = authFromRequest(req);
       if (!user) return sendJson(req, res, 401, { error: 'Unauthorized' });
@@ -7804,6 +7968,15 @@ const server = http.createServer(async (req, res) => {
         { role: 'user', content: message },
       ];
 
+      let completion;
+      try {
+        completion = await requestAiChatCompletion(integration, messages);
+      } catch (error) {
+        return sendJson(req, res, 502, {
+          error: error?.message || 'No se pudo generar respuesta de IA para este proyecto.',
+        });
+      }
+
       const userMessageRow = {
         id: buildEntityId('ai_chat_message'),
         user_id: user.id,
@@ -7812,41 +7985,38 @@ const server = http.createServer(async (req, res) => {
         content: message,
         created_at: nowIso(),
       };
-      await pool.query(
-        `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [userMessageRow.id, userMessageRow.user_id, userMessageRow.project_id, userMessageRow.role, userMessageRow.content, userMessageRow.created_at],
-      );
-
-      try {
-        const completion = await requestAiChatCompletion(integration, messages);
-        const assistantMessageRow = {
-          id: buildEntityId('ai_chat_message'),
-          user_id: user.id,
-          project_id: projectId,
-          role: 'assistant',
-          content: completion.content,
-          created_at: nowIso(),
-        };
-        await pool.query(
+      const assistantMessageRow = {
+        id: buildEntityId('ai_chat_message'),
+        user_id: user.id,
+        project_id: projectId,
+        role: 'assistant',
+        content: completion.content,
+        created_at: nowIso(),
+      };
+      // El mensaje del usuario solo se persiste junto con la respuesta de la
+      // IA: si la llamada de arriba falla, no debe quedar una pregunta
+      // huérfana en el historial sin ninguna respuesta.
+      await pool.withTransaction(async (txQuery) => {
+        await txQuery(
+          `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [userMessageRow.id, userMessageRow.user_id, userMessageRow.project_id, userMessageRow.role, userMessageRow.content, userMessageRow.created_at],
+        );
+        await txQuery(
           `INSERT INTO ai_project_chat_messages (id, user_id, project_id, role, content, created_at)
            VALUES (?, ?, ?, ?, ?, ?)`,
           [assistantMessageRow.id, assistantMessageRow.user_id, assistantMessageRow.project_id, assistantMessageRow.role, assistantMessageRow.content, assistantMessageRow.created_at],
         );
+      });
 
-        return sendJson(req, res, 200, {
-          data: {
-            project: { id: project.id, name: project.name },
-            user_message: userMessageRow,
-            assistant_message: assistantMessageRow,
-            usage: completion.usage,
-          },
-        });
-      } catch (error) {
-        return sendJson(req, res, 502, {
-          error: error?.message || 'No se pudo generar respuesta de IA para este proyecto.',
-        });
-      }
+      return sendJson(req, res, 200, {
+        data: {
+          project: { id: project.id, name: project.name },
+          user_message: userMessageRow,
+          assistant_message: assistantMessageRow,
+          usage: completion.usage,
+        },
+      });
     }
 
     if (url.pathname === '/api/comment-base/semantic-fragment-agent' && req.method === 'POST') {

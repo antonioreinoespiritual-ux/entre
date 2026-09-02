@@ -25,6 +25,7 @@ const ProjectsPage = () => {
   const [youtubeSettingsDraft, setYoutubeSettingsDraft] = useState({ api_key: '', client_id: '', client_secret: '', redirect_uri: '', scopes: '' });
   const [aiConfig, setAiConfig] = useState({ loading: false, error: '', data: null });
   const [aiSettingsDraft, setAiSettingsDraft] = useState({ provider: 'openai', model: '', api_key: '', base_url: '', organization: '' });
+  const [aiConnectionTest, setAiConnectionTest] = useState({ loading: false, result: null });
   const [openClawConfig, setOpenClawConfig] = useState({ loading: false, error: '', data: null });
   const [openClawDraft, setOpenClawDraft] = useState({ endpoint_url: '', workspace_id: '', api_key: '' });
 
@@ -139,6 +140,16 @@ const ProjectsPage = () => {
       await loadAiConfig();
     } catch (error) {
       setAiConfig((prev) => ({ ...prev, error: error.message || 'No se pudo guardar configuración de IA' }));
+    }
+  };
+
+  const testAiConnection = async () => {
+    try {
+      setAiConnectionTest({ loading: true, result: null });
+      const data = await accountIntegrationsApi.testAiSettings(aiSettingsDraft);
+      setAiConnectionTest({ loading: false, result: data });
+    } catch (error) {
+      setAiConnectionTest({ loading: false, result: { ok: false, error: error.message || 'No se pudo probar la conexión con la IA' } });
     }
   };
 
@@ -570,8 +581,17 @@ const ProjectsPage = () => {
 
                             <div className="flex flex-wrap gap-2">
                               <Button className="bg-indigo-600 text-white" onClick={saveAiSettings}>Guardar integración IA</Button>
+                              <Button className="bg-white border text-slate-700" onClick={testAiConnection} disabled={aiConnectionTest.loading}>
+                                <BrainCircuit className="w-4 h-4 mr-2" />{aiConnectionTest.loading ? 'Probando...' : 'Probar conexión'}
+                              </Button>
                               <Button className="bg-white border text-slate-700" onClick={loadAiConfig}>Verificar estado</Button>
                             </div>
+
+                            {aiConnectionTest.result ? (
+                              <p className={`text-sm ${aiConnectionTest.result.ok ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                {aiConnectionTest.result.ok ? aiConnectionTest.result.message : aiConnectionTest.result.error}
+                              </p>
+                            ) : null}
                           </div>
                         ) : null}
 
